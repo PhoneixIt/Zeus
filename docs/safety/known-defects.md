@@ -59,6 +59,37 @@ product is honest about that rather than training the human to work around it.
 - No multi-monitor capture.
 - No persistent state across restarts.
 
+## Migration defect caught by running it, not by compiling it
+
+The control core moved from `%TEMP%` into `packages/control-core/`. After the move the C#
+**compiled cleanly** — and the host **did not start**. Three separate reasons, all invisible
+to a compile check:
+
+1. `start-operator-host.mjs` globbed `readdirSync(DIR)` for `*.cs`. The sources were in
+   `src/`, so it found **zero**, and printed `compiling 0 sources` / `source compiles cleanly`
+   — a green result for compiling nothing.
+2. `operator-host.ps1` had the same `Get-ChildItem -LiteralPath $dir -Filter '*.cs'` bug. Its
+   own `if (-not $sources) { throw }` guard is what stopped it, and that guard is worth
+   keeping.
+3. `operator-host.ps1` was not migrated at all — the copy was conditional and the file did not
+   match its pattern.
+
+Fixed by pointing both scripts at `src/` and by **asserting the source count is non-zero**, so
+"compiled cleanly" can never again mean "compiled nothing".
+
+**The lesson generalises past this bug:** a compile check verifies the code is valid. It says
+nothing about whether the program *starts*, whether its inputs were found, or whether it
+speaks to anything real. Every migrated component must be **executed** and observed, not
+merely compiled. This is the same failure class as the negative controls that silently did
+nothing: an instrument reporting success without having tested the thing.
+
+## Layer-boundary finding
+
+`operator.mjs` imports `playwright` for browser work; `operator-client.mjs` is the pure
+control protocol and has no such dependency. The client is the correct boundary for Layer 4 —
+the control core should not depend on a browser-automation library. `operator.mjs` belongs to
+the browser package and should move there when that package exists.
+
 ## Engineering-process defects
 
 Recorded because they are the ones most likely to recur:

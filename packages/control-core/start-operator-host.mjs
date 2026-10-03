@@ -49,8 +49,17 @@ if (existsSync(STATE)) {
 //    lives in sibling files (Guard.cs, Hooks.cs, Indicator.cs) that must compile as
 //    one unit with the host.
 const checkDll = join(tmpdir(), 'portai-operator-syntaxcheck.dll')
-const sources = readdirSync(DIR).filter((f) => f.endsWith('.cs')).sort()
-const srcArgs = sources.map((f) => `"${join(DIR, f)}"`).join(' ')
+// Sources live in src/, beside the client and the proofs. Compiling from DIR itself found
+// ZERO sources after the move into packages/control-core, which still reported "compiles
+// cleanly" - a green result for compiling nothing. The count is now asserted so that can
+// never happen again.
+const SRC_DIR = join(DIR, 'src')
+const sources = readdirSync(SRC_DIR).filter((f) => f.endsWith('.cs')).sort()
+if (sources.length === 0) {
+  console.error(`  NO SOURCES FOUND in ${SRC_DIR}. Refusing to report a clean compile.`)
+  process.exit(1)
+}
+const srcArgs = sources.map((f) => `"${join(SRC_DIR, f)}"`).join(' ')
 // UI Automation ships in the GAC, not the framework directory, so its references must be
 // given by full path. Without these the syntax check would not resolve the types that
 // Add-Type resolves by simple name - and a syntax check that does not reference the same
