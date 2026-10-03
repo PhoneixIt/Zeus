@@ -1,0 +1,13 @@
+﻿{
+  "name": "aios",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "General-purpose AI operating layer for Windows",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings --test \"packages/*/test/*.test.ts\"",
+    "control:start": "node packages/control-core/start-operator-host.mjs",
+    "control:syntax": "powershell -NoProfile -Command \"& 'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe' /target:library /warnaserror+ /out:$env:TEMP/aios-check.dll /reference:'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Windows.Forms.dll' /reference:'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Drawing.dll' packages/control-core/src/*.cs\""
+  }
+}

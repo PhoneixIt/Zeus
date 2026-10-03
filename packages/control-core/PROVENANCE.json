@@ -1,0 +1,92 @@
+﻿[
+    {
+        "path":  "packages\\control-core\\src\\Guard.cs",
+        "sha256":  "CCCB03C9644D6B2920A6FB9617B82C77F6FBF96C1CD813298E2E1DC2109615BD",
+        "bytes":  19200,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\src\\Hooks.cs",
+        "sha256":  "6C752800449F75C5C13DB545E98569B9B0C6AD5E1599845CC792E8C529EDBD3A",
+        "bytes":  53788,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\src\\Indicator.cs",
+        "sha256":  "46799EF573FA79157F9F365A0768CA312116004A1508494ED42C96B73607A71A",
+        "bytes":  19087,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\src\\OperatorHost.cs",
+        "sha256":  "811A845C28429A8869FCAF00A9149A79DEF5DFA54E744022873E6499F4FF18C2",
+        "bytes":  94017,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\src\\Uia.cs",
+        "sha256":  "6CC24FB344A64EA2090F4FBB070EB3D2E88F7F19EC5ECED860749B8F17CCDB9B",
+        "bytes":  23248,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\src\\VsEdit.cs",
+        "sha256":  "4C988B7230015A1AF78054FAB6B06614B3A115DEF3DBCA193C99EBF09E302E67",
+        "bytes":  11354,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\driver.mjs",
+        "sha256":  "3E7C81EC74AC8897CF498600FFADD3A36FE34228ECA34DF0DBB498AB5042D871",
+        "bytes":  7400,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\operator-client.mjs",
+        "sha256":  "ED154B60DAA5C78669F7597673221813CFD7165E09758BF5555AB9798A66C868",
+        "bytes":  8942,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\operator.mjs",
+        "sha256":  "0364BF925224DDAC07ED666509F47C5E04450BC7B01ED55B316014B56A40AD6D",
+        "bytes":  21393,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\start-operator-host.mjs",
+        "sha256":  "7924CF33D81FD2C8FE8F432E7C20B6E8595910C2AB6F7C60884DAF5675338F79",
+        "bytes":  5030,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\test\\prove-chord-swallow.mjs",
+        "sha256":  "45C4DBC0C7A94D50A86C744DD1B8F87829A2F63E7C3493D3F25079658EE49726",
+        "bytes":  15329,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\test\\prove-no-self-release.mjs",
+        "sha256":  "702E36B0009FD43BF3B77EEC8992163B6D42DC3B49A1E05CAC813769E51A3865",
+        "bytes":  7113,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\test\\prove-panel-colour.mjs",
+        "sha256":  "B244ACC90FBA1C887F06AD3B9E497AE058F82D21F2C424A45558C566580790A7",
+        "bytes":  4225,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\test\\prove-panel-release.mjs",
+        "sha256":  "AD6271F0DE519E4501E9A45A46E25CD762B063B55C1E7B3F0906F5CCFF2DD3BB",
+        "bytes":  11085,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    },
+    {
+        "path":  "packages\\control-core\\test\\prove-status-truth.mjs",
+        "sha256":  "7F85E4CE000AF32048E0F8949705432140E4576A642B879023B577D9D51224B0",
+        "bytes":  7245,
+        "origin":  "Temp\\opencode\\operator (proven session)"
+    }
+]

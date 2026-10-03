@@ -1,0 +1,11 @@
+﻿node_modules/
+dist/
+*.log
+*.tmp
+.DS_Store
+
+# Build artefacts and locally-recorded screenshots. Never commit a screenshot of the user's
+# desktop - it can contain anything the user had open, including credentials.
+*.png
+packages/control-core/artifacts/
+services/local/state/
