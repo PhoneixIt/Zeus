@@ -52,55 +52,96 @@ A real `SendInput` keystroke carrying the real sentinel, observed by the real
 keyboard ownership proof works and the mouse one does not. That asymmetry is now measured on
 demand rather than assumed.
 
-## P1 - `/scaninput` injects WITHOUT consulting the guard, and with no sentinel
+## RESOLVED - `/scaninput` and `/wmchar` injected without consulting the guard
 
-Found 2026-10-04 while looking for an existing self-test that could close the gui verifier's
-accept path. Not fixed. Not exploited.
+Found 2026-10-04. Fixed 2026-10-04. There were two ungated routes, not one.
 
-`/scaninput` calls `Win.SendInput` with `dwExtraInfo = IntPtr.Zero`. It checks the target
-window and foreground focus, but its block contains **no `Guard.MayInject()` call**, unlike
-`/click`, `/type`, `/scroll`, `/key`, `/move` (one compound gate) and `/click-absolute`.
+`/scaninput` called `Win.SendInput` with `dwExtraInfo = IntPtr.Zero`, and `/wmchar` called
+`PostMessage(WM_CHAR)`. Neither block contained `Guard.MayInject()`, unlike `/click`, `/type`,
+`/scroll`, `/key`, `/move` (one compound gate) and `/click-absolute`.
 
-Empirical confirmation, without injecting anything: with `mayInject=false` in
-`HUMAN_TAKEOVER`, `/scaninput` refused with `target window is not visible` - a target failure,
-not a guard failure. `/click-absolute` refused with `human takeover detected; input suspended`.
-The difference in refusal reason is the proof: `/scaninput` never reached the guard.
+Confirmation without injecting anything: with `mayInject=false`, `/scaninput` refused with
+`target window is not visible` (a target failure) where `/click-absolute` refused with
+`human takeover detected` (a guard failure). Different refusal reason, so the guard was never
+consulted.
 
-**Consequence:** if a caller supplies a valid visible foreground window, `/scaninput` injects
-real keystrokes into it while the operator is paused or emergency-stopped. Because
-`dwExtraInfo` is zero, the hook classifies those events as **human**, so the guard would also
-record a takeover it did not cause.
+**THE FIX IS STRUCTURAL, NOT A PATCH.** Governance was a convention - each injecting route
+remembered to call the guard - and a convention is a boundary that exists only in the author's
+memory. Now:
 
-**Why it was not fixed here:** it is in the injection layer, which is out of scope for the
-mission-engine milestones, and it needs its own bounded change.
+- One `InjectionRoutes` table and one `RequiresPermission()` check at the DISPATCH HEAD, before
+  any route body. A route cannot be live-and-ungated, because no body runs until the gate has.
+- Omission DENIES. A route absent from the table is not injectable, and adding an injecting
+  route without declaring it fails the audit.
+- `PermissionRoutes` is a separate table for routes that GRANT authority without injecting.
+  `/vstype` forced it: it sends no input at all, but mints the scoped, expiring authorization
+  that `/type` physically depends on. Conflating "can act" with "can authorise" is how a
+  permission-granting route ends up ungated because nobody thought of it as an injection.
+- `audit-injection-routes.mjs` parses the source and proves completeness transitively through
+  helper methods, so `/click-absolute -> Click -> Mouse -> SendInput` is seen.
 
-**Suggested invariant for that milestone:** every route that reaches `SendInput` must pass
-through exactly one gate, and the gate must be structural rather than a convention that each
-route remembers to call.
+Measured on the live host after the fix, `mayInject=false`, with a valid visible target:
 
-## P1 - `/hooks` INJECTS, so it cannot be used as a passive observation
+```
+/scaninput       guard=true   state is OBSERVING; the operator must be ARMED to inject input
+/wmchar          guard=true   (same)
+/click-absolute  guard=true   (same)
+/vstype          guard=true   (same)
+/uiainvoke       guard=true   (same)
+```
 
-Found 2026-10-04 by measurement. Characterised, worked around in the mission layer, not fixed.
+**The audit found four bugs in itself before it could be trusted**, and every one reported in
+the wrong direction - which is the dangerous direction for a governance check:
 
-`GET /hooks` calls `Hooks.Report()`, which signals the hook thread to send a real
-sentinel-tagged F24 keystroke through `SendInput` and waits up to 400ms for it to return.
+1. It counted braces inside C# string literals. The hand-built JSON payloads are full of `{` and
+   `}`, so route depths were wrong and `/restore` read as nested inside the UIA group.
+2. It truncated the compound gate at its own first nested `if (path == "/type")`, so `/click`,
+   `/scroll` and `/move` appeared to inject nothing.
+3. It could not distinguish a nested route check from a sibling route, and treated `Handle`
+   (the dispatcher) as an injection helper - producing 41 phantom violations.
+4. Dropping `/vstype` from `PermissionRoutes` did NOT fail the audit, because a route removed
+   from a table cannot be detected by inspecting that table. It now finds permission-granting
+   routes by locating calls to `VsEdit.Grant(` instead.
 
-Measured on this host: eight reads of `/hooks` advanced `livenessProbes` by 7. Six reads of
-`/guard` advanced `operatorEvents` by 0.
+Four negative controls now bite: drop `/scaninput`, drop `/wmchar`, add an undeclared injecting
+route, drop `/vstype` from `PermissionRoutes`.
 
-**Consequence:** an instrument that changes what it measures. The mission audit's first
-version bracketed actions with `/guard` *and* `/hooks` together, so it was partly observing its
-own side effect - and would have reported `operator-proven` for a keystroke it caused itself.
-`readRecord()` now reads only `/guard`, and hook diagnostics are fetched separately through
-`readHookDiagnostics()`, which reports how far the probe counter moved across its own call.
+## RESOLVED (partly) - `/hooks` INJECTS, so it is not a passive observation
 
-There is **no background probe timer**: `SendProbe` is reached only from `AwaitProbe`, which is
-reached only from `Report()`, which is reached only from an HTTP route. An earlier measurement
+Found and characterised 2026-10-04. Split 2026-10-04.
+
+`GET /hooks` calls `Hooks.Report()`, which signals the hook thread to send a real sentinel-tagged
+F24 keystroke through `SendInput` and waits up to 400ms for it to return.
+
+Measured on this host: eight reads advanced `livenessProbes` by 7; six `/guard` reads advanced
+`operatorEvents` by 0. So it was an instrument that changes what it measures. The mission audit's
+first version bracketed actions with both routes and would have reported `operator-proven` for a
+keystroke it had itself caused.
+
+**The split.** `Hooks.Report()` keeps every responsibility it had and now delegates to
+`BuildJson(bool probeFired)`. `Hooks.PassiveDiagnostics()` returns the same counters with
+`probeFired: false` and sends nothing, reachable at `GET /hooks-passive`. Both payloads carry
+`probeFired`, so a reader never has to guess which kind of read they are holding. The mission
+audit's `readRecord()` now uses only the pure `/guard`, and `readHookDiagnostics()` reports how
+far its own read advanced the probe counter.
+
+Measured after the split, same host:
+
+```
+5 reads of /hooks-passive  ->  operatorEvents delta 0    probeFired=false
+5 reads of /hooks          ->  operatorEvents delta 5    probeFired=true
+```
+
+**Still open, deliberately.** `/hooks` remains ungated, and that is the watchdog working rather
+than a hole: a hook Windows has silently detached can only be detected by sending it something,
+and a dead hook would otherwise hide by refusing everything. F24 is bound by no application, is
+not a reserved chord, and carries no target. Gating it would be the actual defect - so the audit
+classifies it as `instrumentation` and asserts it stays ungated, rather than leaving that as an
+unstated judgement.
+
+There is also **no background probe timer**: `SendProbe` is reached only from `AwaitProbe`, which
+is reached only from `Report()`, which is reached only from an HTTP route. An earlier measurement
 that "waited 13 seconds and watched a probe appear" was measuring its own polling.
-
-**Suggested fix for that milestone:** split the passive diagnostics from the active self-test -
-a route that reports hook state without emitting anything.
-
 ## Release control - NOT PROVEN
 
 The operator has no proven way for a human to resume it after takeover.

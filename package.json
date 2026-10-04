@@ -16,6 +16,7 @@
                     "mission:two-step":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-two-step.ts",
                     "mission:filesystem":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-filesystem.ts",
                     "mission:gui-audit":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-audit.ts",
-                    "mission:gui-accept":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-accept.ts"
+                    "mission:gui-accept":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-accept.ts",
+                    "control:audit-routes":  "node packages/control-core/audit-injection-routes.mjs"
                 }
 }

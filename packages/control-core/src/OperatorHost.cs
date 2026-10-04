@@ -569,6 +569,81 @@ namespace PortAiOperator
             return Json("{\"ok\":false,\"refused\":\"" + refused + "\",\"requiredAction\":\"" + requiredAction + "\",\"guard\":" + g + "}");
         }
 
+        // ================================================================ THE INJECTION GATE
+        //
+        // Every route that can cause a user-visible change on this machine. The gate at the
+        // dispatch head consults this table, so membership here is what makes a route capable
+        // of injecting at all.
+        //
+        // THE DEFAULT IS DENIAL. A route absent from this list is refused by the structural
+        // audit (see audit-injection-routes.mjs) if it turns out to reach SendInput,
+        // PostMessage, or a UI Automation write. That is the opposite of the previous design,
+        // where a new injecting route was live and unsafely gated until someone remembered to
+        // gate it.
+        //
+        // Read-only routes are deliberately NOT here: /uia, /uiasurvey, /uiafind, /uiaread,
+        // /uiselected, /windows, /screen.png, /display, /hooks and friends observe and cannot
+        // act. Note /hooks is absent for a different reason - it EMITS (its liveness probe),
+        // which is instrument self-test rather than acting on the user's world. See the
+        // passive/active split below.
+        static readonly HashSet<string> InjectionRoutes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "/click",            // SendInput, verified foreground
+            "/type",             // SendInput
+            "/scroll",           // SendInput
+            "/key",              // SendInput
+            "/move",             // SendInput cursor move
+            "/click-absolute",   // SendInput at a fixed screen point, no app target
+            "/scaninput",        // SendInput by scancode - WAS UNGATED
+            "/wmchar",           // PostMessage(WM_CHAR) - WAS UNGATED
+            "/uiainvoke",        // UI Automation InvokePattern - acts with no input event
+            "/uiasetvalue",      // UI Automation ValuePattern - acts with no input event
+            "/uiafocus",         // UI Automation focus change
+        };
+
+        // Routes that GRANT injection authority without injecting anything themselves.
+        //
+        // `/vstype` is the case that made this category necessary. It sends no input at all: it
+        // asserts no editor is open, asks VS Code to open exactly one named file through VS
+        // Code's own CLI, confirms the window title now names that file, and mints a
+        // short-lived authorization bound to that hwnd and that path. A later `/type` physically
+        // cannot send keystrokes to a VS Code window without it.
+        //
+        // So it is not an injection route - the audit confirms it reaches no input primitive -
+        // but it is unmistakably a route that HANDS OUT PERMISSION, and it needs the same gate.
+        // Listing it separately keeps the two ideas apart instead of blurring "can act" into
+        // "can authorise", which is how a permission-granting route ends up ungated because
+        // nobody thought of it as an injection.
+        static readonly HashSet<string> PermissionRoutes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "/vstype",           // grants a scoped, expiring editor authorization
+        };
+
+        /// Every route that must not run unless the guard permits injection.
+        static bool RequiresPermission(string path)
+        {
+            return InjectionRoutes.Contains(path) || PermissionRoutes.Contains(path);
+        }
+
+        // Routes that EMIT into the input stream without acting on the user's world.
+        //
+        // /hooks calls Hooks.Report(), which sends one sentinel-tagged F24 keystroke so the
+        // hook can prove it is still in the chain. It is not listed above because it is
+        // instrumentation, not an action: F24 is bound by no application, it carries no target,
+        // and gating it would mean a silently-detached hook could never be detected - it
+        // would hide by refusing everything.
+        //
+        // The consequence, measured on this host: eight reads of /hooks advanced
+        // livenessProbes by 7. It is therefore NOT a passive observation, and an audit that
+        // brackets actions with it is partly measuring its own side effect.
+        //
+        // PassiveDiagnostics() is the passive counterpart: identical counters, no probe.
+        static readonly HashSet<string> SelfTestRoutes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "/hooks",
+            "/indicator",
+        };
+
         static string Handle(string method, string path, string query, string body)
         {
             if (path == "/guard") return Json(Guard.Json());
@@ -577,6 +652,15 @@ namespace PortAiOperator
             // hook's own state was previously unobservable: SetWindowsHookEx could fail, every
             // keystroke would reach the desktop, and every automated test would still pass.
             if (path == "/hooks") return Json(Hooks.Report());
+
+            // PASSIVE hook diagnostics: the same counters, with NO liveness probe.
+            //
+            // /hooks emits a real sentinel-tagged F24 keystroke every time it is read - measured
+            // at 7 probes per 8 reads on this host - so it is not an observation and cannot be
+            // used as one. This route exists so an audit can read hook state without changing
+            // it. `probeFired` is in both payloads so a reader never has to guess which kind
+            // of read they are holding.
+            if (path == "/hooks-passive") return Json(Hooks.PassiveDiagnostics());
             // Turns the per-event keyboard trace on. Needed because a chord that is not
             // swallowed and a chord whose modifiers were not seen as held are indistinguishable
             // from any counter alone.
@@ -1542,6 +1626,49 @@ namespace PortAiOperator
                             {
                                 int ci = req.IndexOf("\r\n\r\n", StringComparison.Ordinal);
                                 if (ci >= 0) body = req.Substring(ci + 4);
+                            }
+
+                            // ============================================================
+                            // THE INJECTION GATE. One place. Before any route body.
+                            // ============================================================
+                            //
+                            // Governance used to be a CONVENTION here: each injecting route
+                            // remembered to call Guard.MayInject() near its top. Two did not,
+                            // and nothing failed - no test, no refusal, no visible symptom. They
+                            // were found by reading the dispatch table:
+                            //
+                            //   /scaninput  SendInput with dwExtraInfo = 0. Types into the
+                            //               foreground window while the operator is paused, and
+                            //               because the event is untagged the hook files it as
+                            //               HUMAN, so the guard would also record a takeover it
+                            //               did not cause.
+                            //   /wmchar     PostMessage(WM_CHAR). Drives a control directly.
+                            //               Same consequence.
+                            //
+                            // Confirmed empirically without injecting anything: with
+                            // mayInject=false in HUMAN_TAKEOVER, /scaninput refused with
+                            // "target window is not visible" - a TARGET failure - where
+                            // /click-absolute refused with "human takeover detected" - a GUARD
+                            // failure. The difference in refusal reason is the proof that the
+                            // guard was never consulted.
+                            //
+                            // A boundary enforced by remembering is not a boundary. This one
+                            // cannot be forgotten: no route body executes until it has run, and
+                            // adding a route to InjectionRoutes is the only way to make it
+                            // injectable - an omission denies by default rather than permits by
+                            // default.
+                            //
+                            // The per-route MayInject() checks further down are kept as defence
+                            // in depth. They are no longer load-bearing.
+                            if (RequiresPermission(path) && !Guard.MayInject())
+                            {
+                                string ge = "{\"ok\":false,\"refused\":true,\"guard\":true,\"error\":\"" + Esc(Guard.WhyRefused()) + "\"}";
+                                byte[] gb = Encoding.UTF8.GetBytes(ge);
+                                byte[] gh = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + gb.Length + "\r\nConnection: close\r\n\r\n");
+                                ns.Write(gh, 0, gh.Length);
+                                ns.Write(gb, 0, gb.Length);
+                                Console.WriteLine("INJECTION GATE refused " + path + ": " + Guard.WhyRefused());
+                                continue;
                             }
 
                             string response;

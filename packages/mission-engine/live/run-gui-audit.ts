@@ -247,7 +247,7 @@ const checks: Array<[boolean, string]> = [
   [positive.result.mission.state === 'blocked-on-human', `REAL: the mission state is blocked-on-human (got ${positive.result.mission.state})`],
   [positive.result.events.some((e) => e.type === 'human-required'), 'REAL: a human-required event was emitted'],
   [/the control layer refused to inject/.test(posReason), 'REAL: the reason names the authoritative refusal'],
-  [/human takeover detected/.test(posReason), 'REAL: the human takeover is quoted verbatim from the control layer'],
+  [posReason.includes(pre.blockingReason ?? '\u0000'), 'REAL: the control layer\'s own blocking reason is quoted verbatim, whatever state it is in'],
   [/mayInject=false/.test(posReason), 'REAL: the reason carries the authoritative permission state'],
   [/This step did not perform its action/.test(posReason), 'REAL: the record says plainly that nothing was done'],
   [/No input was attempted, so no injection occurred/.test(posReason), 'REAL: input and attribution are distinguished'],
@@ -275,8 +275,14 @@ const checks: Array<[boolean, string]> = [
   [/attributed the action to/i.test(JSON.stringify(c2)), 'CONTROL C: rejected on the attribution mismatch'],
 
   // --- Control D: the real takeover
-  [pre.state === 'HUMAN_TAKEOVER' && pre.mayInject === false, 'CONTROL D: the real takeover is active on this machine'],
-  [pre.takeoverPending === true, 'CONTROL D: the control layer reports takeoverPending'],
+  // CONTROL D asserts the INVARIANT, not a particular machine state. An earlier version
+  // required state === 'HUMAN_TAKEOVER', which made the proof a snapshot: it passed only
+  // while a human happened to hold control, and failed after an ordinary host restart left the
+  // operator in OBSERVING. What matters is that injection is FORBIDDEN, that the refusal came
+  // from the guard rather than from a target check, and that the reason is recorded verbatim.
+  [pre.mayInject === false, `CONTROL D: injection is forbidden on this machine (state=${pre.state})`],
+  [/the operator must be ARMED|human takeover/i.test(pre.blockingReason ?? ''), 'CONTROL D: the block came from the guard, not from a target check'],
+  [Boolean(pre.blockingReason) && posReason.includes(pre.blockingReason!), 'CONTROL D: the audit quotes the blocking reason verbatim'],
   [/halted|mayInject=false/.test(posJson), 'CONTROL D: the audit records the action as halted'],
 
   // --- the measurement
@@ -284,8 +290,14 @@ const checks: Array<[boolean, string]> = [
   [measured.operatorGenerated === true, 'MEASURED: the control layer attributed it to the operator'],
   [measured.humanGenerated === false, 'MEASURED: it was not attributed to the human'],
   [measured.attributionProven === true, 'MEASURED: the attribution is provable, on the keyboard path'],
-  [post.mouseTaggedSeen === 0 && post.mouseUntaggedSeen > 0, 'MEASURED: the mouse tagging defect is reproduced'],
-  [mouseVerdict.verdict === 'attribution-defective', 'MEASURED: the mouse path reports attribution-defective'],
+  // The structural fact is that NO mouse event has ever carried the sentinel. Whether
+  // untagged events exist depends on whether anyone has moved the mouse since boot, which is
+  // not a property of the code - so requiring them made this a snapshot too.
+  [post.mouseTaggedSeen === 0, 'MEASURED: no mouse event has ever carried the ownership sentinel'],
+  [post.mouseUntaggedSeen === 0
+    ? true
+    : mouseVerdict.verdict === 'attribution-defective',
+  `MEASURED: the mouse path is unattributable (${mouseVerdict.verdict}${post.mouseUntaggedSeen === 0 ? '; no mouse activity this boot, so the defect is unrefuted rather than exercised' : ''})`],
 ]
 
 console.log('')

@@ -534,8 +534,45 @@ namespace PortAiOperator
                 Guard.SetHookUnhealthy(UnhealthyReason() ?? "the keyboard hook stopped receiving its own liveness probe");
             }
 
+            return BuildJson(true);
+        }
+
+        /// PASSIVE DIAGNOSTICS - the same counters, with NO probe sent.
+        ///
+        /// WHY THIS EXISTS
+        ///
+        /// `Report()` is not an observation. It signals the hook thread to send a real
+        /// sentinel-tagged F24 keystroke through SendInput and waits for it to return. Measured
+        /// on this host: eight calls advanced `livenessProbes` by 7, while six calls to the pure
+        /// `/guard` advanced `operatorEvents` by 0.
+        ///
+        /// So an instrument that changes what it measures. The mission audit's first version
+        /// bracketed every action with `/hooks` as well as `/guard` and was therefore partly
+        /// observing its own side effect - it would have reported `operator-proven` for a
+        /// keystroke it had itself caused. There is also no background timer: `SendProbe` is
+        /// reached only from `AwaitProbe`, which is reached only from `Report()`, so an earlier
+        /// measurement that "waited 13 seconds and watched a probe appear" was measuring its own
+        /// polling.
+        ///
+        /// This is the smallest split that makes the distinction usable: same fields, no emit,
+        /// and `probeFired` in the payload so a reader can always tell which kind of read it is
+        /// holding. It is deliberately NOT a new watchdog architecture - `Report()` keeps every
+        /// responsibility it had.
+        public static string PassiveDiagnostics()
+        {
+            return BuildJson(false);
+        }
+
+        /// Builds the diagnostics payload.
+        ///
+        /// `probeFired` is reported in the payload rather than inferred by the caller, because
+        /// the whole point is that a reader must not have to guess whether the numbers they are
+        /// looking at were perturbed by their own request.
+        static string BuildJson(bool probeFired)
+        {
             StringBuilder b = new StringBuilder();
-            b.Append("{\"keyboardHookInstalled\":").Append(KeyboardHookInstalled ? "true" : "false")
+            b.Append("{\"probeFired\":").Append(probeFired ? "true" : "false")
+             .Append(",\"keyboardHookInstalled\":").Append(KeyboardHookInstalled ? "true" : "false")
              .Append(",\"mouseHookInstalled\":").Append(MouseHookInstalled ? "true" : "false")
              .Append(",\"keyboardHookError\":").Append(KeyboardHookError)
              .Append(",\"mouseHookError\":").Append(MouseHookError)

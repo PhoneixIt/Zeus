@@ -261,7 +261,11 @@ const checks: Array<[boolean, string]> = [
   [/attributed the action to/i.test(JSON.stringify(c2)), 'CONTROL C: rejected on the attribution mismatch, after a REAL injection passed the baseline check'],
 
   // --- the safety boundary is unchanged
-  [pre.mayInject === false && pre.state === 'HUMAN_TAKEOVER', 'SAFETY: human takeover was in force throughout'],
+  // The invariant, not a particular state. Requiring HUMAN_TAKEOVER made this fail after an
+  // ordinary restart left the operator in OBSERVING - which is still a perfectly safe state,
+  // and refusing injection in it is the correct behaviour.
+  [pre.mayInject === false, `SAFETY: injection was forbidden throughout (state=${pre.state})`],
+  [/the operator must be ARMED|human takeover/i.test(pre.blockingReason ?? ''), 'SAFETY: the refusal came from the guard'],
   [diagnostics.mouseTaggedSeen === 0, 'SAFETY: the mouse sentinel behaviour is exactly as measured before'],
   [diagnostics.livenessFailures === 0, 'SAFETY: no liveness failures were produced'],
 ]
