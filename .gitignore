@@ -9,3 +9,7 @@ dist/
 *.png
 packages/control-core/artifacts/
 services/local/state/
+
+# Runtime state written by the control host: it contains a live port and an
+# auth token. Committing it would leak a credential and confuse rollbacks.
+packages/control-core/host.json

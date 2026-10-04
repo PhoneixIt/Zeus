@@ -35,6 +35,15 @@ export type StepOutcome =
   | { kind: 'failed'; reason: string; recovered?: boolean }
   /** Needs a human: an approval, a credential, a judgement call. */
   | { kind: 'needs-human'; reason: string }
+  /**
+   * The step cannot proceed because the world is not what the plan assumed.
+   *
+   * Distinct from `failed` because the remedy differs. A failure says "this approach did
+   * not work"; replan-required says "this approach is no longer VALID" - the target closed,
+   * the focus moved, a precondition vanished. Retrying such a step would be retrying a plan
+   * for a world that no longer exists (§16).
+   */
+  | { kind: 'replan-required'; reason: string; invalidation: PlanInvalidation }
 
 /**
  * Evidence that something actually happened.
@@ -106,8 +115,26 @@ export interface Step {
   readonly mode: ExecutionMode
   /** Why this step is needed - what breaks without it. */
   readonly rationale: string
+  /**
+   * Steps that must reach a COMPLETING outcome before this one may start.
+   *
+   * "Completing", specifically: a dependency that failed or is waiting on a human BLOCKS this
+   * step rather than being treated as satisfied. A dependency list that meant merely "was
+   * attempted" would let a failed step cascade into a chain of confident-looking successes,
+   * which is the same defect shape as inferring completion from having run.
+   */
+  readonly dependsOn?: readonly string[]
+  /**
+   * The tool this step calls, resolved through the tool router.
+   *
+   * Named here rather than inlined so the audit layer can record WHICH tool ran, not merely
+   * that something ran. §31 requires the user to be able to see the active tool.
+   */
+  readonly tool?: string
   readonly status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
   readonly result?: StepResult
+  /** How many times this step has been attempted. Retries are bounded and counted. */
+  readonly attempts?: number
 }
 
 export type ExecutionMode =
