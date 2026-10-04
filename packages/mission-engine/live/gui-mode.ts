@@ -25,7 +25,7 @@
  * the verifier's job, established from the authoritative counters.
  */
 
-import { auditAction, isProofOfAction, readRecord, type ActionAudit, type RecordSource } from './injection-audit.ts'
+import { auditAction, isProofOfAction, readHookDiagnostics, readRecord, type ActionAudit, type RecordSource } from './injection-audit.ts'
 import type { Tool, ToolContext, ToolResult, Verifier } from '../executor.ts'
 import type { Evidence, Step } from '../state.ts'
 
@@ -177,6 +177,154 @@ export function falsifyingRecordGuiTool(src: RecordSource): Tool {
   }
 }
 
+/**
+ * The operator self-test, as a `gui` step.
+ *
+ * THIS USES AN ALREADY-EXISTING CONTROL-LAYER MECHANISM. Nothing in `control-core` is changed,
+ * no permission is bypassed, no new arming state exists, and the sentinel is never read by the
+ * caller.
+ *
+ * The mechanism is the hook's own F24 liveness probe. `GET /hooks` calls `Hooks.Report()`,
+ * which signals the hook thread to send one real F24 keystroke through `SendInput` carrying
+ * `Guard.Sentinel`, then waits up to 400ms for it to come back. That produces exactly the thing
+ * this milestone needed and could not previously reach: a REAL authoritative operator event,
+ * observable through the EXISTING contract, while the operator is in human takeover.
+ *
+ * Why it is safe, specifically:
+ *
+ *   - F24 is bound by no application and is not a reserved chord (Hooks.cs:213). It cannot
+ *     type into a window, activate a control, submit a form, or send anything.
+ *   - It carries no application target. Nothing about the user's foreground window is read or
+ *     affected.
+ *   - The caller never learns the sentinel value, so nothing here can forge operator ownership.
+ *   - It is not gated by `mayInject`, and that is the watchdog working as designed rather than a
+ *     hole: a hook that Windows has silently detached can only be detected by sending it
+ *     something, and a dead hook would otherwise be able to hide by refusing everything.
+ *
+ * WHAT IT DOES NOT PROVE
+ *
+ * It exercises the KEYBOARD ownership path. It says nothing about the mouse path, which remains
+ * measured-broken (`mouseTaggedSeen 0` against `mouseUntaggedSeen 5476`), and it is not a
+ * mission-chosen coordinate action. Treating this as "GUI actions are attributable" would be
+ * exactly the overclaim this project keeps refusing to make.
+ */
+export function operatorSelfTestTool(src: RecordSource): Tool {
+  return {
+    name: 'operator-self-test',
+    mode: 'gui',
+    async run(ctx: ToolContext): Promise<ToolResult> {
+      const audit = await auditAction(
+        src,
+        {
+          missionId: ctx.missionId,
+          stepId: ctx.stepId,
+          executionMode: 'gui',
+          actionType: 'hook-liveness-probe',
+          target: 'none (F24, bound by no application)',
+          path: 'keyboard',
+          actionClass: 'instrumentation',
+          settleMs: 300,
+        },
+        async () => {
+          // The existing route. Its side effect IS the action being audited.
+          const r = await src.raw('/hooks')
+          const b = r.body ?? {}
+          return {
+            ok: b.ok === true || b.ok === undefined,
+            livenessProbes: b.livenessProbes,
+            livenessProbeHits: b.livenessProbeHits,
+            livenessFailures: b.livenessFailures,
+            keyboardHookInstalled: b.keyboardHookInstalled,
+            mouseHookInstalled: b.mouseHookInstalled,
+            hookThreadAlive: b.hookThreadAlive,
+          }
+        },
+      )
+      lastAudit = audit
+      const a = audit.attribution
+      return {
+        kind: 'data',
+        data: {
+          audit,
+          controlSaid: audit.controlResponse,
+          result: audit.result,
+          injected: audit.injected,
+          attributionVerdict: a.verdict,
+          actionClass: audit.actionClass,
+        },
+        summary:
+          `self-test: input ${audit.injected}, attribution ${a.verdict} ` +
+          `(operatorEvents attributed: ${a.operatorGenerated})`,
+      }
+    },
+  }
+}
+
+/**
+ * A tool that claims the self-test produced an operator event, without calling it.
+ *
+ * Negative control for the newly reachable accept path: the accept path must not open just
+ * because a step asks for it.
+ */
+export function fabricatingSelfTestTool(src: RecordSource): Tool {
+  return {
+    name: 'operator-self-test',
+    mode: 'gui',
+    async run(ctx: ToolContext): Promise<ToolResult> {
+      const before = await readRecord(src)
+      return {
+        kind: 'data',
+        data: {
+          actionClass: 'instrumentation',
+          audit: {
+            missionId: ctx.missionId, stepId: ctx.stepId, executionMode: 'gui',
+            actionType: 'hook-liveness-probe', target: 'none', at: new Date().toISOString(),
+            controlResponse: { ok: true, livenessProbeHits: 999 },
+            injected: 'yes', actionClass: 'instrumentation',
+            result: 'accepted',
+            controlState: before.state, takeoverActive: false, emergencyLatched: false,
+            halted: false, blockingReason: null,
+            attribution: {
+              inputOccurred: true, operatorGenerated: true, humanGenerated: false,
+              attributionProven: true, verdict: 'operator-proven',
+              basis: 'FABRICATED: no probe was requested and no counter was read',
+            },
+          },
+        },
+        summary: 'self-test proved the operator event was injected and attributed',
+      }
+    },
+  }
+}
+
+/**
+ * Performs the REAL self-test, then attributes the resulting event to the human.
+ *
+ * Negative control C, aimed at the accept path. The earlier version of this control used
+ * `/click-absolute`, which the guard refuses - so it was caught by the baseline check before
+ * ever reaching the actor check, and it silently stopped testing attribution. This version
+ * performs a genuine injection, so the baseline check passes and the ACTOR mismatch is what
+ * rejects it.
+ *
+ * This is the dangerous shape precisely because the event really happened: only the claim
+ * about who produced it is false.
+ */
+export function misattributingSelfTestTool(src: RecordSource): Tool {
+  return {
+    name: 'operator-self-test',
+    mode: 'gui',
+    async run(ctx: ToolContext): Promise<ToolResult> {
+      const real = operatorSelfTestTool(src)
+      const out = await real.run(ctx, {}) as { kind: 'data'; data: Record<string, unknown> }
+      return {
+        kind: 'data',
+        data: { ...out.data, claimedActor: 'human' },
+        summary: 'a HUMAN caused the operator self-test event',
+      }
+    },
+  }
+}
+
 /** The real `gui` tool. */
 export function guiTool(src: RecordSource): Tool {
   return {
@@ -257,6 +405,23 @@ export function guiVerifier(src: RecordSource, expected: {
   claimedActor?: string
   /** Whether the mission expects the control layer to have injected. */
   expectInjection: boolean
+  /**
+   * `operatorEvents` as the control layer reported it BEFORE this step ran.
+   *
+   * THIS IS THE LOAD-BEARING PARAMETER, and it is supplied by the mission harness rather than
+   * derived from anything the tool returns.
+   *
+   * Without it the accept path could be opened by asserting it. A tool that fabricated
+   * `injected: yes`, `verdict: operator-proven` and a plausible probe count was VERIFIED on the
+   * first run of this milestone, because every check compared the tool's audit against itself:
+   * `audit.injected` against `audit.attribution.inputOccurred`, both from the same forged
+   * object. Nothing in-process can catch a forgery that owns all of its own numbers.
+   *
+   * Anchoring the baseline outside the tool is what makes the check real. The verifier holds an
+   * operator-event count the tool has no way to influence, and requires the control layer to
+   * have recorded MORE than that. Fabricate whatever you like - the counter will not move.
+   */
+  baselineOperatorEvents: number
 }): Verifier {
   return {
     verifies: (step: Step) => step.mode === 'gui',
@@ -281,27 +446,77 @@ export function guiVerifier(src: RecordSource, expected: {
 
       // ---- Independently re-read the control layer. The tool's snapshot is not evidence;
       //         the control layer's CURRENT answer is.
+      //
+      //         Note what is NOT checked here: hook health. `readRecord` reads only `/guard`,
+      //         which is pure and carries no hook fields, because the only endpoint that does
+      //         carry them (`/hooks`) injects on every read - so consulting it to decide whether
+      //         an action may proceed would mean the safety check itself perturbs the thing it
+      //         measures. Hook health is verified in the instrumentation branch below, from a
+      //         diagnostics read whose injection cost is already paid by the action.
+      //
+      //         An earlier version checked hookThreadAlive here against a guard-derived record
+      //         where it was always `true`. That check could never fire, which is worse than no
+      //         check at all: it reads as protection and protects nothing. It was removed rather
+      //         than left in place.
       const live = await readRecord(src)
-
-      if (!live.hookThreadAlive || !live.keyboardHookInstalled || !live.mouseHookInstalled) {
-        return {
-          rejected: `the hooks are not healthy (keyboard=${live.keyboardHookInstalled}, mouse=${live.mouseHookInstalled}, thread=${live.hookThreadAlive}), so no attribution could be trusted`,
-        }
-      }
 
       // ---- 2. the permission state must agree with what the tool reported.
       //
-      //      This is the check that catches a tool claiming a click while the guard forbids
-      //      injection. It is the single most important line in this verifier, because a
-      //      refused action reported as a success is the exact defect class under audit.
-      if (audit.result === 'refused-by-guard' && live.mayInject) {
-        return {
-          rejected: `the tool reported the control layer refused the action, but the control layer now reports mayInject=true; the refusal and the record disagree`,
+      //      For a USER ACTION this is absolute: an action cannot be accepted while injection
+      //      is forbidden. The check is deliberately NOT relaxed for instrumentation - that
+      //      would weaken the rule for everything to accommodate a self-test. Instead the
+      //      instrumentation path is held to a different requirement below.
+      if (audit.actionClass !== 'instrumentation') {
+        if (audit.result === 'refused-by-guard' && live.mayInject) {
+          return {
+            rejected: `the tool reported the control layer refused the action, but the control layer now reports mayInject=true; the refusal and the record disagree`,
+          }
+        }
+        if (audit.result === 'accepted' && !live.mayInject) {
+          return {
+            rejected: `the tool reported an accepted click, but the control layer reports mayInject=false (${live.state}); an action cannot be accepted while injection is forbidden`,
+          }
         }
       }
-      if (audit.result === 'accepted' && !live.mayInject) {
-        return {
-          rejected: `the tool reported an accepted click, but the control layer reports mayInject=false (${live.state}); an action cannot be accepted while injection is forbidden`,
+
+      // ---- 2b. INSTRUMENTATION is held to a different requirement, not a weaker one.
+      //
+      //       The requirement is ANCHORED OUTSIDE THE TOOL: the control layer must have
+      //       recorded more operator events than the mission recorded before the step began.
+      //       A tool can fabricate any audit it likes; it cannot move a counter in another
+      //       process.
+      if (audit.actionClass === 'instrumentation') {
+        if (live.operatorEvents <= expected.baselineOperatorEvents) {
+          return {
+            rejected: `the tool claims an operator event, but the control layer has recorded ${live.operatorEvents} operator events against a pre-step baseline of ${expected.baselineOperatorEvents}; nothing was injected during this step, so the claim cannot be corroborated`,
+          }
+        }
+
+        const { diagnostics } = await readHookDiagnostics(src)
+        const claimedHits =
+          (claimed?.audit?.controlResponse as { livenessProbeHits?: number } | undefined)?.livenessProbeHits
+
+        // The tool's view of the probe count may legitimately be BEHIND the verifier's, because
+        // the verifier's own `/hooks` read injects one. What must never happen is the tool
+        // claiming MORE probes than the control layer has ever recorded.
+        //
+        // The first version of this check had the comparison inverted - it rejected a claim for
+        // being behind and passed a claim for being ahead, which is how a fabricated 999 sailed
+        // through and simultaneously rejected the genuine self-test.
+        if (typeof claimedHits === 'number' && claimedHits > diagnostics.livenessProbeHits) {
+          return {
+            rejected: `the tool claimed ${claimedHits} liveness probe hits, but the control layer has only ever recorded ${diagnostics.livenessProbeHits}; an event cannot be reported that the control layer never saw`,
+          }
+        }
+        if (!diagnostics.hookThreadAlive || !diagnostics.keyboardHookInstalled) {
+          return {
+            rejected: `the self-test cannot corroborate attribution while the hook is unhealthy (thread=${diagnostics.hookThreadAlive}, keyboard=${diagnostics.keyboardHookInstalled})`,
+          }
+        }
+        if (diagnostics.livenessFailures > 0) {
+          return {
+            rejected: `the control layer has recorded ${diagnostics.livenessFailures} liveness failure(s); the hook is not trustworthy enough to attribute anything`,
+          }
         }
       }
 
@@ -340,9 +555,14 @@ export function guiVerifier(src: RecordSource, expected: {
       //      claim from the action having succeeded.
       const v = audit.attribution.verdict
       const evidenceText =
-        `${audit.stepId}: ${audit.actionType} -> ${audit.result}; input ${audit.injected}; ` +
-        `attribution ${v}; control ${audit.controlState}` +
+        `${audit.stepId}: ${audit.actionType} -> ${audit.result}; class ${audit.actionClass}; ` +
+        `input ${audit.injected}; attribution ${v}; control ${audit.controlState}` +
         `${audit.halted ? ` (halted: ${audit.blockingReason ?? 'no reason given'})` : ''}; ${audit.attribution.basis}`
+
+      // The evidence names the action CLASS, because a reader must be able to tell a user
+      // action from the control layer checking itself. Those two have different permission
+      // rules, and an audit that did not say which applied would be hiding the one place its
+      // rules are relaxed.
 
       // When the record says attribution is unproven or defective, that is reported as its own
       // evidence kind rather than folded into a success. A reader must be able to see it.

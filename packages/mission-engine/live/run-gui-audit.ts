@@ -31,7 +31,7 @@ import {
   CONTROLLED_TARGET, falsifyingRecordGuiTool, guiTool, guiVerifier,
   lyingGuiTool, misattributingGuiTool,
 } from './gui-mode.ts'
-import { attribute, readRecord, type RecordSource } from './injection-audit.ts'
+import { attribute, readHookDiagnostics, readRecord, type RecordSource } from './injection-audit.ts'
 import type { ControlSurface } from '../../governance/contract.ts'
 
 const INJECTION = ['type', 'click', 'doubleClick', 'move', 'key', 'pressKey', 'drag', 'scroll']
@@ -185,18 +185,19 @@ describe('CONTROL C - wrong actor attribution', controlC)
 
 console.log('')
 console.log('=== MEASUREMENT: a REAL injected event, observed without forging anything ===')
-console.log('  The host injects its own F24 liveness probe on a timer, through the real input')
-console.log('  stack, carrying the real ownership sentinel. This mission does not inject')
-console.log('  anything and does not read the sentinel value; it only watches the authoritative')
-console.log('  counters the control core maintains.')
+console.log('  The host sends its own F24 liveness probe through the real input stack, carrying')
+console.log('  the real ownership sentinel. This mission does not inject anything, does not read')
+console.log('  the sentinel, and does not cause the event by observing: it REQUESTS the existing')
+console.log('  self-test via GET /hooks and then watches the authoritative counters.')
+console.log('  (An earlier version of this measurement simply waited 13 seconds. That only ever')
+console.log('  appeared to work because readRecord() itself called /hooks - and therefore caused')
+console.log('  the probe it was about to take credit for observing. There is no background timer.')
 const m0 = await readRecord(client)
-await new Promise((r) => setTimeout(r, 13000))
+await client.raw('/hooks')
 const m1 = await readRecord(client)
 const measured = attribute(m0, m1, 'keyboard')
 console.log(`  operatorEvents  ${m0.operatorEvents} -> ${m1.operatorEvents}`)
 console.log(`  humanEvents     ${m0.humanEvents} -> ${m1.humanEvents}`)
-console.log(`  livenessProbes  ${m0.livenessProbes} -> ${m1.livenessProbes}`)
-console.log(`  livenessHits    ${m0.livenessProbeHits} -> ${m1.livenessProbeHits}`)
 console.log(`  verdict         ${measured.verdict}`)
 console.log(`  basis           ${measured.basis}`)
 console.log('')
@@ -205,7 +206,7 @@ console.log('  >>> B  operator-generated ... ' + measured.operatorGenerated)
 console.log('  >>> C  human-generated ...... ' + measured.humanGenerated)
 console.log('  >>> D  attribution proven ... ' + measured.attributionProven)
 
-const post = await readRecord(client)
+const { diagnostics: post } = await readHookDiagnostics(client)
 console.log('')
 console.log('=== MEASUREMENT: the mouse tagging path, as it stands ===')
 console.log(`  mouseEventsSeen     ${post.mouseEventsSeen}`)

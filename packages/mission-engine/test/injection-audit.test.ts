@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
-import { attribute, auditAction, isProofOfAction, readRecord, type ControlRecord, type RecordSource } from '../live/injection-audit.ts'
+import { attribute, auditAction, isProofOfAction, readHookDiagnostics, readRecord, type ControlRecord, type RecordSource } from '../live/injection-audit.ts'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
 import { falsifyingRecordGuiTool, guiTool, guiVerifier, lyingGuiTool } from '../live/gui-mode.ts'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
@@ -183,7 +183,7 @@ const goodAudit = (over: Record<string, unknown> = {}) => ({
 })
 
 test('a GUI claim with no audit attached is rejected - there is nothing to verify', async () => {
-  const v = guiVerifier(source(rec()), { expectInjection: true })
+  const v = guiVerifier(source(rec()), { expectInjection: true, baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, { ok: true, claimed: 'clicked' })
   assert.ok('rejected' in out)
   assert.match((out as { rejected: string }).rejected, /no audit attached/i)
@@ -192,14 +192,14 @@ test('a GUI claim with no audit attached is rejected - there is nothing to verif
 test('a tool-reported success alone is insufficient, even with a well-formed audit', async () => {
   // expectInjection true, but the audit says no input occurred. The tool's "ok" is not a claim
   // the verifier accepts on its own.
-  const v = guiVerifier(source(rec()), { expectInjection: true })
+  const v = guiVerifier(source(rec()), { expectInjection: true, baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, { ok: true, audit: goodAudit() })
   assert.ok('rejected' in out)
   assert.match((out as { rejected: string }).rejected, /required a real injection/i)
 })
 
 test('an UNEXPECTED injection is rejected, not accepted as good news', async () => {
-  const v = guiVerifier(source(rec()), { expectInjection: false })
+  const v = guiVerifier(source(rec()), { expectInjection: false, baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, {
     ok: true,
     audit: goodAudit({
@@ -215,7 +215,7 @@ test('an UNEXPECTED injection is rejected, not accepted as good news', async () 
 })
 
 test('an incorrect actor attribution is rejected against the control layer record', async () => {
-  const v = guiVerifier(source(rec()), { expectInjection: true, claimedActor: 'human' })
+  const v = guiVerifier(source(rec()), { expectInjection: true, claimedActor: 'human', baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, {
     ok: true,
     claimedActor: 'human',
@@ -233,7 +233,7 @@ test('an incorrect actor attribution is rejected against the control layer recor
 
 test('a claim of acceptance while injection is forbidden is rejected as impossible', async () => {
   const forbidden = rec({ state: 'HUMAN_TAKEOVER', mayInject: false, inputPermission: 'BLOCKED', takeoverPending: true })
-  const v = guiVerifier(source(forbidden), { expectInjection: true })
+  const v = guiVerifier(source(forbidden), { expectInjection: true, baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, {
     ok: true,
     audit: goodAudit({
@@ -248,17 +248,40 @@ test('a claim of acceptance while injection is forbidden is rejected as impossib
   assert.match((out as { rejected: string }).rejected, /cannot be accepted while injection is forbidden/i)
 })
 
-test('unhealthy hooks are refused before any attribution is believed', async () => {
-  const dead = rec({ hookThreadAlive: false })
-  const v = guiVerifier(source(dead), { expectInjection: true })
-  const out = await v.verify({ mode: 'gui' } as never, ctx, { ok: true, audit: goodAudit() })
-  assert.ok('rejected' in out)
-  assert.match((out as { rejected: string }).rejected, /hooks are not healthy/i)
+test('an unhealthy hook blocks a self-test attribution, from a real diagnostics read', async () => {
+  // Hook health lives only on `/hooks`, which injects. It is therefore checked in the
+  // instrumentation branch, where that read's cost is already paid by the action itself.
+  // It is deliberately NOT checked from the pure `/guard` record: that path never carries hook
+  // fields, so such a check could never fire - and a check that cannot fire is worse than none.
+  // Probe counts above the tool's claim, so the probe-hits check passes and the hook-health
+// check is genuinely what rejects.
+const dying: ControlRecord = { ...rec(), hookThreadAlive: false, livenessProbes: 9, livenessProbeHits: 9 }
+  const src: RecordSource = {
+    // Always one ahead of the baseline, so the anchored check passes and the health check is
+    // genuinely the thing under test.
+    async guard() { return rec({ operatorEvents: 11 }) as unknown as Record<string, unknown> },
+    async raw() { return { status: 200, body: dying as unknown as Record<string, unknown> } },
+  }
+  const v = guiVerifier(src, { expectInjection: true, baselineOperatorEvents: 10 })
+  const out = await v.verify({ mode: 'gui' } as never, ctx, {
+    ok: true,
+    audit: goodAudit({
+      actionClass: 'instrumentation',
+      controlResponse: { ok: true, livenessProbeHits: 5 },
+      injected: 'yes',
+      attribution: {
+        inputOccurred: true, operatorGenerated: true, humanGenerated: false,
+        attributionProven: true, verdict: 'operator-proven', basis: 'operator +1',
+      },
+    }),
+  })
+  assert.ok('rejected' in out, `expected a rejection, got: ${JSON.stringify(out)}`)
+  assert.match((out as { rejected: string }).rejected, /hook is unhealthy|hook is not trustworthy/i)
 })
 
 test('a truthful refusal is ACCEPTED, with the record that proves it', async () => {
   const held = rec({ state: 'HUMAN_TAKEOVER', mayInject: false, inputPermission: 'BLOCKED', takeoverPending: true, blockingReason: 'human takeover detected; input suspended' })
-  const v = guiVerifier(source(held), { expectInjection: false })
+  const v = guiVerifier(source(held), { expectInjection: false, baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, {
     ok: true,
     audit: goodAudit({
@@ -278,7 +301,7 @@ test('an unverifiable attribution is accepted only as its OWN evidence kind, nev
   // "no injection was expected" guard passes and the attribution branch is what is under test.
   // With expectInjection false this test would be caught by that earlier guard instead, which
   // is correct behaviour but would prove nothing about the evidence kind.
-  const v = guiVerifier(source(rec()), { expectInjection: true })
+  const v = guiVerifier(source(rec()), { expectInjection: true, baselineOperatorEvents: 0 })
   const out = await v.verify({ mode: 'gui' } as never, ctx, {
     ok: true,
     audit: goodAudit({
@@ -295,7 +318,125 @@ test('an unverifiable attribution is accepted only as its OWN evidence kind, nev
   assert.equal(e.verdict, 'attribution-unproven')
 })
 
-// ==================================================== the tools
+// ==================================================== the anchored baseline
+
+test('a tool cannot open the accept path by asserting an operator event', async () => {
+  // THE DEFECT THIS MILESTONE FOUND.
+  //
+  // The first version of the accept path verified a tool that fabricated `injected: yes` and
+  // `verdict: operator-proven` without requesting any probe. Every check compared the tool's
+  // audit against itself - `audit.injected` against `audit.attribution.inputOccurred`, both
+  // from the same forged object - so nothing in-process could catch it.
+  //
+  // The fix is that the verifier holds an operator-event baseline captured by the HARNESS,
+  // outside the tool's reach, and requires the control layer to have recorded more than that.
+  const src = source(rec({ operatorEvents: 10 }))   // nothing happened: still exactly 10
+  const v = guiVerifier(src, { expectInjection: true, baselineOperatorEvents: 10 })
+  const out = await v.verify({ mode: 'gui' } as never, ctx, {
+    ok: true,
+    actionClass: 'instrumentation',
+    audit: goodAudit({
+      actionClass: 'instrumentation',
+      result: 'accepted',
+      injected: 'yes',
+      controlResponse: { ok: true, livenessProbeHits: 1 },
+      attribution: {
+        inputOccurred: true, operatorGenerated: true, humanGenerated: false,
+        attributionProven: true, verdict: 'operator-proven', basis: 'operator +1',
+      },
+    }),
+  })
+  assert.ok('rejected' in out, 'a fabricated operator event must not verify')
+  assert.match((out as { rejected: string }).rejected, /pre-step baseline/i)
+})
+
+test('the baseline admits a genuine advance and nothing more', async () => {
+  const forged = goodAudit({
+    actionClass: 'instrumentation', result: 'accepted', injected: 'yes',
+    controlResponse: { ok: true, livenessProbeHits: 1 },
+    attribution: {
+      inputOccurred: true, operatorGenerated: true, humanGenerated: false,
+      attributionProven: true, verdict: 'operator-proven', basis: 'operator +1',
+    },
+  })
+  // Exactly at the baseline: no advance, so no proof.
+  const same = guiVerifier(source(rec({ operatorEvents: 10 })), { expectInjection: true, baselineOperatorEvents: 10 })
+  assert.ok('rejected' in await same.verify({ mode: 'gui' } as never, ctx, { audit: forged }))
+  // One past it: the control layer really did record a new operator event.
+  const advanced = guiVerifier(source(rec({ operatorEvents: 11, hookThreadAlive: true, keyboardHookInstalled: true, livenessProbes: 9, livenessProbeHits: 9 })), { expectInjection: true, baselineOperatorEvents: 10 })
+  const out = await advanced.verify({ mode: 'gui' } as never, ctx, { audit: forged })
+  assert.ok('evidence' in out, `a genuine advance must verify, got: ${JSON.stringify(out)}`)
+})
+
+test('claiming MORE probes than the control layer ever recorded is rejected', async () => {
+  // The comparison was INVERTED in the first version: it rejected claims for being behind and
+  // passed claims for being ahead, so a fabricated 999 sailed through while the genuine
+  // self-test was rejected for being one behind.
+  const src = source(rec({ operatorEvents: 11, livenessProbes: 9, livenessProbeHits: 9 }))
+  const v = guiVerifier(src, { expectInjection: true, baselineOperatorEvents: 10 })
+  const out = await v.verify({ mode: 'gui' } as never, ctx, {
+    audit: goodAudit({
+      actionClass: 'instrumentation', result: 'accepted', injected: 'yes',
+      controlResponse: { ok: true, livenessProbeHits: 999 },
+      attribution: {
+        inputOccurred: true, operatorGenerated: true, humanGenerated: false,
+        attributionProven: true, verdict: 'operator-proven', basis: 'operator +1',
+      },
+    }),
+  })
+  assert.ok('rejected' in out, 'claiming an event the control layer never saw must not verify')
+  assert.match((out as { rejected: string }).rejected, /only ever recorded 9/)
+})
+
+test('a claim legitimately behind the verifier read is accepted, not penalised', async () => {
+  // The verifier's own diagnostics read injects a probe, so the control layer's count is
+  // normally AHEAD of what the tool saw. Treating that as an error would reject every genuine
+  // self-test - which is exactly what the inverted check did.
+  const src = source(rec({ operatorEvents: 11, livenessProbes: 40, livenessProbeHits: 40 }))
+  const v = guiVerifier(src, { expectInjection: true, baselineOperatorEvents: 10 })
+  const out = await v.verify({ mode: 'gui' } as never, ctx, {
+    audit: goodAudit({
+      actionClass: 'instrumentation', result: 'accepted', injected: 'yes',
+      controlResponse: { ok: true, livenessProbeHits: 39 },
+      attribution: {
+        inputOccurred: true, operatorGenerated: true, humanGenerated: false,
+        attributionProven: true, verdict: 'operator-proven', basis: 'operator +1',
+      },
+    }),
+  })
+  assert.ok('evidence' in out, `a legitimate one-behind claim must verify, got: ${JSON.stringify(out)}`)
+})
+
+// ==================================================== the action class
+
+test('a user action is refused while injection is forbidden, even when classed as one', async () => {
+  const held = rec({ state: 'HUMAN_TAKEOVER', mayInject: false, takeoverPending: true })
+  const audit = await auditAction(
+    source(held),
+    { missionId: 'm', stepId: 's', executionMode: 'gui', actionType: 'click-absolute', target: 't', path: 'mouse' },
+    async () => ({ ok: true }),
+  )
+  assert.equal(audit.actionClass, 'user-action', 'the default must be the strict class')
+  assert.equal(audit.result, 'refused-by-guard')
+})
+
+test('instrumentation is NOT gated by mayInject, and must name itself to get that treatment', async () => {
+  const held = rec({ state: 'HUMAN_TAKEOVER', mayInject: false, takeoverPending: true })
+  let ran = false
+  const audit = await auditAction(
+    source(held, rec({ operatorEvents: 11 })),
+    {
+      missionId: 'm', stepId: 's', executionMode: 'gui',
+      actionType: 'hook-liveness-probe', target: 'none', path: 'keyboard',
+      actionClass: 'instrumentation', settleMs: 0,
+    },
+    async () => { ran = true; return { ok: true } },
+  )
+  assert.equal(ran, true, 'the watchdog must still be able to check itself')
+  assert.equal(audit.actionClass, 'instrumentation')
+})
+
+// ==================================================== the pure / the injecting
 
 test('a real GUI tool reports a refusal as needing a human, never as data', async () => {
   // The defect this catches: an earlier version returned `data` on refusal, the verifier
@@ -320,7 +461,7 @@ test('the falsifying tool forges an audit the verifier must catch', async () => 
   assert.equal(out.kind, 'data')
   const audit = (out as { data: { audit: { result: string } } }).data.audit
   assert.equal(audit.result, 'accepted', 'the tool claims acceptance')
-  const v = guiVerifier(source(held), { expectInjection: true })
+  const v = guiVerifier(source(held), { expectInjection: true, baselineOperatorEvents: 0 })
   const verdict = await v.verify({ mode: 'gui' } as never, ctx, (out as { data: unknown }).data)
   assert.ok('rejected' in verdict, 'the forgery must not survive verification')
 })
@@ -349,4 +490,28 @@ test('the record reader treats an absent counter as zero rather than undefined',
   assert.equal(r.humanEvents, 0)
   assert.equal(r.mouseTaggedSeen, 0)
   assert.equal(r.mayInject, true)
+})
+
+test('readRecord does NOT touch /hooks, because that route injects', async () => {
+  // The measurement that forced this split: eight `/hooks` reads advanced `livenessProbes` by
+  // 7. An audit that bracketed its actions with that route would have measured its own side
+  // effect and reported `operator-proven` for a keystroke it caused itself.
+  let hookReads = 0
+  const src: RecordSource = {
+    async guard() { return rec({ operatorEvents: 10 }) as unknown as Record<string, unknown> },
+    async raw() { hookReads++; return { status: 200, body: {} } },
+  }
+  for (let i = 0; i < 5; i++) await readRecord(src)
+  assert.equal(hookReads, 0, 'the pure reader must never call an injecting route')
+})
+
+test('readHookDiagnostics reports what its own read cost', async () => {
+  let n = 0
+  const src: RecordSource = {
+    async guard() { n++; return rec({ operatorEvents: 10 + n }) as unknown as Record<string, unknown> },
+    async raw() { return { status: 200, body: rec({ livenessProbes: 5, livenessProbeHits: 5 }) as unknown as Record<string, unknown> } },
+  }
+  const out = await readHookDiagnostics(src)
+  assert.equal(out.probesAdvanced, 1, 'the diagnostics read must account for the probe it caused')
+  assert.equal(out.diagnostics.livenessProbeHits, 5)
 })

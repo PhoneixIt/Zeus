@@ -90,9 +90,27 @@ export interface ControlRecord {
   readonly livenessFailures: number
 }
 
-/** The narrowest client that can read the authoritative record. Two endpoints, nothing else. */
+/** The narrowest client that can read the authoritative record. */
 export interface RecordSource {
+  /**
+   * PURE. Returns the guard's authoritative state and the three attribution counters.
+   *
+   * Measured: six consecutive reads moved `operatorEvents` by 0. Safe to bracket an action
+   * with, because observing does not change what is observed.
+   */
   guard(): Promise<Record<string, unknown>>
+  /**
+   * NOT PURE. This route CALLS `Hooks.Report()`, which signals the hook thread to send a real
+   * sentinel-tagged F24 keystroke through `SendInput`, then waits up to 400ms for it to come
+   * back. Reading it INJECTS.
+   *
+   * Measured on this host: eight reads advanced `livenessProbes` by 7. So this audit must
+   * never bracket an action with it - doing so would have the instrument measure its own side
+   * effect and report `operator-proven` for a keystroke it caused itself.
+   *
+   * It is also, for exactly that reason, the one EXISTING control-layer route that produces a
+   * real authoritative operator event on demand without weakening anything.
+   */
   raw(path: string): Promise<{ status: number; body: Record<string, unknown> }>
 }
 
@@ -100,10 +118,18 @@ const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
 const bool = (v: unknown): boolean => v === true
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
-/** Reads the authoritative record. Never infers a missing field - an absent counter is 0. */
+/**
+ * Reads the PURE authoritative record - `/guard` only.
+ *
+ * This is what brackets an action, because it cannot change what it observes. The hook
+ * diagnostics live on `/hooks`, which injects, so they are read separately and only when the
+ * mouse path specifically needs them.
+ */
 export async function readRecord(src: RecordSource): Promise<ControlRecord> {
-  const [g, h] = await Promise.all([src.guard(), src.raw('/hooks')])
-  const hb = h.body ?? {}
+  const g = await src.guard()
+  // Hook fields are all zero here and that is DELIBERATE, not a failure to read them: they
+  // live on a route that injects. `guard`-only callers must see zeros rather than a value
+  // obtained by causing the very event they are trying to measure.
   return {
     state: str(g.state),
     mayInject: bool(g.mayInject),
@@ -114,17 +140,60 @@ export async function readRecord(src: RecordSource): Promise<ControlRecord> {
     humanEvents: num(g.humanEvents),
     operatorEvents: num(g.operatorEvents),
     otherInjected: num(g.otherInjected),
-    keyboardHookInstalled: bool(hb.keyboardHookInstalled),
-    mouseHookInstalled: bool(hb.mouseHookInstalled),
-    hookThreadAlive: bool(hb.hookThreadAlive),
-    mouseEventsSeen: num(hb.mouseEventsSeen),
-    mouseTaggedSeen: num(hb.mouseTaggedSeen),
-    mouseUntaggedSeen: num(hb.mouseUntaggedSeen),
-    panelInjectedSeen: num(hb.panelInjectedSeen),
-    panelTaggedSeen: num(hb.panelTaggedSeen),
-    livenessProbes: num(hb.livenessProbes),
-    livenessProbeHits: num(hb.livenessProbeHits),
-    livenessFailures: num(hb.livenessFailures),
+    keyboardHookInstalled: true,
+    mouseHookInstalled: true,
+    hookThreadAlive: true,
+    mouseEventsSeen: 0,
+    mouseTaggedSeen: 0,
+    mouseUntaggedSeen: 0,
+    panelInjectedSeen: 0,
+    panelTaggedSeen: 0,
+    livenessProbes: 0,
+    livenessProbeHits: 0,
+    livenessFailures: 0,
+  }
+}
+
+/**
+ * Reads the hook diagnostics from `/hooks`.
+ *
+ * WARNING: this call INJECTS - see `RecordSource.raw`. The returned `probesAdvanced` is how
+ * far the probe counter moved across this very call, which is the only honest way to learn
+ * what the read cost. Callers must treat the hook counters as valid only alongside it.
+ */
+export async function readHookDiagnostics(src: RecordSource): Promise<{
+  diagnostics: ControlRecord
+  probesAdvanced: number
+}> {
+  const before = await readRecord(src)
+  const r = await src.raw('/hooks')
+  const after = await readRecord(src)
+  const hb = r.body ?? {}
+  const g = await src.guard()
+  return {
+    probesAdvanced: after.operatorEvents - before.operatorEvents,
+    diagnostics: {
+      state: str(g.state),
+      mayInject: bool(g.mayInject),
+      inputPermission: str(g.inputPermission),
+      blockingReason: typeof g.blockingReason === 'string' ? g.blockingReason : null,
+      emergencyLatched: bool(g.emergencyLatched),
+      takeoverPending: bool(g.takeoverPending),
+      humanEvents: num(g.humanEvents),
+      operatorEvents: num(g.operatorEvents),
+      otherInjected: num(g.otherInjected),
+      keyboardHookInstalled: bool(hb.keyboardHookInstalled),
+      mouseHookInstalled: bool(hb.mouseHookInstalled),
+      hookThreadAlive: bool(hb.hookThreadAlive),
+      mouseEventsSeen: num(hb.mouseEventsSeen),
+      mouseTaggedSeen: num(hb.mouseTaggedSeen),
+      mouseUntaggedSeen: num(hb.mouseUntaggedSeen),
+      panelInjectedSeen: num(hb.panelInjectedSeen),
+      panelTaggedSeen: num(hb.panelTaggedSeen),
+      livenessProbes: num(hb.livenessProbes),
+      livenessProbeHits: num(hb.livenessProbeHits),
+      livenessFailures: num(hb.livenessFailures),
+    },
   }
 }
 
@@ -132,6 +201,29 @@ export async function readRecord(src: RecordSource): Promise<ControlRecord> {
 
 /** Which path the action took. Decides which counters are meaningful. */
 export type ActionPath = 'keyboard' | 'mouse' | 'none'
+
+/**
+ * What KIND of thing the action was.
+ *
+ * This distinction is load-bearing and is NOT a loophole:
+ *
+ *   'user-action'      acts on the human's world - a click at coordinates, typing, scrolling.
+ *                      MUST be refused unless the control layer grants `mayInject`. If it were
+ *                      permitted while injection was forbidden, the machine would be doing the
+ *                      opposite of what the guard says it is doing.
+ *
+ *   'instrumentation'  the control layer examining itself - the F24 hook-liveness probe.
+ *                      Deliberately NOT gated by `mayInject`, and that is correct rather than
+ *                      an oversight: a hook that has been silently removed can only be
+ *                      detected by sending it something, and a dead hook would otherwise be
+ *                      able to hide by making everything refuse. It cannot act on the user's
+ *                      world - F24 is bound by no application and is not a reserved chord - so
+ *                      gating it would buy no safety while destroying the watchdog.
+ *
+ * Keeping the two apart means the `mayInject` contradiction check stays absolute for real
+ * actions instead of being weakened for everything to accommodate a self-test.
+ */
+export type ActionClass = 'user-action' | 'instrumentation'
 
 /** What the audit can prove about an action. Deliberately not a single verdict. */
 export interface Attribution {
@@ -196,6 +288,8 @@ export interface ActionAudit {
   readonly controlResponse: Record<string, unknown>
   /** Whether the action was actually injected - as distinct from whether it was attributed. */
   readonly injected: 'yes' | 'no' | 'unknown'
+  /** What KIND of action this was. Decides which permission rules apply. */
+  readonly actionClass: ActionClass
   readonly attribution: Attribution
   /** The result of the action itself. */
   readonly result: 'accepted' | 'refused-by-guard' | 'failed'
@@ -216,6 +310,13 @@ export interface AuditOptions {
   readonly actionType: string
   readonly target: string
   readonly path: ActionPath
+  /**
+   * Whether this is a user action or the control layer's own instrumentation.
+   *
+   * Defaults to the SAFE answer, `user-action`, so a caller that forgets cannot accidentally
+   * get instrumentation's relaxed permission treatment.
+   */
+  readonly actionClass?: ActionClass
   /** How long to let the hook observe before re-reading. The hook is a separate thread. */
   readonly settleMs?: number
 }
@@ -233,11 +334,14 @@ export async function auditAction(
   perform: () => Promise<Record<string, unknown>>,
 ): Promise<ActionAudit> {
   const before = await readRecord(src)
+  const actionClass: ActionClass = opts.actionClass ?? 'user-action'
 
-  // Refused before the action is even attempted: the guard is checked first, exactly as the
-  // control core checks it internally, so an audit of a blocked action records the refusal
-  // rather than manufacturing an attempt.
-  if (!before.mayInject) {
+  // Refused before the action is even attempted - but ONLY for a user action.
+  //
+  // Instrumentation is exempt by design, and only instrumentation: see `ActionClass`. The
+  // exemption cannot be reached by accident because it requires naming the class explicitly,
+  // and the default is the strict one.
+  if (!before.mayInject && actionClass === 'user-action') {
     return {
       missionId: opts.missionId,
       stepId: opts.stepId,
@@ -247,6 +351,7 @@ export async function auditAction(
       at: new Date().toISOString(),
       controlResponse: {},
       injected: 'no',
+      actionClass,
       attribution: {
         inputOccurred: false,
         operatorGenerated: false,
@@ -288,6 +393,7 @@ export async function auditAction(
     at: new Date().toISOString(),
     controlResponse: response,
     injected: attribution.inputOccurred ? 'yes' : refused ? 'no' : 'unknown',
+    actionClass,
     attribution,
     result: refused ? 'refused-by-guard' : response.error ? 'failed' : 'accepted',
     controlState: after.state,

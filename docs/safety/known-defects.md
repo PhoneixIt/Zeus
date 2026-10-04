@@ -52,7 +52,56 @@ A real `SendInput` keystroke carrying the real sentinel, observed by the real
 keyboard ownership proof works and the mouse one does not. That asymmetry is now measured on
 demand rather than assumed.
 
-## Release control — NOT PROVEN
+## P1 - `/scaninput` injects WITHOUT consulting the guard, and with no sentinel
+
+Found 2026-10-04 while looking for an existing self-test that could close the gui verifier's
+accept path. Not fixed. Not exploited.
+
+`/scaninput` calls `Win.SendInput` with `dwExtraInfo = IntPtr.Zero`. It checks the target
+window and foreground focus, but its block contains **no `Guard.MayInject()` call**, unlike
+`/click`, `/type`, `/scroll`, `/key`, `/move` (one compound gate) and `/click-absolute`.
+
+Empirical confirmation, without injecting anything: with `mayInject=false` in
+`HUMAN_TAKEOVER`, `/scaninput` refused with `target window is not visible` - a target failure,
+not a guard failure. `/click-absolute` refused with `human takeover detected; input suspended`.
+The difference in refusal reason is the proof: `/scaninput` never reached the guard.
+
+**Consequence:** if a caller supplies a valid visible foreground window, `/scaninput` injects
+real keystrokes into it while the operator is paused or emergency-stopped. Because
+`dwExtraInfo` is zero, the hook classifies those events as **human**, so the guard would also
+record a takeover it did not cause.
+
+**Why it was not fixed here:** it is in the injection layer, which is out of scope for the
+mission-engine milestones, and it needs its own bounded change.
+
+**Suggested invariant for that milestone:** every route that reaches `SendInput` must pass
+through exactly one gate, and the gate must be structural rather than a convention that each
+route remembers to call.
+
+## P1 - `/hooks` INJECTS, so it cannot be used as a passive observation
+
+Found 2026-10-04 by measurement. Characterised, worked around in the mission layer, not fixed.
+
+`GET /hooks` calls `Hooks.Report()`, which signals the hook thread to send a real
+sentinel-tagged F24 keystroke through `SendInput` and waits up to 400ms for it to return.
+
+Measured on this host: eight reads of `/hooks` advanced `livenessProbes` by 7. Six reads of
+`/guard` advanced `operatorEvents` by 0.
+
+**Consequence:** an instrument that changes what it measures. The mission audit's first
+version bracketed actions with `/guard` *and* `/hooks` together, so it was partly observing its
+own side effect - and would have reported `operator-proven` for a keystroke it caused itself.
+`readRecord()` now reads only `/guard`, and hook diagnostics are fetched separately through
+`readHookDiagnostics()`, which reports how far the probe counter moved across its own call.
+
+There is **no background probe timer**: `SendProbe` is reached only from `AwaitProbe`, which is
+reached only from `Report()`, which is reached only from an HTTP route. An earlier measurement
+that "waited 13 seconds and watched a probe appear" was measuring its own polling.
+
+**Suggested fix for that milestone:** split the passive diagnostics from the active self-test -
+a route that reports hook state without emitting anything.
+
+## Release control - NOT PROVEN
 
 The operator has no proven way for a human to resume it after takeover.
 
