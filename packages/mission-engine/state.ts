@@ -98,6 +98,18 @@ export type Evidence =
    * honest reading is "input occurred; ownership unestablished".
    */
   | { kind: 'input-unattributed'; detail: string; verdict: 'attribution-unproven' | 'attribution-defective' }
+  /**
+   * Folder and file evidence for the filesystem capability.
+   *
+   * Separate kinds rather than one generic "ok" because each answers a different question, and
+   * collapsing them is how "the folder exists" becomes "the summary is correct". A mission that
+   * proved only the first has not proved the second.
+   */
+  | { kind: 'directory-present'; path: string; entries: number }
+  | { kind: 'folder-contents'; path: string; entries: number; names: readonly string[] }
+  | { kind: 'summary-composed'; bytes: number; provenance: string; folder: string }
+  | { kind: 'file-written'; path: string; bytes: number; lines: number }
+  | { kind: 'file-read-back'; path: string; bytes: number; heading: string }
 
 /** Why a mission must re-observe before its next action. */
 export type PlanInvalidation =

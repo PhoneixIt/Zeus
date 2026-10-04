@@ -54,6 +54,22 @@ export interface ToolContext {
   readonly attempt: number
   /** Observation is passed IN, so a tool never has to guess the current state. */
   readonly observation: Observation
+  /**
+   * Results of EARLIER steps in this mission, keyed by step id.
+   *
+   * This did not exist, and its absence was a structural limitation rather than a missing
+   * convenience: `recordResult` stored `output: undefined`, so nothing a tool returned ever
+   * reached anything else. A step could not consume the result of the step before it, which
+   * meant any plan needing data flow - compose text in one step, write it in the next - had to
+   * either re-read the world and hope it matched, or collapse into a single step that both
+   * computed and wrote, which is exactly the step that cannot be independently verified.
+   *
+   * `prior` holds only steps that have already produced a result, so a tool reads what happened
+   * rather than predicting it. It is a record of the past, not a channel for a later step to
+   * influence an earlier one - execution order is fixed by `dependsOn` and this does not change
+   * it.
+   */
+  readonly prior: Readonly<Record<string, StepResult>>
   readonly signal: AbortSignal
 }
 
@@ -319,6 +335,14 @@ export async function execute(
     let attempt = 0
     let finalOutcome: StepOutcome | null = null
     let lastFailure = ''
+    // Retained so later steps can consume it through `ctx.prior`, and so the audit keeps what
+    // the tool actually returned on a step that succeeded. Previously `output` was hardcoded to
+    // `undefined`, which discarded every tool result the moment the step ended.
+    //
+    // Declared out here because the record happens after the retry loop, and the last attempt's
+    // data is what must be kept - an earlier version declared it inside the loop and could not
+    // see it at the record site.
+    let toolData: unknown
 
     while (attempt < maxAttempts) {
       attempt++
@@ -344,6 +368,7 @@ export async function execute(
         stepId: step.id,
         attempt,
         observation,
+        prior: Object.fromEntries(results),
         signal: signal ?? new AbortController().signal,
       }
 
@@ -365,6 +390,11 @@ export async function execute(
       } catch (e) {
         tr = { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
       }
+
+      // Retained so later steps can consume it through `ctx.prior`, and so the audit keeps what
+      // the tool actually returned on a step that succeeded. Previously `output` was hardcoded
+      // to `undefined`, which discarded every tool result the moment the step ended.
+      toolData = tr.kind === 'data' ? tr.data : undefined
 
       emit({
         type: 'tool-returned',
@@ -437,7 +467,7 @@ export async function execute(
 
     if (halted) break
     if (finalOutcome) {
-      recordResult(step.id, finalOutcome, cfg.now(), { output: undefined })
+      recordResult(step.id, finalOutcome, cfg.now(), { output: toolData })
     }
   }
 
