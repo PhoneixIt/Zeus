@@ -33,7 +33,7 @@ import type {
   Observation,
 } from '../../governance/contract.ts'
 import {
-  isComplete,
+  isComplete, tally,
   type Evidence,
   type ExecutionMode,
   type HistoryEntry,
@@ -173,18 +173,24 @@ export async function execute(
   const history: HistoryEntry[] = mission.history.slice()
   const verifiedEvidence: Record<string, Evidence> = {}
 
+    // Derived from the SAME tally the human-readable progress line uses, so the audit stream
+  // and describeProgress() cannot drift apart. They counted separately before, which is how a
+  // mission could report one thing in prose and another in its events.
   const counts = () => {
-    const list = [...results.values()]
+    const t = tally({
+      ...mission,
+      plan: plan.map((s) => ({ ...s, result: results.get(s.id) })),
+    })
     return {
-      verified: list.filter((r) => r.outcome.kind === 'verified').length,
-      legitimatelyEmpty: list.filter((r) => r.outcome.kind === 'legitimately-empty').length,
-      failed: list.filter((r) => r.outcome.kind === 'failed').length,
-      needsHuman: list.filter((r) => r.outcome.kind === 'needs-human').length,
-      skipped: list.filter((r) => r.outcome.kind === 'skipped').length,
-      pending: plan.filter((s) => !results.has(s.id)).length,
+      verified: t.verified,
+      legitimatelyEmpty: t.legitimatelyEmpty,
+      failed: t.failed,
+      skipped: t.skipped,
+      needsHuman: t.needsHuman,
+      replanRequired: t.replanRequired,
+      pending: t.pending,
     }
   }
-
   // ---- detect unsatisfiable dependencies BEFORE running anything. A plan that cannot work
   // should say so immediately rather than failing halfway through with a confusing cascade.
   const unsatisfiable: string[] = []
@@ -353,7 +359,9 @@ export async function execute(
 
       let tr: ToolResult
       try {
-        tr = await resolution.tool.run(ctx, {})
+        // The step's own operands, not a hardcoded empty object. See Step.args: without this a
+        // tool had no way to be told what it was supposed to act on.
+        tr = await resolution.tool.run(ctx, step.args ?? {})
       } catch (e) {
         tr = { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
       }
@@ -461,7 +469,7 @@ export async function execute(
   }
 
   const needsHuman = c.needsHuman > 0
-  const replan = [...results.values()].some((r) => r.outcome.kind === 'replan-required')
+  const replan = c.replanRequired > 0
   const st: MissionState = complete ? 'complete' : needsHuman ? 'blocked-on-human' : replan ? 'recovering' : 'failed'
   const why = complete
     ? 'every step reached a verified or legitimately-empty outcome'

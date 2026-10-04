@@ -13,6 +13,7 @@
                     "control:syntax":  "powershell -NoProfile -Command \"\u0026 \u0027C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe\u0027 /target:library /warnaserror+ /out:$env:TEMP/aios-check.dll /reference:\u0027C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Windows.Forms.dll\u0027 /reference:\u0027C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Drawing.dll\u0027 packages/control-core/src/*.cs\"",
                     "mission:live":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-live-mission.ts",
                     "control:up":  "node packages/control-core/start-operator-host.mjs",
-                    "mission:two-step":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-two-step.ts"
+                    "mission:two-step":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-two-step.ts",
+                    "mission:filesystem":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-filesystem.ts"
                 }
 }

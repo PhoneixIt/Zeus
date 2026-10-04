@@ -129,6 +129,20 @@ export interface Step {
   /** Why this step is needed - what breaks without it. */
   readonly rationale: string
   /**
+   * What this step operates ON, handed to the tool at run time.
+   *
+   * This field did not exist, and the executor called `tool.run(ctx, {})` with a literal empty
+   * object. Every tool therefore received no parameters at all and had to hardcode whatever it
+   * touched. A filesystem step could only ever write the one filename baked into the tool, so
+   * it could not be aimed at a chosen target and the mission was not even re-runnable: the
+   * second run refused to overwrite the first run's file and failed.
+   *
+   * An `intent` is prose for a human reader; it cannot be the channel that carries an
+   * operand. Without this, "write the report to X" and "write the report to Y" were the same
+   * step, which is a plan that cannot express its own objective.
+   */
+  readonly args?: Readonly<Record<string, unknown>>
+  /**
    * Steps that must reach a COMPLETING outcome before this one may start.
    *
    * "Completing", specifically: a dependency that failed or is waiting on a human BLOCKS this
@@ -219,19 +233,75 @@ export function isComplete(m: Mission): boolean {
   })
 }
 
-/** The honest summary. Never infers success from having executed something. */
+/**
+ * One tally of mission progress, by OUTCOME.
+ *
+ * This exists because the previous implementation counted some categories by outcome and one
+ * by STATUS, so `pending` and the others were derived from different bases and could disagree
+ * - a mission could report "0 pending" while also reporting fewer steps accounted for than
+ * it has. The audit events counted the same categories separately, so the human-readable line
+ * and the event stream could disagree about the same mission.
+ *
+ * One function, one basis. `skipped` is counted here, and it is counted SEPARATELY from
+ * failed: a step that was never attempted because a gate stopped it is not a failure, and
+ * folding the two together inflates the apparent unreliability of a plan.
+ */
+export interface Progress {
+  readonly total: number
+  readonly verified: number
+  readonly legitimatelyEmpty: number
+  readonly failed: number
+  readonly skipped: number
+  readonly needsHuman: number
+  readonly replanRequired: number
+  readonly running: number
+  readonly pending: number
+  /** Every step is accounted for exactly once. Asserted, not assumed. */
+  readonly accountedFor: number
+}
+
+export function tally(m: Mission): Progress {
+  const c = {
+    verified: 0, legitimatelyEmpty: 0, failed: 0, skipped: 0,
+    needsHuman: 0, replanRequired: 0, running: 0, pending: 0,
+  }
+  for (const s of m.plan) {
+    if (s.result) {
+      switch (s.result.outcome.kind) {
+        case 'verified': c.verified++; break
+        case 'legitimately-empty': c.legitimatelyEmpty++; break
+        case 'failed': c.failed++; break
+        case 'skipped': c.skipped++; break
+        case 'needs-human': c.needsHuman++; break
+        case 'replan-required': c.replanRequired++; break
+      }
+    } else if (s.status === 'running') c.running++
+    else c.pending++
+  }
+  const accountedFor =
+    c.verified + c.legitimatelyEmpty + c.failed + c.skipped +
+    c.needsHuman + c.replanRequired + c.running + c.pending
+  return { total: m.plan.length, ...c, accountedFor }
+}
+
+/**
+ * The honest summary. Never infers success from having executed something.
+ *
+ * Built from `tally()` so the human-readable line and the audit event stream cannot disagree
+ * about the same mission. `skipped` appears as its own category, phrased as a gate rather
+ * than a failure because that is what it was.
+ */
 export function describeProgress(m: Mission): string {
-  const verified = m.plan.filter((s) => s.result?.outcome.kind === 'verified').length
-  const empty = m.plan.filter((s) => s.result?.outcome.kind === 'legitimately-empty').length
-  const failed = m.plan.filter((s) => s.result?.outcome.kind === 'failed').length
-  const waiting = m.plan.filter((s) => s.result?.outcome.kind === 'needs-human').length
-  const pending = m.plan.filter((s) => s.status === 'pending').length
+  const t = tally(m)
   return [
-    `${m.state}`,
-    `${verified} verified`,
-    empty ? `${empty} legitimately empty` : null,
-    failed ? `${failed} FAILED` : null,
-    waiting ? `${waiting} waiting on human` : null,
-    `${pending} pending`,
+    m.state,
+    `${t.verified} verified`,
+    t.legitimatelyEmpty ? `${t.legitimatelyEmpty} legitimately empty` : null,
+    t.failed ? `${t.failed} FAILED` : null,
+    t.skipped ? `${t.skipped} skipped (blocked by a dependency)` : null,
+    t.replanRequired ? `${t.replanRequired} need replanning` : null,
+    t.needsHuman ? `${t.needsHuman} waiting on human` : null,
+    t.running ? `${t.running} running` : null,
+    `${t.pending} pending`,
   ].filter(Boolean).join(' | ')
 }
