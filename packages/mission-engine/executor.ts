@@ -180,6 +180,7 @@ export async function execute(
       legitimatelyEmpty: list.filter((r) => r.outcome.kind === 'legitimately-empty').length,
       failed: list.filter((r) => r.outcome.kind === 'failed').length,
       needsHuman: list.filter((r) => r.outcome.kind === 'needs-human').length,
+      skipped: list.filter((r) => r.outcome.kind === 'skipped').length,
       pending: plan.filter((s) => !results.has(s.id)).length,
     }
   }
@@ -283,9 +284,12 @@ export async function execute(
         blockedBy: blocking,
         reason: br ? `"${blocking}" ended as ${br.outcome.kind}, which does not satisfy a dependency` : `"${blocking}" has not run`,
       } as never)
+      // SKIPPED, not failed. The tool never ran, so calling this a failure would misdescribe
+      // what happened and inflate the apparent failure count for anyone auditing the mission.
       recordResult(step.id, {
-        kind: 'failed',
-        reason: `blocked: dependency "${blocking}" did not complete`,
+        kind: 'skipped',
+        reason: `not attempted: dependency "${blocking}" did not complete`,
+        blockedBy: blocking,
       }, cfg.now())
       continue
     }
@@ -485,7 +489,7 @@ function finalMission(
       const r = results.get(s.id)
       return {
         ...s,
-        status: !r ? 'pending' : r.outcome.kind === 'verified' || r.outcome.kind === 'legitimately-empty' ? 'done' : r.outcome.kind === 'failed' ? 'failed' : 'pending',
+        status: !r ? 'pending' : r.outcome.kind === 'verified' || r.outcome.kind === 'legitimately-empty' ? 'done' : r.outcome.kind === 'skipped' ? 'skipped' : r.outcome.kind === 'failed' ? 'failed' : 'pending',
         result: r,
         attempts: r ? 1 : 0,
       } as Step

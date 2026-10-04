@@ -44,6 +44,19 @@ export type StepOutcome =
    * for a world that no longer exists (§16).
    */
   | { kind: 'replan-required'; reason: string; invalidation: PlanInvalidation }
+  /**
+   * The step was never attempted, because a precondition stopped it.
+   *
+   * Distinct from `failed` because the distinction is load-bearing for anyone reading the
+   * mission: "I tried and it did not work" is a different fact from "I was never allowed to
+   * try". Recording a gate as a failure inflates the apparent unreliability of the plan and
+   * buries the real cause.
+   *
+   * An earlier version recorded dependency-blocked steps as `failed`, which failed toward
+   * caution and so was not unsafe - but it misdescribed what happened, and misdescribing
+   * state is the defect class this whole engine was built to eliminate.
+   */
+  | { kind: 'skipped'; reason: string; blockedBy?: string }
 
 /**
  * Evidence that something actually happened.

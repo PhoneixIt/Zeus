@@ -165,6 +165,7 @@ export type ExecutionEvent =
       legitimatelyEmpty: number
       failed: number
       needsHuman: number
+  skipped: number
       pending: number
       durationMs: number
     }
@@ -256,7 +257,7 @@ export function summarize(r: ExecutionRecord): ExecutionSummary {
       return { stepId: h.stepId, reason: h.reason }
     }),
     finishReason: finished && finished.type === 'mission-finished'
-      ? `${finished.state}: ${finished.verified} verified, ${finished.failed} failed, ${finished.needsHuman} needing human, ${finished.pending} pending`
+      ? `${finished.state}: ${finished.verified} verified, ${finished.failed} failed, ${finished.needsHuman} needing human, ${finished.skipped} skipped, ${finished.pending} pending`
       : '(did not finish)',
     integrityViolations: pick((e) => e.type === 'integrity-violation').map((e) => (e as { detail: string }).detail),
   }

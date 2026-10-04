@@ -26,6 +26,8 @@ interface Client {
   guard(): Promise<Record<string, unknown>>
   raw(path: string, opts?: { method?: string; body?: Record<string, unknown> }): Promise<{ status: number; body: Record<string, unknown> }>
   windows(): Promise<unknown>
+  uiasurvey(t: { hwnd: number; max?: number }): Promise<unknown>
+  uiaread(t: { hwnd: number; name?: string; max?: number }): Promise<unknown>
   screenshot: unknown
   focus(t: unknown): Promise<unknown>
   controlByName(t: unknown): Promise<unknown>
@@ -36,6 +38,50 @@ let client: Client | null = null
 async function c(): Promise<Client> {
   if (!client) client = (await connect({ statePath: HOST })) as unknown as Client
   return client
+}
+
+// ============================================================ UI AUTOMATION (uia mode)
+
+/**
+ * One element of the accessibility tree, as the host reports it.
+ *
+ * This is the `uia` execution mode's observation surface. It is a genuinely DIFFERENT
+ * mechanism from the `cli` mode: `cli` polls the host's HTTP guard/window endpoints, while
+ * `uia` walks the Windows accessibility tree through IUIAutomation COM. Renaming `cli` to
+ * `uia` would prove nothing about mode handling, so the second mode travels a real,
+ * structurally different code path.
+ */
+export interface UiaElement {
+  index: number
+  name: string
+  automationId: string
+  className: string
+  controlType: string
+  rect: { x: number; y: number; w: number; h: number }
+  offscreen: boolean
+  enabled: boolean
+  isSelected: boolean
+  patterns: string[]
+}
+
+/**
+ * Reads the accessibility tree for a window.
+ *
+ * READ-ONLY BY CONSTRUCTION: it calls `/uiasurvey`, which enumerates elements and returns
+ * them. The write-capable siblings - `/uiainvoke`, `/uiafocus`, `/uiasetvalue` - are
+ * deliberately NOT referenced anywhere in this module, so a `uia` step cannot inject.
+ */
+export async function surveyWindow(hwnd: number, max = 200): Promise<UiaElement[]> {
+  const r = (await (await c()).uiasurvey({ hwnd, max })) as unknown
+  const raw = Array.isArray(r) ? r : (r as { elements?: unknown[] })?.elements
+  return Array.isArray(raw) ? (raw as UiaElement[]) : []
+}
+
+/** Picks the window a mission should inspect: the first visible one with a real title. */
+export async function pickInspectableWindow(): Promise<{ hwnd: number; title: string } | null> {
+  const o = await liveControl.observe()
+  const w = o.windows.find((x) => x.visible && x.hwnd > 0 && x.title.trim().length > 0)
+  return w ? { hwnd: w.hwnd, title: w.title } : null
 }
 
 async function permission(): Promise<Permission> {
@@ -167,6 +213,49 @@ export const observeDesktopTool: Tool = {
 }
 
 /**
+ * A `uia`-mode tool: survey the accessibility tree of a real window.
+ *
+ * `needsTarget` is deliberately absent. This tool discovers its own target rather than being
+ * handed one, because a UIA survey of the wrong window would return a perfectly valid-looking
+ * element list and the mission would verify the wrong thing.
+ */
+export const surveyAccessibilityTool: Tool = {
+  name: 'survey-accessibility',
+  mode: 'uia',
+  async run(ctx: ToolContext): Promise<ToolResult> {
+    const w = await pickInspectableWindow()
+    if (!w) return { kind: 'nothing-found', reason: 'no visible window with a title was available to inspect' }
+
+    const elements = await surveyWindow(w.hwnd, 200)
+    if (elements.length === 0) {
+      // An empty accessibility tree is a real answer for SOME windows (Chromium renders
+      // expose almost nothing), and reporting it as such is exactly the honest behaviour the
+      // mission engine exists to preserve. It must never be dressed up as a failure or a
+      // success.
+      return {
+        kind: 'nothing-found',
+        reason: `window "${w.title}" exposed no accessibility elements`,
+      }
+    }
+
+    const named = elements.filter((e) => e.name && e.name !== 'Pane')
+    const types = [...new Set(elements.map((e) => e.controlType))].sort()
+    return {
+      kind: 'data',
+      data: {
+        hwnd: w.hwnd,
+        windowTitle: w.title,
+        elementCount: elements.length,
+        namedCount: named.length,
+        controlTypes: types,
+        sampleName: named[0]?.name ?? null,
+      },
+      summary: `${elements.length} accessibility element(s), ${named.length} named, ${types.length} control type(s) in "${w.title}"`,
+    }
+  },
+}
+
+/**
  * INDEPENDENT verification against the live host.
  *
  * Crucially it does NOT trust the tool's return value. It asks the host a fresh question and
@@ -199,6 +288,54 @@ export function liveVerifier() {
           kind: 'window-present',
           title: target.title || '(untitled)',
           hwnd: target.hwnd,
+        },
+      }
+    },
+  }
+}
+
+/**
+ * Independent verification for the `uia` mode.
+ *
+ * It re-queries the accessibility tree ITSELF and compares against the tool's claim. Reading
+ * the tool's numbers back would be verification in name only - the exact conflation the whole
+ * architecture exists to prevent.
+ *
+ * It also checks something the tool cannot fake by accident: that the element types it claims
+ * to have seen are actually present on a fresh survey.
+ */
+export function liveUiaVerifier() {
+  return {
+    verifies: (step: { mode?: string }) => step.mode === 'uia',
+    async verify(_step: unknown, _ctx: ToolContext, toolData: unknown) {
+      const claimed = toolData as {
+        hwnd?: number; elementCount?: number; windowTitle?: string; controlTypes?: string[]
+      } | undefined
+      if (!claimed?.hwnd) return { rejected: 'the tool named no window, so there is nothing to verify' }
+
+      // Fresh survey, from here, ignoring what the tool said.
+      const live = await surveyWindow(claimed.hwnd, 200)
+      if (live.length === 0) {
+        return { rejected: `an independent survey of hwnd ${claimed.hwnd} found no elements, so the tool's claim cannot be corroborated` }
+      }
+      if (claimed.elementCount !== undefined && claimed.elementCount !== live.length) {
+        return {
+          rejected: `tool reported ${claimed.elementCount} elements; an independent survey of hwnd ${claimed.hwnd} saw ${live.length}`,
+        }
+      }
+      const liveTypes = new Set(live.map((e) => e.controlType))
+      for (const t of claimed.controlTypes ?? []) {
+        if (!liveTypes.has(t)) {
+          return { rejected: `tool claimed control type "${t}", which an independent survey did not find` }
+        }
+      }
+      // Evidence that names something a reader can check: the window and a real control type
+      // from it, rather than a count.
+      const sample = live.find((e) => e.name && e.name !== 'Pane') ?? live[0]
+      return {
+        evidence: {
+          kind: 'screen-text-present',
+          text: `${claimed.windowTitle ?? '(untitled)'} [${[...liveTypes].sort().join('/')}] e.g. ${sample.controlType} "${sample.name || '(unnamed)'}"`,
         },
       }
     },

@@ -186,8 +186,8 @@ test('a dependency on a FAILED step blocks, rather than cascading confidence', a
   )
   assert.equal(r.record.complete, false)
   const b = r.mission.plan[1].result!
-  assert.equal(b.outcome.kind, 'failed')
-  assert.match(b.outcome.reason, /blocked/i)
+  assert.match((b.outcome as { reason: string }).reason, /not attempted/i)
+  assert.equal((b.outcome as { blockedBy?: string }).blockedBy, 'a', 'the gate names what blocked it')
   assert.ok(r.events.some((e) => e.type === 'dependency-blocked'))
 })
 
@@ -200,8 +200,8 @@ test('a dependency on a NEEDS-HUMAN step blocks', async () => {
       control: fakeControl(), config: ok,
     },
   )
-  assert.equal(r.mission.plan[1].result!.outcome.kind, 'failed')
-  assert.match(r.mission.plan[1].result!.outcome.reason, /blocked/i)
+  assert.equal(r.mission.plan[1].result!.outcome.kind, 'skipped')
+  assert.match((r.mission.plan[1].result!.outcome as { reason: string }).reason, /not attempted/i)
 })
 
 test('an unknown dependency is detected BEFORE anything runs', async () => {
