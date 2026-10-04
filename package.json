@@ -14,6 +14,7 @@
                     "mission:live":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-live-mission.ts",
                     "control:up":  "node packages/control-core/start-operator-host.mjs",
                     "mission:two-step":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-two-step.ts",
-                    "mission:filesystem":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-filesystem.ts"
+                    "mission:filesystem":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-filesystem.ts",
+                    "mission:gui-audit":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-audit.ts"
                 }
 }

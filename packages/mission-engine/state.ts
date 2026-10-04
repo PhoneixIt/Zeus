@@ -77,6 +77,27 @@ export type Evidence =
   | { kind: 'command-exit-code'; command: string; code: number }
   | { kind: 'http-status'; url: string; status: number }
   | { kind: 'api-response'; endpoint: string; matched: boolean }
+  /**
+   * Input occurred and the control layer attributed it to a known actor.
+   *
+   * Separate from every observation evidence kind because it answers a different question.
+   * "The window is there" is an observation. "Input happened AND the control layer proved who
+   * produced it" is an attribution claim, and the two must never be read as interchangeable.
+   */
+  | { kind: 'input-attributed'; detail: string; actor: 'operator' | 'human' | 'none'; proven: boolean }
+  /**
+   * Input occurred, but WHO produced it cannot be established.
+   *
+   * A first-class evidence kind rather than a note, because it is the outcome that most easily
+   * gets lost. `verdict` distinguishes the two states that matter:
+   *
+   *   attribution-unproven  - the record is silent or ambiguous
+   *   attribution-defective - the path's ownership tagging is MEASURED not to work
+   *
+   * A step carrying this evidence is not a pass and must never be summarised as one. The
+   * honest reading is "input occurred; ownership unestablished".
+   */
+  | { kind: 'input-unattributed'; detail: string; verdict: 'attribution-unproven' | 'attribution-defective' }
 
 /** Why a mission must re-observe before its next action. */
 export type PlanInvalidation =

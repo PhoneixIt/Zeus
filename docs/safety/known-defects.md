@@ -20,6 +20,38 @@ human click cannot yet be *positively* distinguished from the operator's own.
 **Status:** unfixed. Fixing it means changing the injection layer's sentinel handling, which
 must not weaken the keyboard path that demonstrably works.
 
+**Re-measured 2026-10-04 by the mission-level injection audit** (`npm run mission:gui-audit`),
+against the live host, reading only the control core's own counters:
+
+```
+mouseEventsSeen     6772
+mouseTaggedSeen        0   <- events that carried the ownership sentinel
+mouseUntaggedSeen   5476   <- events that did not
+panelInjectedSeen      0
+panelTaggedSeen        0
+```
+
+Still exactly zero tagged mouse events against 5476 untagged ones. The audit classifies this
+path as `attribution-defective` - deliberately distinct from `attribution-unproven`, because
+this is a *measured* broken control rather than missing information. The mission engine now
+**reports** the defect rather than working around it; nothing in the audit guesses the true
+actor to make a test pass.
+
+For contrast, the keyboard path over the same interval, with no forging by the audit:
+
+```
+livenessProbes  21 -> 22
+livenessHits    21 -> 22
+operatorEvents  21 -> 22
+humanEvents   6977 -> 6977
+verdict: operator-proven
+```
+
+A real `SendInput` keystroke carrying the real sentinel, observed by the real
+`WH_KEYBOARD_LL` hook, attributed to the operator, with `humanEvents` unmoved. So the
+keyboard ownership proof works and the mouse one does not. That asymmetry is now measured on
+demand rather than assumed.
+
 ## Release control — NOT PROVEN
 
 The operator has no proven way for a human to resume it after takeover.
