@@ -84,7 +84,7 @@ export type ToolResult =
   | { kind: 'nothing-found'; reason: string }
   | { kind: 'failed'; reason: string }
   | { kind: 'needs-human'; reason: string }
-  | { kind: 'replan-required'; reason: string; invalidation: PlanInvalidation }
+  | { kind: 'replan-required'; reason: string; invalidation: PlanInvalidation; observed?: string }
 
 export interface Tool {
   readonly name: string
@@ -415,6 +415,16 @@ export async function execute(
       }
       if (tr.kind === 'replan-required') {
         finalOutcome = { kind: 'replan-required', reason: tr.reason, invalidation: tr.invalidation }
+        // Recorded as its own event, not only as an outcome, so the audit can answer "why was
+        // replanning necessary?" directly. `observed` carries the step's own account of what it
+        // saw, which is what makes the judgement checkable rather than asserted.
+        emit({
+          type: 'plan-invalidated',
+          stepId: step.id,
+          reason: tr.reason,
+          invalidation: tr.invalidation,
+          observed: String((tr.data as { observed?: unknown } | undefined)?.observed ?? tr.summary ?? tr.reason),
+        } as never)
         break
       }
       if (tr.kind === 'failed') {

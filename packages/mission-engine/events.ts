@@ -141,6 +141,30 @@ export type ExecutionEvent =
       stepId: string | null
       reason: string
     }
+  /**
+   * A step declared that the PLAN no longer matches the world.
+   *
+   * Distinct from `step-failed` on purpose, and the distinction is the whole point of the
+   * recovery path. A step that fails has told us something went wrong. A step that reports
+   * `replan-required` has told us the plan's ASSUMPTION is false - the folder it was told to list
+   * is gone, the window it was told to target has closed. Retrying such a step cannot succeed,
+   * because the thing it depends on no longer exists.
+   *
+   * This event exists so the audit can answer "why was replanning necessary?" without
+   * re-deriving it from the step outcome. Before it, the only record was an outcome kind, and
+   * "the plan is invalid" and "this attempt failed" looked the same from outside.
+   */
+  | {
+      type: 'plan-invalidated'
+      seq: number
+      at: number
+      missionId: string
+      stepId: string
+      reason: string
+      invalidation: PlanInvalidation
+      /** What the step observed when it made the judgement, so the claim is auditable. */
+      observed: string
+    }
   /** The executor itself stopped: emergency stop, or an external cancel. */
   | {
       type: 'execution-halted'

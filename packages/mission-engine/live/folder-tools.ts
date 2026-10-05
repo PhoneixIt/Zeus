@@ -90,7 +90,20 @@ export const readFolderTool: Tool = {
 
 // ============================================================ 2. inspect-folder
 
-/** Lists the entries, consuming step 1's listing rather than re-reading the folder. */
+/**
+ * Lists the entries, consuming step 1's listing rather than re-reading the folder.
+ *
+ * DETECTS PLAN INVALIDITY. This is the mechanism the recovery path is built on, and it is a real
+ * detection rather than a flag: if the folder this step was told to list is no longer there,
+ * then the PLAN's assumption is false. Retrying cannot help, because the thing it depends on
+ * has ceased to exist. So it reports `replan-required` with `environment-changed` and its own
+ * account of what it observed.
+ *
+ * The distinction matters and is easy to get wrong. A step that returns `failed` has said
+ * "something went wrong"; the executor may retry it. A step that returns `replan-required` has
+ * said "the plan no longer matches the world"; retrying it is guaranteed to fail. Folding the
+ * two together is how a system either retries forever or gives up on a recoverable situation.
+ */
 export const inspectFolderTool: Tool = {
   name: 'inspect-folder',
   mode: 'filesystem',
@@ -98,6 +111,23 @@ export const inspectFolderTool: Tool = {
     const from = String(args.from ?? '')
     const src = ctx.prior?.[from]?.output as { path?: string } | undefined
     if (!src?.path) return { kind: 'failed', reason: `no folder listing available from step "${from}"` }
+
+    if (!existsSync(src.path)) {
+      // The world moved. Record what was actually seen so the reconciler has evidence rather
+      // than an assertion.
+      const parent = dirnameOf(src.path)
+      const observed = existsSync(parent)
+        ? `${src.path} no longer exists; ${parent} now contains [${readdirSync(parent).join(', ')}]`
+        : `${src.path} no longer exists, and neither does ${parent}`
+      return {
+        kind: 'replan-required',
+        reason: `the folder this step was told to list is gone: ${observed}`,
+        invalidation: { reason: 'environment-changed', detail: observed },
+        observed,
+        summary: observed,
+      }
+    }
+
     const entries = listingOf(src.path)
     return {
       kind: 'data',
