@@ -35,6 +35,9 @@ import { execute, type ToolRouter, type Verifier } from './executor.ts'
 import { tally } from './state.ts'
 import { compilePlan } from '../planner/compile.ts'
 import { ObjectiveReconciler, observeDirectories, type FreshObservation, type Substitution } from '../planner/reconcile.ts'
+// A structural type with no methods. The supervisor holds an observer in order to ASK it questions
+// about the world; the planner holds only what it was told, and so cannot ask anything itself.
+import type { ObservationProvider, WorldState } from '../observation/world-provider.ts'
 import type { PlanContext, PlanProvider, PlanProposal } from '../planner/plan.ts'
 import type { ExecutionEvent } from './events.ts'
 import type { ControlSurface } from '../../governance/contract.ts'
@@ -57,6 +60,63 @@ export interface Attempt {
   readonly invalidation?: { reason: string; detail: string }
   /** What the step actually saw when it judged the plan invalid. */
   readonly observedAtFailure?: string
+  /**
+   * The world THIS attempt was planned against.
+   *
+   * Recorded per attempt rather than once for the mission, because that is the whole point: on a
+   * recovery path, attempt 2 must be planned against a different view of the world than attempt 1
+   * was. Keeping only the latest would hide exactly the behaviour that makes recovery real, and a
+   * mission where every attempt shares one snapshot would be indistinguishable in the record from
+   * one that genuinely re-observed.
+   */
+  readonly observation?: {
+    readonly observationId: string
+    readonly root: string
+    readonly fingerprint: string
+    readonly observedAt: number
+    readonly entryCount: number
+  }
+}
+
+/**
+ * WHAT THE SUPERVISOR SAW, KEPT ACROSS ATTEMPTS.
+ *
+ * Exported for exactly one reason: a negative control has to be able to make the supervisor REUSE its
+ * first observation, and a control that cannot be expressed in a one-line diff is a control nobody
+ * runs.
+ *
+ *
+ * That is not hypothetical. The first attempt to prove "the supervisor re-observes on every attempt"
+ * tried to simulate a stale view by reconstructing an object literal, and the substitution was too
+ * large to write as a clean edit - so the control was skipped, and the harness reported the behaviour
+ * as proven while measuring nothing. A control that is silently hard to write is a control that will
+ * be reported as passing.
+ *
+ * So the state a control needs is named and exported. `lastWorld` is what a control substitutes;
+ * `observeCalls` is how a control can assert the supervisor looked again rather than reusing.
+ *
+ * Internal. Nothing outside this module should read it, and the "reuse" path below is the only
+ * legitimate use.
+ */
+export const SUPERVISOR_STATE = {
+  lastWorld: undefined as WorldState | undefined,
+  observeCalls: 0,
+}
+
+/**
+ * Whether to reuse the previous attempt's observation instead of taking a new one.
+ *
+ * A separate exported flag rather than a field on `SUPERVISOR_STATE`, so a negative control is a
+ * one-token diff: `false` -> `true`. Everything else the control needs was a multi-line edit, and a
+ * multi-line edit is a control that gets skipped - which is exactly what happened the first time.
+ */
+export let SUPERVISOR_STATE_REUSE = false
+
+/** Test-only: reset between runs so one control cannot leak into the next. */
+export function resetSupervisorState(): void {
+  SUPERVISOR_STATE.lastWorld = undefined
+  SUPERVISOR_STATE.observeCalls = 0
+  SUPERVISOR_STATE_REUSE = false
 }
 
 export interface RecoveryOutcome {
@@ -65,6 +125,12 @@ export interface RecoveryOutcome {
   readonly finalMission?: Mission
   /** Every substitution made across every attempt, in order. */
   readonly substitutions: readonly Substitution[]
+  /**
+   * Paths the refusal named as absent from the world, when the failure was about the world rather
+   * than the wording. Kept separate from `stopReason` so a caller can distinguish "this folder is not
+   * there" from "I do not understand this" without parsing a sentence.
+   */
+  readonly stopReasonMissing?: readonly string[]
   /** The fresh observation that drove the final replan. Absent if none was needed. */
   readonly freshObservation?: FreshObservation
   /** Set when recovery was attempted and did not succeed. */
@@ -100,6 +166,25 @@ export interface SupervisorDeps {
   readonly missionIdPrefix?: string
   readonly maxAttempts?: number
   readonly now?: () => number
+
+  /**
+   * THE READ-ONLY OBSERVER. Optional, and omitting it is a refusal rather than a fallback.
+   *
+   * M6 made the planner require a view of the world, which means the supervisor has to supply one -
+   * it is the component that knows the mission's scope and the caller's freshness tolerance. The
+   * alternative, letting a caller pass a pre-built `planCtx`, was the shape before M6 and it had a
+   * specific defect: the context was built ONCE and reused for every attempt, so a second attempt
+   * planned against the same stale snapshot as the first. On a recovery path that is the difference
+   * between re-observing the world and retrying against a view of a world that has since moved.
+   *
+   * So the supervisor observes per attempt, using the scope the caller's `planCtx` implies, and
+   * carries the fingerprint forward in the outcome.
+   */
+  readonly observer?: ObservationProvider
+  /** How deep to observe the mission scope. Default 4. */
+  readonly observeDepth?: number
+  /** How old an observation may be and still be planned against. Default 30s. */
+  readonly maxObservationAgeMs?: number
 }
 
 /**
@@ -114,11 +199,48 @@ export interface SupervisorDeps {
  * Reported as unavailable rather than substituted. The router already refuses to substitute
  * without being asked; this refuses earlier.
  */
+/** Whether a provider can plan at all without a view of the world. */
+function requiresWorld(provider: PlanProvider): boolean {
+  return (provider as { requiresObservation?: boolean }).requiresObservation === true
+}
+
+/**
+ * WHERE TO LOOK. The path the objective names, else the observation root.
+ *
+ * Derived from the objective rather than configured, because an observation of the wrong tree is
+ * worse than none: it would be a real, timestamped, fingerprinted view of somewhere the mission is
+ * not going to act, and the planner would plan from it with complete confidence.
+ */
+function missionScope(objective: string, planCtx: PlanContext, deps: SupervisorDeps): { root: string } {
+  const named = /(?:[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+)/.exec(objective)?.[0]
+  if (named) {
+    // The named path may be a file rather than a folder; the observer reports that, and the planner
+    // refuses on the evidence rather than this guessing wrong here.
+    return { root: named.replace(/[\\/]+$/, '') }
+  }
+  return { root: deps.observationRoot ?? planCtx.outputRoot }
+}
+
 export function checkToolAvailability(router: ToolRouter, mission: Mission): string[] {
   const problems: string[] = []
   for (const s of mission.plan) {
     const r = router.resolve(s)
     if ('unavailable' in r) problems.push(`step "${s.id}" (tool "${s.tool}"): ${r.unavailable}`)
+
+    // A step that names a capability must be served by a tool that PROVIDES it, not merely by a
+    // tool with the right name. The compiler cannot check this - it has no router - and the executor
+    // checks it too late, after earlier steps have done real work.
+    if (s.capability && router.resolveCapability) {
+      const cap = router.resolveCapability(s.capability)
+      if ('unavailable' in cap) {
+        problems.push(`step "${s.id}" requires the capability "${s.capability}": ${cap.unavailable}`)
+      } else if (cap.tool.name !== s.tool) {
+        problems.push(
+          `step "${s.id}" requires "${s.capability}", which resolves to "${cap.tool.name}", but the ` +
+          `plan names "${s.tool}". The plan and the registry disagree about what this step needs.`,
+        )
+      }
+    }
   }
   return problems
 }
@@ -135,14 +257,68 @@ export async function runMission(objective: string, planCtx: PlanContext, deps: 
   let freshObservation: FreshObservation | undefined
 
   for (let i = 0; i < maxAttempts; i++) {
-    const planned = await deps.provider.plan(currentObjective, planCtx)
+    // ---- OBSERVE, ONCE PER ATTEMPT.
+    //
+    // Inside the loop, deliberately. A single observation reused across attempts would mean a
+    // replan is planned against the same snapshot as the attempt that failed - so the supervisor
+    // would be re-planning against a world it had already seen change. That is the specific defect
+    // M6 exists to remove, and putting the observation inside the loop is the whole fix.
+    //
+    // The scope is taken from the objective's own named path when there is one, falling back to the
+    // observation root. Deriving it from the objective rather than from a constant is what makes the
+    // observation describe the thing the mission is about.
+    const scope = missionScope(currentObjective, planCtx, deps)
+    const world = deps.observer
+      ? SUPERVISOR_STATE_REUSE
+        // DEFECT PATH: reuses attempt 1's view instead of looking again. Reached only when a
+        // negative control flips the flag, which is what gives "the supervisor re-observes on every
+        // attempt" a control that can actually fail.
+        ? SUPERVISOR_STATE.lastWorld
+        : (SUPERVISOR_STATE.observeCalls++, deps.observer.observe({ root: scope.root, maxDepth: deps.observeDepth ?? 4 }))
+      : undefined
+    if (world) SUPERVISOR_STATE.lastWorld = world
+
+    // A provider that needs a world and was not given one is a REFUSAL, not a fallback to the old
+    // recipe-based planning. Falling back would make the world's presence optional, which is exactly
+    // the optionality M6 removed from the planner.
+    if (!world && requiresWorld(deps.provider)) {
+      return {
+        ok: false, attempts, substitutions, freshObservation, stepOutcomes,
+        stopReason:
+          `attempt ${i + 1}: ${deps.provider.name} requires an observation and none was configured. ` +
+          `A planner that plans without looking is a recipe, so this is refused rather than quietly ` +
+          `done the old way. Pass an ObservationProvider in SupervisorDeps.observer.`,
+      }
+    }
+
+    // Re-observed for the freshness check, so the planner is not asked to trust a snapshot on the
+    // strength of a timestamp. Two reads of the same unchanged world agree; two of a changed world
+    // do not, and the planner refuses rather than planning on a view that has moved.
+    const refetched = deps.observer && world
+      ? deps.observer.observe({ root: scope.root, maxDepth: deps.observeDepth ?? 4 })
+      : undefined
+
+    const attemptCtx: PlanContext = {
+      ...planCtx,
+      now,
+      ...(world ? { world } : {}),
+      maxObservationAgeMs: deps.maxObservationAgeMs ?? 30_000,
+      ...(refetched ? { refetched } : {}),
+    }
+
+    const planned = await deps.provider.plan(currentObjective, attemptCtx)
     if (!planned.ok) {
       return {
         ok: false, attempts,
         substitutions,
         freshObservation,
         stepOutcomes,
-        stopReason: `attempt ${i + 1}: the planner refused the objective - ${planned.reason}`,
+        // The failure CODE is carried, not flattened into the sentence. "the folder is not there"
+        // and "I do not understand this objective" and "the observation went stale" call for
+        // different responses from a user, and collapsing them into one message is how someone ends
+        // up rephrasing an objective that was perfectly fine.
+        stopReason: `attempt ${i + 1}: the planner refused the objective [${planned.code}] - ${planned.reason}`,
+        ...(planned.missing?.length ? { stopReasonMissing: planned.missing } : {}),
       }
     }
 
@@ -202,6 +378,15 @@ export async function runMission(objective: string, planCtx: PlanContext, deps: 
         : undefined,
       observedAtFailure: invalidationEvent && 'observed' in invalidationEvent
         ? String(invalidationEvent.observed)
+        : undefined,
+      observation: world
+        ? {
+            observationId: world.observationId,
+            root: world.scope.root,
+            fingerprint: world.fingerprint,
+            observedAt: world.observedAt,
+            entryCount: world.entries.length,
+          }
         : undefined,
     })
 

@@ -190,6 +190,15 @@ export interface Step {
    * filesystem step would do is a finding, not a style preference.
    */
   readonly mode: ExecutionMode
+  /**
+   * The ABSTRACT CAPABILITY this step requires, carried from the proposal.
+   *
+   * Present so the executor can check that the resolved tool still serves the requirement. Not a
+   * second selection path: resolution happened at compile time and is not redone. The check exists
+   * because a plan and a router that disagree about what a step needs would otherwise show up as a
+   * tool quietly doing something else, which is the failure this project refuses everywhere else.
+   */
+  readonly capability?: string
   /** Why this step is needed - what breaks without it. */
   readonly rationale: string
   /**
@@ -257,6 +266,17 @@ export interface Mission {
   readonly pendingApprovals: readonly PendingApproval[]
   readonly startedAt: number
   readonly finishedAt?: number
+  /**
+   * THE OBSERVATION THIS PLAN WAS BUILT ON.
+   *
+   * Present on every compiled mission, because `compile.ts` refuses a proposal without one. Its
+   * purpose is staleness detection: a supervisor that re-observes the world can compare fingerprints
+   * and know whether the plan still describes reality, and so whether to REPLAN or merely RETRY.
+   *
+   * Optional only at the type level, so a hand-built mission in a test may omit it. Every mission
+   * that came through the compiler has it.
+   */
+  readonly basis?: import('../planner/plan.ts').PlanBasis
 }
 
 export interface HistoryEntry {

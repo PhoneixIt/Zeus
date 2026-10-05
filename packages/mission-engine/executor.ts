@@ -122,6 +122,20 @@ export interface ToolRouter {
   effectOf?(step: Step): DeclaredEffect | undefined
   /** Optional: a refusal the named tool would issue for this step, before authorisation. */
   preflight?(step: Step): { blocked: string; needsHuman: boolean } | undefined
+  /**
+   * Optional: resolve an ABSTRACT CAPABILITY to a registered tool.
+   *
+   * A plan says `filesystem.inspect`; this is how that becomes `inspect-folder`. It lives on the
+   * router rather than in the planner, because a planner that knew the mapping would be coupled to
+   * the current implementations - and a planner reasoning about one tool's behaviour is reasoning
+   * about the implementation instead of the task.
+   *
+   * Returns `unavailable` when nothing registered serves the capability, and there is no fallback
+   * here. Serving a request with a different capability is the confident-wrong-answer failure this
+   * system exists to prevent, and it would be worst here: the plan's own text would stop describing
+   * what runs.
+   */
+  resolveCapability?(capability: string): { tool: Tool } | { unavailable: string; candidates: readonly string[] }
 }
 
 // ---------------------------------------------------------------- executor config
@@ -477,10 +491,39 @@ export async function execute(
     }
 
     // ---- tool selection, recorded so "which tool ran" is never a guess.
+    //
+    // A compiled step carries BOTH a capability and a tool name. The capability is the requirement
+    // and the tool is what the router resolved it to at compile time, so this is a check that the
+    // tool still serves the requirement rather than a second selection path. Resolving by capability
+    // here would mean the executor and the plan could disagree about what a step needs, and the
+    // disagreement would only surface as a tool behaving unexpectedly.
+    const declaredCapability = (step as { capability?: string }).capability
     const resolution = deps.tools.resolve(step)
     if ('unavailable' in resolution) {
       recordResult(step.id, { kind: 'failed', reason: `no tool available: ${resolution.unavailable}` }, cfg.now())
       continue
+    }
+    if (declaredCapability && deps.tools.resolveCapability) {
+      const byCap = deps.tools.resolveCapability(declaredCapability)
+      if ('unavailable' in byCap) {
+        // A capability nobody serves is a PLAN defect, and it is reported as such rather than
+        // falling back to the named tool - which is the substitution this project refuses everywhere.
+        recordResult(step.id, {
+          kind: 'failed',
+          reason: `plan defect: step "${step.id}" requires the capability "${declaredCapability}" and ${byCap.unavailable}`,
+        }, cfg.now())
+        continue
+      }
+      if (byCap.tool.name !== resolution.tool.name) {
+        recordResult(step.id, {
+          kind: 'failed',
+          reason:
+            `plan defect: step "${step.id}" requires "${declaredCapability}", which resolves to ` +
+            `"${byCap.tool.name}", but the plan names "${resolution.tool.name}". The plan and the ` +
+            `router disagree about what this step needs.`,
+        }, cfg.now())
+        continue
+      }
     }
     emit({
       type: 'tool-selected',

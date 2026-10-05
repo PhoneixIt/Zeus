@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
+import { DeterministicWorldAwarePlanProvider } from "../../planner/world-aware.ts"
+// @ts-expect-error Node test runner loads the TypeScript source directly.
+import { LocalObservationProvider } from '../../observation/local.ts'
+// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { compilePlan } from '../../planner/compile.ts'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
 import { renderPlan } from '../../planner/inspect-plan.ts'
@@ -43,8 +47,24 @@ function seed(): void {
 }
 seed()
 
-const ctx: PlanContext = { outputRoot, now: () => 1_700_000_000_000 }
-const provider = new DeterministicPlanProvider()
+/**
+ * A REAL observation of the seeded folder, and the context built around it.
+ *
+ * The old fixture was `{ outputRoot, now }` and the old planner needed nothing else - which is the
+ * whole problem restated as a test fixture. Supplying `world` here is not plumbing; it is the
+ * precondition the M6 planner enforces, and a test that faked it would be testing a planner that had
+ * not been made to look at anything.
+ */
+const observer = new LocalObservationProvider()
+const seedObservation = observer.observe({ root: sourceDir, maxDepth: 4 })
+const ctx: PlanContext = {
+  outputRoot,
+  now: () => seedObservation.observedAt,
+  world: seedObservation,
+  maxObservationAgeMs: 60_000,
+  refetched: seedObservation,
+}
+const provider = new DeterministicWorldAwarePlanProvider()
 const objective = `Summarise the contents of the folder "${sourceDir}"`
 
 test.after(() => rmSync(world, { recursive: true, force: true }))
@@ -60,6 +80,12 @@ test('the planner cannot execute, because it does not import anything that can',
     join(HERE, '..', '..', 'planner', 'plan.ts'),
     join(HERE, '..', '..', 'planner', 'provider.ts'),
     join(HERE, '..', '..', 'planner', 'summarizer.ts'),
+    // The M6 planner, and the world-state contract it reads. The claim "the planner cannot act"
+    // only holds if the modules that replaced the recipe are covered by the same test.
+    join(HERE, '..', '..', 'planner', 'world-aware.ts'),
+    join(HERE, '..', '..', 'planner', 'compile.ts'),
+    join(HERE, '..', '..', 'observation', 'world.ts'),
+    join(HERE, '..', '..', 'observation', 'world-provider.ts'),
   ]
   for (const f of files) {
     const src = readFileSync(f, 'utf8')
@@ -69,12 +95,49 @@ test('the planner cannot execute, because it does not import anything that can',
   }
 })
 
-test('the planner has no filesystem write capability at all', () => {
-  // `paths.ts` may READ for validation. Nothing in the planner may WRITE, because a planner that
-  // can write is a planner that can act, and "proposes" stops meaning anything.
-  const src = readFileSync(join(HERE, '..', '..', 'planner', 'deterministic.ts'), 'utf8')
-  assert.doesNotMatch(src, /writeFileSync|appendFileSync|mkdirSync|rmSync|unlinkSync|renameSync/)
-  assert.doesNotMatch(src, /from\s+['"]node:fs['"]/)
+test('no planner can WRITE, and the M6 planners cannot even READ', () => {
+  // Two different claims, and the difference matters.
+  //
+  //   NO WRITE, ANYWHERE. A planner that can write is a planner that can act, and "proposes" stops
+  //   meaning anything. This holds for every planner module.
+  //
+  //   NO READ, FOR THE WORLD-AWARE ONES. `deterministic.ts` and `world-aware.ts` both import
+  //   `node:fs`, which is correct and is the point: the world arrives as a `WorldState` handed in by
+  //   the supervisor, so the planner holds data and not a way to go and fetch more. The one `lstatSync`
+  //   in `deterministic.ts` is deliberate and is the sole difference between that planner and the
+  //   phrase recipe it replaced - so it is asserted rather than left to be discovered.
+  //
+  // The test previously asserted "no `node:fs`" for `deterministic.ts` and passed, then began failing
+  // once the existence check was added. A test that fails because the code improved is a test that was
+  // asserting an implementation detail instead of a boundary, so it is rewritten to state the boundary
+  // each module actually has.
+  const plannerDir = join(HERE, '..', '..', 'planner')
+  for (const f of ['deterministic.ts', 'world-aware.ts', 'plan.ts', 'provider.ts', 'summarizer.ts']) {
+    const src = readFileSync(join(plannerDir, f), 'utf8')
+    assert.doesNotMatch(
+      src, /writeFileSync|appendFileSync|mkdirSync|rmSync|unlinkSync|renameSync|createWriteStream/,
+      `${f} must not be able to write`,
+    )
+  }
+
+  // The world-aware planner must not go and look. It is handed a WorldState; re-reading would mean
+  // its "observation" is whatever it chose to fetch, which is exactly the property M6 removed.
+  const worldAware = readFileSync(join(plannerDir, 'world-aware.ts'), 'utf8')
+  // It may not ENUMERATE the filesystem. Matching a path the observer already reported needs one
+  // resolution call, because the observer reports resolved paths and the objective may not use the
+  // same spelling; listing, reading or stat-ing would mean the planner went looking for itself.
+  assert.doesNotMatch(worldAware, /readdirSync|readFileSync|lstatSync|statSync|existsSync|writeFileSync/)
+  const worldAwareCalls = [...worldAware.matchAll(/\b(realpathSync)\b/g)].map((m) => m[1])
+  assert.deepEqual([...new Set(worldAwareCalls)], ['realpathSync'], 'realpathSync is the only filesystem call permitted')
+
+  // The phrase planner may check ONE thing, and only one: does the target folder exist. Asserted so a
+  // later edit that widens its reach is caught here rather than by a reviewer.
+  const phrase = readFileSync(join(plannerDir, 'deterministic.ts'), 'utf8')
+  const fsCalls = [...phrase.matchAll(/\b(lstatSync|statSync|readdirSync|readFileSync|realpathSync)\b/g)].map((m) => m[1])
+  assert.deepEqual([...new Set(fsCalls)], ['lstatSync'], 'the phrase planner may only lstat its target')
+  // Anchored on the comment that documents the single check, so a second read would have to edit
+  // prose to hide. Case-insensitive because the sentence starts a line.
+  assert.match(phrase, /the ONE thing this planner checks about the world/i)
 })
 
 test('the planner produces a proposal, never a Mission', () => {
@@ -104,7 +167,36 @@ test('the proposal carries every field the contract requires', async () => {
   assert.equal(r.proposal.objective, objective)
   assert.ok(r.proposal.constraints.length > 0, 'a plan must state what it is forbidden to do')
   assert.ok(r.proposal.expectedResult.length > 0)
-  assert.equal(r.proposal.steps.length, 5)
+  assert.equal(r.proposal.steps.length, 4)
+  // The step count is 4, not the 5 the phrase-matching planner emitted, and the difference is
+  // informative rather than cosmetic: the M6 planner does not need a separate composition step,
+  // because `filesystem.transform` produces the content that `filesystem.write` consumes, and a
+  // step that exists only to move data between two other steps is a step that can fail for no reason
+  // of its own. The shape follows from the capabilities, not from a template.
+  // The middle capability is chosen from an OBSERVED FACT, so it is asserted conditionally rather
+  // than hardcoded. node.exe is present and permitted on this machine, so the planner took the
+  // `terminal.run` branch - and that branch is the evidence that the plan read the world rather
+  // than the objective. `test/observation.test.ts` proves the other branch by removing node from the
+  // observation, which a hardcoded expectation here could never do.
+  const caps = r.proposal.steps.map((s) => s.capability)
+  assert.equal(caps[0], 'filesystem.inspect')
+  assert.equal(caps[caps.length - 1], 'filesystem.read')
+  assert.equal(caps[caps.length - 2], 'filesystem.write')
+  assert.ok(
+    caps[1] === 'terminal.run' || caps[1] === 'filesystem.transform',
+    `the composition step must name a real capability, got "${caps[1]}"`,
+  )
+  const node = seedObservation.capabilities.find((c) => c.name === 'node.exe')
+  assert.equal(
+    caps[1] === 'terminal.run',
+    node?.exists === true && node?.permitted === true,
+    'the composition capability must follow the observed presence and permission of node.exe',
+  )
+  // And the M6 requirement: a plan must be able to say what it was planned against.
+  assert.ok(r.proposal.basis.observationId.length > 0, 'a plan must name the observation it was built on')
+  assert.ok(r.proposal.basis.fingerprint.length > 0, 'a plan must record a fingerprint')
+  assert.ok(r.proposal.basis.usedFacts.length > 0, 'a plan must name the observed facts it used')
+  assert.equal(r.proposal.basis.complete, true)
   for (const s of r.proposal.steps) {
     assert.ok(s.id && s.intent && s.mode && s.tool && s.rationale, `step ${s.id} is missing a required field`)
     assert.ok(s.verification?.kind, `step ${s.id} must declare a verification requirement`)
@@ -166,14 +258,20 @@ test('a proposal with a dangling dependency is REFUSED, not repaired', async () 
 
 test('a proposal with a dependency CYCLE is refused', async () => {
   const p = await goodProposal()
-  const steps = p.steps
+  // A cycle among steps that EXIST. The original pointed at 'confirm-report', which the phrase
+  // planner's five-step recipe happened to have and the M6 planner's four-step plan does not - so the
+  // test was passing on a DANGLING-DEPENDENCY refusal and never exercising the cycle detector at all.
+  // A control that fails for a different reason than it was built for is not evidence.
+  const first = p.steps[0].id
+  const last = p.steps[p.steps.length - 1].id
   const cyclic: PlanProposal = {
     ...p,
-    steps: steps.map((s, i) => (i === 0 ? { ...s, dependsOn: ['confirm-report'] } : s)),
+    steps: p.steps.map((s) => (s.id === first ? { ...s, dependsOn: [last] } : s)),
   }
   const c = compilePlan(cyclic, 'm1', 0)
   assert.equal(c.ok, false, 'a cycle must be refused')
-  if (!c.ok) assert.match(c.reason, /cycle|after it/)
+  // Assert on the SPECIFIC problem, so this cannot pass on some other refusal.
+  if (!c.ok) assert.match(c.reason, /cycle|listed after it/)
 })
 
 test('a proposal whose dependency is listed LATER is refused', async () => {
@@ -246,17 +344,27 @@ test('containment is not fooled by a shared name prefix', () => {
 })
 
 test('the planner refuses an objective naming a folder that does not exist', async () => {
+  // The M6 version asserts the FAILURE CODE, not merely `ok === false`. A folder that is not there,
+  // an objective that is not understood, and an observation that has gone stale are three different
+  // situations with three different remedies, and a test that accepts any of them proves nothing
+  // about which one the planner recognised.
   const r = await provider.plan('Summarise the contents of the folder "C:\\nope\\not\\here"', ctx)
   assert.equal(r.ok, false)
+  if (r.ok) return
+  assert.equal(r.code, 'insufficient-info')
+  assert.match(r.reason, /outside the observed root|no entry for the folder|not a folder/)
+  assert.deepEqual([...r.missing ?? []], ['C:\\nope\\not\\here'], 'the missing path is named, not just described')
 })
 
 test('the planner refuses an objective it does not recognise, and says what it handles', async () => {
   const r = await provider.plan('Book me a flight to Tokyo next Tuesday', ctx)
   assert.equal(r.ok, false)
   if (r.ok) return
-  assert.ok(r.reason.includes('does not recognise'))
+  assert.equal(r.code, 'not-understood')
   assert.ok(r.reason.includes('summarise') || r.reason.includes('folder'), 'the refusal must say what IS handled')
-  assert.deepEqual([...r.unsupported], ['Book me a flight to Tokyo next Tuesday'])
+  assert.deepEqual([...r.unsupported], ['folder summary'])
+  // A distinct code from the missing-folder case above, and that distinction is the point of §12.
+  assert.notEqual(r.code, 'insufficient-info')
 })
 
 test('an empty objective is refused', async () => {

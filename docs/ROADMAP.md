@@ -71,6 +71,18 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 38 | Terminal: environment reduced | **PARTIAL** | 7 requested, 8 injected by the loader |
 | 39 | Terminal: OS-level isolation | **ABSENT** | no Job Object / AppContainer / restricted token |
 | 40 | Terminal: child processes governed | **ABSENT** | reaped on timeout, not validated |
+| 41 | ObservationProvider, read-only by construction | **PROVEN** | import-graph test; control D |
+| 42 | WorldState: known vs assumed, no methods | **PROVEN** | deep structural walk |
+| 43 | Plan must name its observation | **PROVEN** | compiler refuses 4 broken bases |
+| 44 | Freshness: age AND re-observation | **PROVEN** | `too-old` / `world-changed` / `cannot-verify` |
+| 45 | Plan changes when the world changes | **PROVEN** | scenario C: same folder, different plan |
+| 46 | Stale plan cannot complete | **PROVEN** | control G |
+| 47 | Abstract capabilities, one tool each | **PROVEN** | router refuses ambiguity |
+| 48 | Unavailable capability, no substitution | **PROVEN** | compiler + router, two layers |
+| 49 | Distinct planning failure codes | **PROVEN** | 8 codes, asserted by name |
+| 50 | Planner cannot read or write | **PROVEN** | one `realpathSync`, asserted |
+| 51 | Fingerprint detects same-size edits | **ABSENT** | listing metadata only; documented |
+| 52 | Junction containment in the observer | **ABSENT** | a junction is followed; tools re-check |
 | 20 | Mouse injection + attribution | **BLOCKED** | P0: `dwExtraInfo` lost on mouse path |
 | 21 | GUI, mission-chosen action | **BLOCKED** | needs 20, and an arming decision |
 | 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
@@ -162,7 +174,29 @@ arrive. It is a real reduction, not a sealed set.
 `taskkill /T /F` genuinely reaps grandchildren — measured on a live tree, after an earlier probe
 gave a false negative by letting the parent exit first.
 
-### M6 — The planner that reads the world — NEXT
+### M6 — World-aware planning ✅ COMPLETE
+
+`DeterministicWorldAwarePlanProvider` plans from an observed `WorldState` and **refuses to produce a
+plan without one**. The compiler rejects any proposal that names no observation, no fingerprint, no
+observed facts, or an incomplete one — so "the planner is world-aware" is enforced at the boundary
+rather than asserted in a comment.
+
+`ObservationProvider` is read-only by construction: it imports `node:fs` and nothing that can act,
+which the tests check by reading the import graph. A `WorldState` is plain data with no methods.
+
+**Three scenarios on the real machine, one objective:**
+
+| | folder | plan chose | completed |
+|---|---|---|---|
+| A | 5 files, nested 2 deep, 4 extensions | `terminal.run` (node observed present) | yes |
+| B | 2 files, no nesting, different extensions | `terminal.run` | yes |
+| C | **the same folder as A**, node reported absent | `filesystem.transform` | yes |
+
+A and B differ in their plan text (file counts, extensions, depth, output name) while the phrase
+planner emits **byte-identical step intents and expected results** for both. C is the load-bearing
+one: identical objective, identical folder, different observation, **different plan**.
+
+### M7 — A plan the user can read and amend — NEXT
 
 Selected on evidence, not on milestone number. AIOS can now plan, execute, recover, verify and
 govern consequences — but every plan still comes from a hand-written `INTENTS` table, so the

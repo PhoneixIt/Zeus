@@ -1,5 +1,19 @@
 # Known defects
 
+## M6 — world-aware planning: what the observation does not see
+
+| absent | consequence |
+|---|---|
+| content hashing | the fingerprint detects adds, removes, renames and resizes — NOT a same-length in-place edit |
+| junction containment in the observer | a junction out of the observed root is recorded as a symlink and not followed (measured, verified by test) |
+| a process, window, registry, network or clipboard view | "world state" means exactly what the read-only observer could establish, and nothing more |
+| a universal Windows picture | this is situational awareness over the filesystem and the executable allowlist, not computer vision |
+
+The observer is read-only **by construction** — it imports `node:fs` and nothing that can act, and
+that is asserted by reading its import graph rather than by a comment. What it cannot do is *stop*
+another component from acting on what it reports; the tools re-check containment for themselves, which
+is why a junction finding is a limit of the observation and not a way past the tools.
+
 ## M5 — terminal mode: what it does not do
 
 Recorded here because the failure mode is a *claim* rather than a crash. Nothing below is a bug to

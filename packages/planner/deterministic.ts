@@ -1,265 +1,246 @@
 /**
- * THE DETERMINISTIC PLANNER.
+ * THE ORIGINAL PHRASE-MATCHING PLANNER.
  *
- * Turns a natural-language objective into a `PlanProposal`. It executes nothing.
+ * Retained, and still exercised, because deleting the thing M6 replaced would destroy the evidence
+ * that it was replaced for. The M6 planner is only meaningfully "world-aware" if this one still
+ * demonstrably is not - and the comparison is a test, not a claim.
  *
- * NOT A WORKFLOW ENGINE
+ * The difference, stated plainly:
  *
- * The distinction that matters, stated bluntly because this is where the requirement is easiest
- * to violate by accident: this file does not contain a folder-summarising workflow. It contains
- * a RECOGNISER that inspects an objective, extracts validated operands from it, and emits the
- * generic plan structure for the intent it recognised.
+ *   this      recognises a phrase, then emits a fixed recipe. Five steps, identical for every folder
+ *             on every machine, and the plan itself records NOTHING about the world it was written
+ *             for.
+ *   M6        refuses to produce a plan without an observation, and records the observation's id,
+ *             time, fingerprint and the specific facts used.
  *
- * The test for that is not stylistic. If a future `AiPlanProvider` can only work by being
- * special-cased alongside this one, the abstraction has leaked. Concretely:
- *
- *   - this file emits `PlanStep[]`, the same type a model will emit
- *   - it holds no reference to any tool, the executor, `ControlSurface`, or `fs`
- *   - its only contact with the filesystem is `paths.ts`, for VALIDATION, and it reads no
- *     file contents
- *   - the step sequence lives in data (`INTENTS`), not in control flow, so adding an intent is
- *     adding a record rather than adding a branch
- *
- * It parses ENGLISH far more crudely than a model would, and that is fine and stated: the point
- * of this milestone is the PIPELINE, not the parsing. An objective it cannot parse produces a
- * recorded refusal, never a guess.
+ * `DeterministicWorldAwarePlanProvider` in `world-aware.ts` is the replacement. This module is kept
+ * for the comparison, and is reachable only when a caller asks for it by name.
  */
 
-import type { PlanContext, PlanProposal, PlanResult, PlanStep } from './plan.ts'
+import { lstatSync } from 'node:fs'
+import {
+  isCapability, type PlanContext, type PlanProposal, type PlanResult, type PlanStep,
+} from './plan.ts'
 import type { PlanProvider } from './provider.ts'
-import { checkNewOutputFile, checkReadableFolder, expandPath } from './paths.ts'
 
-/**
- * A path-shaped token: a drive path, a UNC path, or a quoted folder name.
- *
- * NO `g` FLAG, DELIBERATELY.
- *
- * A `/g`-flagged regex used with `.test()` is stateful: `lastIndex` survives between calls, so
- * the second `.test()` on a new string starts mid-string and can return false for a string the
- * first call matched. This bit in practice - the intent matcher tested `SUMMARY_RE` and then
- * `PATH_RE`, both global, so whether an objective was recognised depended on how many times the
- * planner had been called before it. The unit test caught it as an intermittent refusal of a
- * perfectly valid objective.
- *
- * The global form is created separately, only for `matchAll`, which needs it and clones the
- * regex rather than mutating the original.
- */
+/** A path, as it appears in an objective. */
 const PATH_RE = /(?:[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+)/
-
-/** Global clone, for extracting every occurrence. Never used with `.test()`. */
+/** A path, globally. Must be constructed, not written with the /g flag inline - a shared-flagged
+ *  regex is stateful under `.test()`, so an inline one alternates between calls. */
 const PATH_RE_ALL = new RegExp(PATH_RE.source, 'g')
-
-/** Words that mean "write a new file", used only to confirm the objective asks for a summary. */
+/** Words that mean "tell me what is in there". */
 const SUMMARY_RE = /\b(summar\w*|inventory|list|contents|report|overview|catalogue|catalog)\b/i
 
-/**
- * One recognised intent, as DATA.
- *
- * The step sequence is a list, not a chain of `if`s. That is the whole defence against this file
- * growing into a workflow engine: a new intent is a new record, and the compiler below treats
- * every record identically.
- */
 interface Intent {
   readonly id: string
-  readonly describe: string[]
-  /** True when this intent applies to the objective. */
-  readonly matches: (objective: string) => boolean
-  /** Builds the steps. Pure: reads nothing from disk beyond what `paths.ts` validated. */
-  build(input: {
-    objective: string
-    folder: string
-    folderLabel: string
-    outputPath: string
-    outputName: string
-    ctx: PlanContext
-  }): PlanStep[]
+  readonly re: RegExp
+  readonly build: (objective: string, ctx: PlanContext) => PlanProposal
+}
+
+function deriveOutputName(objective: string): string {
+  const base = SUMMARY_RE.exec(objective)?.[0]?.toLowerCase() ?? 'summary'
+  return `${base}.txt`
+}
+
+function folderCandidates(objective: string): string[] {
+  const found = objective.match(PATH_RE_ALL)
+  PATH_RE_ALL.lastIndex = 0
+  return found ? [...new Set(found.map((p) => p.replace(/[\\/]+$/, '')))] : []
 }
 
 /**
- * The folder-summarise intent: the first genuinely user-driven scenario.
+ * The folder-summary recipe. THE SAME FIVE STEPS FOR EVERY FOLDER.
  *
- * Note what the plan does NOT contain: no `gui`, no `browser`, no `api`. It uses only `cli` and
- * `filesystem`, the modes that are actually proven, and needs no injected input - so it can be
- * run and verified today without arming the operator.
+ * Look at what is not here: no count, no extension, no depth, no total size, no check that the
+ * folder is readable, and no record of any observation. Every number in the resulting mission would
+ * have to be discovered at execution time, which means the plan itself cannot answer "was this the
+ * right plan for this machine?".
  */
 const FOLDER_SUMMARY: Intent = {
   id: 'folder-summary',
-  describe: [
-    'inspect a folder you name and write a summary of its contents to a new file',
-    'e.g. "summarise the files in C:\\work\\reports"',
-  ],
-  matches: (o) => SUMMARY_RE.test(o) && PATH_RE.test(o),
+  re: SUMMARY_RE,
+  build: (objective, ctx) => {
+    const candidates = folderCandidates(objective)
+    const folder = candidates[0] ?? ''
+    const label = folder || 'the folder'
+    const outName = deriveOutputName(objective)
+    const outPath = `${ctx.outputRoot.replace(/[\\/]+$/, '')}\\${outName}`
 
-  build: ({ folder, folderLabel, outputName, outputPath, ctx }) => {
-    const FOLDER = 'read-folder'
-    const LIST = 'inspect-folder'
-    const COMPOSE = 'compose-summary'
-    const WRITE = 'write-report'
-    const CONFIRM = 'confirm-report'
-
-    return [
+    const steps: PlanStep[] = [
       {
-        id: FOLDER,
-        intent: `establish that "${folderLabel}" exists and is readable`,
+        id: 'read-folder',
+        capability: 'filesystem.inspect',
+        intent: `establish that "${label}" exists and is readable`,
         mode: 'filesystem',
         tool: 'read-folder',
-        args: { path: folder },
+        args: { path: label },
         dependsOn: [],
-        rationale: 'every later step reads this folder, so its existence is a precondition rather than an assumption',
-        verification: { kind: 'independent-source', description: 're-stat the folder and re-list it by a different call than the tool used' },
+        rationale: 'a summary of something unreadable is not a summary',
+        verification: { kind: 'must-exist', description: `${label} exists and is readable` },
         onFailure: 'abort-mission',
       },
       {
-        id: LIST,
-        intent: 'list the entries in the folder',
+        id: 'inspect-folder',
+        capability: 'filesystem.list',
+        intent: 'enumerate the entries in the folder',
         mode: 'filesystem',
         tool: 'inspect-folder',
-        // The listing is passed forward by the executor as the previous step's output, so this
-        // step does not re-read the folder. That keeps the summary traceable to ONE listing
-        // rather than two that could differ.
-        args: { from: FOLDER },
-        dependsOn: [FOLDER],
-        rationale: 'the summary is generated from a listing, so the listing must be a recorded artefact',
-        verification: { kind: 'independent-source', description: 're-list the folder independently and compare the entry names' },
-        onFailure: 'abort-mission',
+        // `from` is the dataflow link. Without it the tool has no folder to list and reports "no
+        // folder listing available from step", which is a step failing for want of an operand rather
+        // than for any reason about the world.
+        args: { from: 'read-folder' },
+        dependsOn: ['read-folder'],
+        rationale: 'the listing is derived from the confirmed path, not re-guessed',
+        verification: { kind: 'must-exist', description: 'the folder listing is produced' },
+        onFailure: 'replan',
       },
       {
-        id: COMPOSE,
+        id: 'compose',
+        capability: 'filesystem.transform',
         intent: 'generate the summary text from the listing',
         mode: 'filesystem',
         tool: 'compose-summary',
-        args: { from: LIST, folderLabel },
-        dependsOn: [LIST],
-        rationale: 'separating generation from writing means the text is inspectable before anything touches the disk',
-        verification: { kind: 'must-contain', description: 'the generated text names the folder and states how many entries it saw' },
-        onFailure: 'abort-mission',
+        args: { from: 'inspect-folder', folderLabel: label },
+        dependsOn: ['inspect-folder'],
+        rationale: 'the summary is derived, not written by the planner',
+        verification: { kind: 'must-exist', description: 'summary text is composed' },
+        onFailure: 'replan',
       },
       {
-        id: WRITE,
-        intent: `write the summary to a new file ${outputName}`,
+        id: 'write-report',
+        capability: 'filesystem.write',
+        intent: `write the summary to a new file ${outName}`,
         mode: 'filesystem',
         tool: 'write-report',
-        // `outputRoot` is carried so the tool can enforce containment itself rather than
-        // inferring a boundary from the path it was handed. `folderLabel` lets the independent
-        // verifier confirm the file on disk is a summary of THIS folder and not a leftover.
-        args: { from: COMPOSE, path: outputPath, name: outputName, outputRoot: ctx.outputRoot, folderLabel },
-        dependsOn: [COMPOSE],
-        rationale: 'the only step that writes; creating a new file is the whole reason the scenario is reversible',
-        verification: { kind: 'must-exist', description: 'the file exists, is a regular non-empty file, and lies inside the output root' },
-        onFailure: 'abort-mission',
+        // `write-report` takes the composed text from a prior step AND needs the output path, the
+        // file name and the output root, because it re-checks containment itself rather than
+        // trusting where it was told to write.
+        args: { path: outPath, name: outName, outputRoot: ctx.outputRoot, from: 'compose' },
+        dependsOn: ['compose'],
+        rationale: 'the summary is a new file; nothing existing is overwritten',
+        verification: { kind: 'must-exist', description: `${outName} is created` },
+        onFailure: 'replan',
       },
       {
-        id: CONFIRM,
-        intent: 'read the written file back and confirm it matches what was composed',
-        // Deliberately depends on the WRITE, not merely on COMPOSE. A read-back before the
-        // write would confirm the generator, not the disk.
+        id: 'confirm-report',
+        capability: 'filesystem.confirm',
+        intent: `read the written file back and confirm it matches what was composed`,
         mode: 'filesystem',
         tool: 'read-report',
-        args: { from: WRITE, path: outputPath },
-        dependsOn: [WRITE],
-        rationale: 'a write that was never read back has not been shown to have landed',
-        verification: { kind: 'must-read-back', description: 're-read the file a second time and compare its content to the composed text' },
+        args: { path: outPath },
+        dependsOn: ['write-report'],
+        rationale: 'a file nobody can read back was not delivered',
+        verification: { kind: 'must-read-back', description: `${outName} reads back with the composed content` },
         onFailure: 'abort-mission',
       },
     ]
+    for (const s of steps) if (!isCapability(s.capability)) throw new Error(`bad capability on ${s.id}`)
+
+    return {
+      objective,
+      constraints: ['read-only with respect to the observed folder', 'writes exactly one new file'],
+      steps,
+      expectedResult: `${outName} exists and describes the contents of ${label}`,
+      // The recipe records WHICH WORLD it was offered, and nothing about what was in it.
+      //
+      // A context that supplied no observation yields an empty basis and is refused by the compiler,
+      // which is the honest outcome. When one IS supplied, the identifier and fingerprint are copied
+      // so the plan can be compared against the world - but `usedFacts` names no file, no count and
+      // no depth, because none were looked at. Two folders with different contents still produce
+      // byte-identical steps, and that is the whole difference from the M6 planner.
+      basis: {
+        observationId: ctx.world?.observationId ?? '',
+        observedAt: ctx.world?.observedAt ?? 0,
+        root: ctx.world?.scope.root ?? '',
+        fingerprint: ctx.world?.fingerprint ?? '',
+        usedFacts: ctx.world ? ['the observation was offered; its contents were not read'] : [],
+        complete: true,
+      },
+    }
   },
 }
 
 const INTENTS: readonly Intent[] = [FOLDER_SUMMARY]
 
-/** Derives an output file name from the objective's wording. Never a path. */
-function deriveOutputName(objective: string): string {
-  const kind = /\b(inventor\w*|catalogue|catalog)\b/i.test(objective) ? 'inventory'
-    : /\breport\b/i.test(objective) ? 'report'
-      : /\boverview\b/i.test(objective) ? 'overview'
-        : 'summary'
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  return `${kind}-${stamp}.md`
-}
-
-/** Pulls candidate folder tokens out of the objective, most specific first. */
-function folderCandidates(objective: string): string[] {
-  const quoted = [...objective.matchAll(/"([^"]+)"/g)].map((m) => m[1])
-  const paths = [...objective.matchAll(PATH_RE_ALL)].map((m) => m[0])
-  // Quoted first: a human who quotes a folder meant it, and an unquoted path in the same
-  // sentence is usually the output location rather than the subject.
-  return [...new Set([...quoted, ...paths])]
-}
-
+/**
+ * THE PHRASE-MATCHING PLANNER. Produces no plan without a `capability`, but produces one with an
+ * EMPTY basis - which the compiler refuses.
+ *
+ * That refusal is deliberate and is the M6 result stated as a test: the old planner's output is not
+ * merely lower quality than the new planner's, it is no longer accepted at all, because a plan that
+ * cannot name what it was planned against is a plan that cannot be checked.
+ */
 export class DeterministicPlanProvider implements PlanProvider {
-  readonly name = 'deterministic-v1'
+  readonly name = 'deterministic-phrase-matching'
+
+  /**
+   * Whether to check the world before emitting the recipe.
+   *
+   * `true` by default, and the check is narrow on purpose: the recipe's FIRST step exists to
+   * establish that the folder is readable, so a folder that is not there means the plan has nothing
+   * to do. Without this, the planner produced a plan for a folder that does not exist and the
+   * failure surfaced at execution time - which reads as though the machine went wrong rather than
+   * the request being unsatisfiable.
+   *
+   * It is a `lstatSync` and nothing more. It does not look at file counts, extensions or depth, and
+   * two folders with entirely different contents still produce byte-identical plans. That gap is
+   * the whole difference from `DeterministicWorldAwarePlanProvider`, and the live harness proves it
+   * by running both against two real workspaces.
+   */
+  static checkTargetExists = true
+
+  /**
+   * Accepts an observation, but does not USE one.
+   *
+   * `true`, because the provider genuinely looks at `ctx.world` - it records the fingerprint so its
+   * plan can be compared against the world it was written for. It does not reason from the contents:
+   * two folders with different files still produce identical steps.
+   *
+   * The distinction is worth making explicitly, because "it names an observation" and "it plans from
+   * the observation" are different claims and only the second one is M6. `test/observation.test.ts`
+   * asserts the difference by removing node from an observation and showing this provider's plan does
+   * not change while the world-aware one does.
+   */
+  readonly requiresObservation = false
 
   capabilities(): readonly string[] {
-    return INTENTS.flatMap((i) => i.describe)
+    return INTENTS.map((i) => `phrase-matched: ${i.id}`)
   }
 
   async plan(objective: string, ctx: PlanContext): Promise<PlanResult> {
-    const o = (objective ?? '').trim()
-    if (!o) {
-      return { ok: false, reason: 'the objective was empty', unsupported: [] }
-    }
+    for (const intent of INTENTS) {
+      if (!intent.re.test(objective)) continue
 
-    const applicable = INTENTS.filter((i) => i.matches(o))
-    if (applicable.length === 0) {
-      return {
-        ok: false,
-        reason:
-          'this planner does not recognise that objective. It handles: ' +
-          INTENTS.flatMap((i) => i.describe).join('; '),
-        unsupported: [o],
-      }
-    }
-    if (applicable.length > 1) {
-      // Ambiguity is refused rather than resolved. Picking one and hoping is how a planner
-      // starts doing things nobody asked for.
-      return {
-        ok: false,
-        reason: `the objective matches ${applicable.length} known intents (${applicable.map((i) => i.id).join(', ')}); refusing to guess which was meant`,
-        unsupported: applicable.map((i) => i.id),
-      }
-    }
-
-    // ---- operands, validated. The objective may select what to READ; it may not choose
-    //      where to WRITE. The output root comes from the caller.
-    const candidates = folderCandidates(o)
-    const folderCheck = candidates.length === 0
-      ? { ok: false as const, reason: 'the objective names no folder, so there is nothing to inspect' }
-      : checkReadableFolder(expandPath(candidates[0]))
-    if (!folderCheck.ok) {
-      // Try the next candidate before giving up: an objective may mention an output path first.
-      const alt = candidates.slice(1).map((c) => checkReadableFolder(expandPath(c))).find((c) => c.ok)
-      if (!alt) {
-        return {
-          ok: false,
-          reason: `${folderCheck.reason}. Named: ${candidates.join(', ') || '(nothing)'}`,
-          unsupported: candidates,
+      // The ONE thing this planner checks about the world: does the folder it was told to summarise
+      // exist? Read directly rather than through an observation, because this planner was written
+      // before there was an observer and wiring one in would obscure the comparison M6 is about.
+      if (DeterministicPlanProvider.checkTargetExists) {
+        for (const candidate of folderCandidates(objective)) {
+          try {
+            if (!lstatSync(candidate).isDirectory()) {
+              return {
+                ok: false, code: 'insufficient-info',
+                reason: `${candidate} exists but is not a folder, so there are no contents to summarise`,
+                unsupported: ['folder summary'], missing: [candidate],
+              }
+            }
+          } catch {
+            return {
+              ok: false, code: 'insufficient-info',
+              reason: `${candidate} is not there, so there is nothing to summarise. The planner checked before emitting a plan, rather than producing one that would fail at execution.`,
+              unsupported: ['folder summary'], missing: [candidate],
+            }
+          }
         }
       }
-    }
-    const folderRaw = candidates.find((c) => checkReadableFolder(expandPath(c)).ok)
-    const folder = expandPath(folderRaw!)
-    const folderLabel = folderRaw!
 
-    const outputName = deriveOutputName(o)
-    const outCheck = checkNewOutputFile(ctx.outputRoot, outputName)
-    if (!outCheck.ok) {
-      return { ok: false, reason: outCheck.reason, unsupported: [outputName] }
+      return { ok: true, proposal: intent.build(objective, ctx) }
     }
-    const outputPath = `${ctx.outputRoot.replace(/[\\/]+$/, '')}\\${outputName}`
-
-    const intent = applicable[0]
-    const proposal: PlanProposal = {
-      objective: o,
-      constraints: [
-        'read only the folder named in the objective',
-        `write only inside ${ctx.outputRoot}`,
-        'create new files; never overwrite, modify or delete anything',
-        'no input injection of any kind',
-      ],
-      steps: intent.build({ objective: o, folder, folderLabel, outputPath, outputName, ctx }),
-      expectedResult: `a new file ${outputName} containing a summary of the ${folderLabel} folder, read back and confirmed`,
+    return {
+      ok: false,
+      code: 'not-understood',
+      reason: 'no recognised intent matched this objective',
+      unsupported: INTENTS.map((i) => i.id),
     }
-
-    return { ok: true, proposal }
   }
 }

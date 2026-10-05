@@ -305,7 +305,20 @@ export function listingMatchesVerifier(): Verifier {
 
 export function summaryIsWellFormedVerifier(): Verifier {
   return {
-    verifies: (step: Step) => step.id === 'compose-summary',
+    // Keyed on the CAPABILITY, not on a step id.
+    //
+    // The other verifiers here dispatch on `step.id`, which means each one silently stops claiming
+    // any step the planner happens to name differently. The M6 planner names this step `compose`
+    // rather than `compose-summary`, so the verifier claimed nothing and the step failed with "no
+    // verifier is registered" - a real failure, caused by a coupling between a verifier and a
+    // planner's naming habits.
+    //
+    // The capability is the contract between them, and it is the thing the compiler already requires
+    // every step to declare. Dispatching on it means a step can be renamed without silently losing
+    // its verification, which is the failure mode where a step quietly becomes unverified and nobody
+    // notices until a mission is reported complete on less evidence than it claims.
+    verifies: (step: Step) => (step as { capability?: string }).capability === 'filesystem.transform'
+      || step.id === 'compose-summary',
     async verify(step, _ctx, toolData) {
       const claimed = toolData as { text?: string; folderLabel?: string; provenance?: string } | undefined
       if (typeof claimed?.text !== 'string') return { rejected: 'no summary text was produced' }

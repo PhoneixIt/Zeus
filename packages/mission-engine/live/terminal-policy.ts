@@ -140,46 +140,25 @@ function rejectTraversal(arg: string): string | undefined {
  * Refused outright, with the reason, because each of these converts a validated argument list back
  * into a string it will re-parse, or can prompt, or can install.
  *
- * Kept as an explicit list rather than a pattern so a new dangerous program is refused by default:
- * it is simply not on the allowlist, and this list exists to explain the refusal to a human.
+ * THE TABLE LIVES IN `observation/allowlist-view.ts`, and is re-exported here for the callers that
+ * already import this module. One copy only: a second copy would be a second thing to keep in step,
+ * and a stale one would make the observer describe a policy that no longer exists.
+ *
+ * The direction of the dependency is deliberate. The observer needs to know what is permitted; it
+ * must not be able to decide what is permitted. So the data sits in a module with no behaviour, the
+ * policy imports it, and the observer imports only that.
  */
-export const REFUSED_PROGRAMS: Readonly<Record<string, string>> = {
-  'cmd.exe': 'cmd re-parses its argument as a command string, so the argv this policy validated would not be the argv that runs',
-  'powershell.exe': 'PowerShell re-parses its argument as a script, which defeats argument validation',
-  'pwsh.exe': 'PowerShell re-parses its argument as a script, which defeats argument validation',
-  'bash.exe': 'a shell re-parses its arguments, which defeats argument validation',
-  'sh.exe': 'a shell re-parses its arguments, which defeats argument validation',
-  'wsl.exe': 'starts a Linux environment whose filesystem and process rules are entirely outside this policy',
-  'mshta.exe': 'executes script from a string, which defeats argument validation',
-  'wscript.exe': 'executes script files and can be driven to network activity',
-  'cscript.exe': 'executes script files and can be driven to network activity',
-  'rundll32.exe': 'loads and runs arbitrary exported functions',
-  'reg.exe': 'modifies the registry',
-  'sc.exe': 'creates or modifies system services',
-  'net.exe': 'manages shares, users and network resources',
-  'netsh.exe': 'reconfigures networking and firewall rules',
-  'takeown.exe': 'changes file ownership',
-  'icacls.exe': 'changes file permissions',
-  'attrib.exe': 'changes file attributes',
-  'cipher.exe': 'can encrypt or wipe data outside the workspace',
-  'bcdedit.exe': 'modifies boot configuration',
-  'schtasks.exe': 'creates scheduled tasks that outlive the mission',
-  'ssh.exe': 'can prompt for a passphrase or password and would hold the mission open',
-  'sftp.exe': 'can prompt for a credential',
-  'scp.exe': 'can prompt for a credential',
-  'plink.exe': 'can prompt for a credential',
-  'sudo.exe': 'prompts for elevation',
-  'runas.exe': 'prompts for a credential',
-  'gpg.exe': 'prompts for a passphrase',
-  'curl.exe': 'performs network egress, which this policy does not restrict',
-  'wget.exe': 'performs network egress, which this policy does not restrict',
-  'winget.exe': 'installs software, which changes the machine beyond the workspace and runs vendor install scripts',
-  'choco.exe': 'installs software, which changes the machine beyond the workspace and runs vendor install scripts',
-  'scoop.ps1': 'installs software, which changes the machine beyond the workspace and runs vendor install scripts',
-  'npm.exe': 'runs install scripts, which execute arbitrary downloaded code',
-  'pip.exe': 'installs packages and runs their build steps',
-  'taskkill.exe': 'terminates processes outside the workspace',
-}
+import { REFUSED_PROGRAMS } from '../../observation/allowlist-view.ts'
+
+/**
+ * The same table, re-exported for callers that already import this module.
+ *
+ * A separate `export { X } from ...` line was tried and it does NOT work under Node's type-stripping:
+ * the re-exported binding never materialises, and every consumer saw `REFUSED_PROGRAMS is not
+ * defined` at runtime while the type checker stayed silent. Importing the name and re-exporting the
+ * local binding does work, because the identifier is then a real local before it is exported.
+ */
+export { REFUSED_PROGRAMS }
 
 // ============================================================ the git consequence table
 
@@ -341,7 +320,8 @@ export function buildAllowlist(systemRoot: string, programFiles: string): readon
   return [
     { abs: `${programFiles}\\nodejs\\node.exe`, name: 'node.exe', classify: classifyNode },
     { abs: `${programFiles}\\Git\\cmd\\git.exe`, name: 'git.exe', classify: classifyGit },
-    // Present only to be explained. Listed so the refusal has a reason to give.
+    // Present only to be explained. Listed so the refusal has a reason to give, and so the
+    // ordering test can prove REFUSED_PROGRAMS is consulted BEFORE this list.
     { abs: `${systemRoot}\\System32\\cmd.exe`, name: 'cmd.exe', classify: () => block(REFUSED_PROGRAMS['cmd.exe']) },
   ]
 }

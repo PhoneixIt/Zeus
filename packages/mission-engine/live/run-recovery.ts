@@ -31,6 +31,8 @@ import { join, basename, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { runMission } from '../supervisor.ts'
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
+// @ts-expect-error Node test runner loads the TypeScript source directly.
+import { LocalObservationProvider } from '../../observation/local.ts'
 import { ObjectiveReconciler, observeDirectories } from '../../planner/reconcile.ts'
 import { renderPlan } from '../../planner/inspect-plan.ts'
 import { ToolRegistry } from '../../tool-router/router.ts'
@@ -62,8 +64,47 @@ for (const [n, b] of [['a.md', '# a\n'], ['b.txt', 'b\n'], ['sub', '']] as Array
 }
 
 const provider = new DeterministicPlanProvider()
-const registry = new ToolRegistry({ registrations: FOLDER_TOOLS.map((tool) => ({ tool })) })
-const planCtx: PlanContext = { outputRoot, now: () => Date.now() }
+/**
+ * The folder tools, each declaring which ABSTRACT CAPABILITY it serves.
+ *
+ * M6 made the capability part of the contract, so a registration without one serves nothing and every
+ * step naming a capability is refused before execution. Five distinct capabilities for five distinct
+ * jobs - confirm a folder is readable, enumerate it, transform its contents, write, confirm the
+ * artifact reads back - because collapsing the two read-ish jobs into one name is what made an
+ * earlier attempt ambiguous, and the router was right to refuse it.
+ */
+const FOLDER_CAPABILITIES = [
+  { name: 'read-folder', capabilities: ['filesystem.inspect'] },
+  { name: 'inspect-folder', capabilities: ['filesystem.list'] },
+  { name: 'compose-summary', capabilities: ['filesystem.transform'] },
+  { name: 'write-report', capabilities: ['filesystem.write'] },
+  { name: 'read-report', capabilities: ['filesystem.confirm'] },
+] as const
+
+/** The folder tools as registrations, optionally substituting one tool for a test. */
+function folderRegistrations(replace: Record<string, Tool> = {}) {
+  return FOLDER_CAPABILITIES.map((c) => ({
+    tool: replace[c.name] ?? FOLDER_TOOLS.find((t) => t.name === c.name)!,
+    capabilities: [...c.capabilities],
+  }))
+}
+const registry = new ToolRegistry({ registrations: folderRegistrations() })
+/**
+ * The context, carrying a REAL observation of the folder the mission will read.
+ *
+ * M6 made the compiler refuse a plan that names no observation, so the recovery harness has to supply
+ * one - and it must be a real one, because the supervisor's staleness check compares this
+ * fingerprint against a fresh read. A fabricated observation would make every recovery attempt agree
+ * with itself and the replan-on-change behaviour could not be exercised.
+ */
+const observer = new LocalObservationProvider()
+const seeded = observer.observe({ root: before, maxDepth: 4 })
+const planCtx: PlanContext = {
+  outputRoot,
+  now: () => Date.now(),
+  world: seeded,
+  maxObservationAgeMs: 60_000,
+}
 const objective = `Summarise the contents of the folder "${before}"`
 
 const CONFIG = {
@@ -80,6 +121,7 @@ const CONFIG = {
 
 const deps = {
   provider, tools: registry, verifier: folderVerifiers(outputRoot),
+  observer, observeDepth: 4, maxObservationAgeMs: 60_000,
   control: fakeControl() as ControlSurface, config: CONFIG,
   observationRoot: root, missionIdPrefix: 'recovery',
 }
@@ -125,6 +167,19 @@ function renamingInspectTool(destination: string) {
  * R2's write was refused as "outside the permitted output folder" by a containment check pointed
  * at a different directory. The check was right; the harness had wired it to the wrong world.
  */
+/**
+ * Supervisor dependencies for one scenario.
+ *
+ * The observer is supplied HERE rather than at the call sites, because the supervisor observes once
+ * per attempt from this field and there is no other way to supply it. When it was missing, every
+ * attempt recorded `observation: undefined` - the missions still recovered, because the phrase
+ * planner does not read the world, so the fingerprints were simply absent from the record rather than
+ * contradicting anything. The recovery evidence was therefore thinner than it looked: the harness
+ * printed per-attempt observation details and got nothing, and nothing failed.
+ *
+ * A gap in the evidence that reports no gap is the specific failure this project keeps having to
+ * catch, and it is why `observation` is now printed rather than merely available.
+ */
 const depsFor = (out: string, tools: ToolRegistry, over: Record<string, unknown> = {}) => ({
   provider,
   tools,
@@ -133,6 +188,9 @@ const depsFor = (out: string, tools: ToolRegistry, over: Record<string, unknown>
   config: CONFIG,
   observationRoot: dirname(out),
   missionIdPrefix: 'scn',
+  observer,
+  observeDepth: 4,
+  maxObservationAgeMs: 60_000,
   ...over,
 })
 
@@ -150,19 +208,32 @@ console.log(`  folders: ${readdirSync(root).join(', ')}`)
 
 const mover = renamingInspectTool(after)
 const recoveryTools = new ToolRegistry({
-  registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? mover.tool : t })),
+  registrations: folderRegistrations({ 'inspect-folder': mover.tool }),
 })
 const outcome = await runMission(objective, planCtx, depsFor(outputRoot, recoveryTools, { maxAttempts: 3 }))
 
 console.log('')
 console.log('=== ATTEMPT 1: the plan is executed against a world that then moves ===')
 const a1 = outcome.attempts[0]
-console.log(`  objective    ${a1.objective}`)
-console.log(`  plan         ${a1.proposal.steps.map((s) => s.id).join(' -> ')}`)
-console.log(`  state        ${a1.state}   complete=${a1.complete}`)
-console.log(`  verified     ${a1.verified}   failed ${a1.failed}   skipped ${a1.skipped}`)
-console.log(`  invalidation ${a1.invalidation?.reason}: ${a1.invalidation?.detail}`)
-console.log(`  observed     ${a1.observedAtFailure}`)
+// Guarded, like every other access in this harness. M6 made the planner refuse an objective whose
+// folder is not there, so a recovery run whose FIRST attempt is refused produces no attempts at all -
+// and dereferencing `attempts[0].objective` on that outcome is the same crash this file already
+// documents at length two hundred lines below. The comment was written for attempt 2; the fix has to
+// apply to attempt 1 too.
+const a1obj = outcome.attempts[0]
+console.log(`  objective    ${a1obj?.objective ?? `(no attempt was made: ${outcome.stopReason ?? 'no reason recorded'})`}`)
+if (a1obj) {
+  console.log(`  plan         ${a1obj.proposal.steps.map((s) => s.id).join(' -> ')}`)
+  console.log(`  state        ${a1obj.state}   complete=${a1obj.complete}`)
+  console.log(`  verified     ${a1obj.verified}   failed ${a1obj.failed}   skipped ${a1obj.skipped}`)
+  console.log(`  invalidation ${a1obj.invalidation?.reason}: ${a1obj.invalidation?.detail}`)
+  console.log(`  observed     ${a1obj.observedAtFailure}`)
+  // Which world THIS attempt was planned against. Two attempts sharing a fingerprint would mean the
+  // supervisor re-planned against a snapshot it had already seen change - the defect M6 exists to
+  // remove - so the fingerprints are printed side by side below rather than summarised away.
+  console.log(`  observation  ${a1obj.observation?.fingerprint}  root=${a1obj.observation?.root}`)
+  console.log(`                ${a1obj.observation?.entryCount} entries at ${a1obj.observation ? new Date(a1obj.observation.observedAt).toISOString() : 'n/a'}`)
+}
 
 console.log('')
 console.log('=== THE WORLD, AFTER THE MOVE ===')
@@ -252,8 +323,17 @@ console.log('=== SCENARIO R2: THE WORLD MOVES TWICE ===')
       return inner.run(ctx, args)
     },
   }
-  const r2tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? stepwise : t })) })
-  const r2 = await runMission(`Summarise the folder "${start}"`, { outputRoot: out2, now: () => Date.now() }, depsFor(out2, r2tools, { maxAttempts: 4, observationDepth: 3 }))
+  const r2tools = new ToolRegistry({ registrations: folderRegistrations({ 'inspect-folder': stepwise }) })
+  // Scenarios R2 and R3 build their own worlds, so they need their own observation of THEIR folder.
+  // Reusing the primary scenario's `planCtx` pointed the planner at a directory that does not exist
+  // in this world, so it refused the objective before the mission started and the scenario reported
+  // "attempts 0" - a failure in the harness's setup that looked like a failure of recovery.
+  const r2seed = observer.observe({ root: start, maxDepth: 4 })
+  const r2 = await runMission(
+    `Summarise the folder "${start}"`,
+    { outputRoot: out2, now: () => Date.now(), world: r2seed, maxObservationAgeMs: 60_000 },
+    depsFor(out2, r2tools, { maxAttempts: 4, observationDepth: 3 }),
+  )
   console.log(`  attempts ${r2.attempts.length}   recovered ${r2.ok}`)
   for (const s of r2.substitutions) console.log(`    ${s.from}  ->  ${s.to}`)
   console.log(`  final objective ${r2.attempts[r2.attempts.length - 1]?.objective}`)
@@ -297,8 +377,14 @@ console.log('=== SCENARIO R3: THE RETRY ITSELF FAILS ===')
       return mover.run(ctx, args)
     },
   }
-  const r3tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? moveThenBreak : t })) })
-  const r3 = await runMission(`Summarise the folder "${b3}"`, { outputRoot: o3, now: () => Date.now() }, depsFor(o3, r3tools, { maxAttempts: 3 }))
+  const r3tools = new ToolRegistry({ registrations: folderRegistrations({ 'inspect-folder': moveThenBreak }) })
+  // Its own observation of its own folder, for the same reason as R2 above.
+  const r3seed = observer.observe({ root: b3, maxDepth: 4 })
+  const r3 = await runMission(
+    `Summarise the folder "${b3}"`,
+    { outputRoot: o3, now: () => Date.now(), world: r3seed, maxObservationAgeMs: 60_000 },
+    depsFor(o3, r3tools, { maxAttempts: 3 }),
+  )
   console.log(`  attempts ${r3.attempts.length}   ok ${r3.ok}   (a correct replan is not recovery)`)
   console.log(`  final state ${r3.attempts[r3.attempts.length - 1]?.state}   complete ${r3.attempts[r3.attempts.length - 1]?.complete}`)
   console.log(`  stopReason  ${r3.stopReason ?? '(none)'}`)

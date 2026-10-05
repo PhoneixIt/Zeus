@@ -28,7 +28,10 @@
  */
 
 import type { Mission, Step } from '../mission-engine/state.ts'
-import type { PlanProposal } from './plan.ts'
+// A VALUE import, not a type-only one. `isCapability` and `CAPABILITIES` are needed at runtime: the
+// compiler must be able to refuse an unknown capability, and a type-only import would leave the
+// check as a comment.
+import { CAPABILITIES, isCapability, type PlanProposal } from './plan.ts'
 
 export type CompileResult =
   | { readonly ok: true; readonly mission: Mission; readonly warnings: readonly string[] }
@@ -56,6 +59,49 @@ export function compilePlan(proposal: PlanProposal, missionId: string, startedAt
     if (!s.verification?.kind) problems.push(`step "${s.id}" declares no verification requirement`)
     if (!s.onFailure) problems.push(`step "${s.id}" declares no failure behaviour`)
     if (!s.intent) problems.push(`step "${s.id}" has no intent for a human to read`)
+
+    // ---- the capability must be one the system knows.
+    //
+    // Checked HERE, at the boundary, rather than trusted from the planner or discovered at execution
+    // time. A capability the router cannot satisfy is a plan defect that a user should see before
+    // anything runs; discovering it three steps into a mission turns a planning error into an
+    // execution failure, which reads as though the world went wrong rather than the plan.
+    if (!s.capability) {
+      problems.push(`step "${s.id}" names no capability`)
+    } else if (!isCapability(s.capability)) {
+      problems.push(
+        `step "${s.id}" requests the capability "${s.capability}", which does not exist. ` +
+        `Known capabilities: ${CAPABILITIES.join(', ')}. An unknown capability is refused rather ` +
+        `than served by something else.`,
+      )
+    }
+  }
+
+  // ---- the plan must say what it was planned against.
+  //
+  // This is the M6 invariant enforced at the only place that can enforce it. A plan with no basis
+  // could have come from anywhere, and a supervisor that sees one has no way to decide whether to
+  // re-observe and replan or to simply retry - which is the distinction M2 established for a renamed
+  // folder, generalised to every plan.
+  if (!proposal.basis || !proposal.basis.observationId) {
+    problems.push(
+      'the plan names no observation. A plan that cannot say what state of the world it was built ' +
+      'against cannot be checked against that world, and a supervisor could not tell a stale plan ' +
+      'from a wrong one.',
+    )
+  } else {
+    if (!proposal.basis.fingerprint) problems.push('the plan records no observation fingerprint')
+    if (!proposal.basis.usedFacts.length) {
+      problems.push(
+        'the plan records no observed facts, so it cannot be distinguished from one produced without ' +
+        'looking at the machine',
+      )
+    }
+    if (!proposal.basis.complete) {
+      problems.push(
+        'the plan was built on a partial observation and so cannot be executed as though it were complete',
+      )
+    }
   }
 
   // ---- dependencies must resolve
@@ -102,6 +148,9 @@ export function compilePlan(proposal: PlanProposal, missionId: string, startedAt
     id: s.id,
     intent: s.intent,
     mode: s.mode,
+    // The capability travels with the step so the executor can verify the resolved tool still
+    // satisfies the requirement. It is a record of what was asked for, not a second resolution.
+    capability: s.capability,
     rationale: s.rationale,
     tool: s.tool,
     args: s.args,
@@ -123,6 +172,10 @@ export function compilePlan(proposal: PlanProposal, missionId: string, startedAt
     history: [],
     pendingApprovals: [],
     startedAt,
+    // The basis travels WITH the mission. This is what lets a supervisor, three attempts later,
+    // ask whether the world still looks the way the plan assumed - and re-observe and replan rather
+    // than retry when it does not. Without it, staleness is undetectable after the fact.
+    basis: proposal.basis,
   }
   return { ok: true, mission, warnings }
 }

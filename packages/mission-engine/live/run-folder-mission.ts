@@ -31,6 +31,8 @@ import { tmpdir } from 'node:os'
 import { execute } from '../executor.ts'
 import { summarize } from '../events.ts'
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
+// @ts-expect-error Node test runner loads the TypeScript source directly.
+import { LocalObservationProvider } from '../../observation/local.ts'
 import { compilePlan } from '../../planner/compile.ts'
 import { renderPlan } from '../../planner/inspect-plan.ts'
 import type { PlanContext } from '../../planner/plan.ts'
@@ -65,9 +67,33 @@ for (const [name, body] of SEED) {
 
 const OBJECTIVE = `Summarise the contents of the folder "${sourceDir}" and write a summary file`
 
-const ctx: PlanContext = { outputRoot, now: () => Date.now() }
+/**
+ * A REAL observation of the seeded folder, and the context built from it.
+ *
+ * This is the M6 change made visible in the mission that predates it: the context used to be
+ * `{ outputRoot, now }` and the planner needed nothing else, because it emitted a fixed recipe. It
+ * now needs to know what is actually in the folder, and the compiler refuses any plan that cannot say
+ * which observation it was built on.
+ */
+const observer = new LocalObservationProvider()
+const observed = observer.observe({ root: sourceDir, maxDepth: 4 })
+const ctx: PlanContext = {
+  outputRoot,
+  now: () => observed.observedAt,
+  world: observed,
+  maxObservationAgeMs: 60_000,
+  refetched: observed,
+}
 const provider = new DeterministicPlanProvider()
-const registry = new ToolRegistry({ registrations: FOLDER_TOOLS.map((tool) => ({ tool })) })
+const registry = new ToolRegistry({
+  registrations: [
+    { tool: FOLDER_TOOLS.find((t) => t.name === 'read-folder')!, capabilities: ['filesystem.inspect'] },
+    { tool: FOLDER_TOOLS.find((t) => t.name === 'inspect-folder')!, capabilities: ['filesystem.list'] },
+    { tool: FOLDER_TOOLS.find((t) => t.name === 'compose-summary')!, capabilities: ['filesystem.transform'] },
+    { tool: FOLDER_TOOLS.find((t) => t.name === 'write-report')!, capabilities: ['filesystem.write'] },
+    { tool: FOLDER_TOOLS.find((t) => t.name === 'read-report')!, capabilities: ['filesystem.confirm'] },
+  ],
+})
 
 console.log('')
 console.log('=== THE USER SAID ===')

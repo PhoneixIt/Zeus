@@ -104,7 +104,7 @@ end.
 
 ### Execution substrate
 ```
-npm test                                        181 pass / 0 fail
+npm test                                        208 pass / 0 fail
 npm run mission:live                            PASS
 npm run mission:two-step                        PASS
 npm run mission:filesystem                      PASS
@@ -114,8 +114,92 @@ npm run mission:folder                           PASS
 npm run mission:recovery                          PASS
 npm run mission:approval                         PASS
 npm run mission:terminal                         PASS
+npm run mission:world-aware                      PASS
 ```
 
+### World-aware planning
+```
+npm run mission:world-aware
+```
+Three real folders, one objective. The claim under test: **can AIOS observe reality before deciding
+what to do?**
+
+```
+A  5 files, nested 2 deep, extensions json/md/py/txt, depth 3, fingerprint 6ae0d7e3eac67d27
+B  2 files, no nesting,     extensions rs/ts,          depth 1, fingerprint b3060dbb2f4b5fb2
+
+PLAN A  summarys-6ae0d7.txt exists and names all 5 file(s) observed ... across 3 subfolder(s)
+        usedFacts: 5 file(s) observed / 3 subfolder(s) observed / extensions / max depth 3 / node present
+        inspect -> terminal.run -> write -> read
+PLAN B  ... names all 2 file(s) observed ... across 1 subfolder(s)
+        inspect -> terminal.run -> write -> read
+
+SCENARIO C: the SAME FOLDER as A, with node reported ABSENT
+        inspect -> filesystem.transform -> write -> read      <- a different plan, same objective
+        completed: true
+
+EXECUTED A   4/4 verified   complete=true
+EXECUTED B   4/4 verified   complete=true
+EXECUTED C   4/4 verified   complete=true
+```
+
+The phrase planner, on A and B:
+
+```
+identical step intents for both folders:   true
+identical expected results:                true
+```
+
+Every number in the world-aware plan's text came from an observation. Every number in the phrase
+planner's text is the same for both, because it never looked.
+
+#### Negative controls, both layers
+
+| protection removed | live | unit |
+|---|---|---|
+| compiler no longer requires a plan basis | **1 FAIL** | 207 / 1 |
+| planner never refuses an empty folder | **2 FAIL** | 207 / 1 |
+| the staleness / age check | **3 FAIL** | 207 / 1 |
+| planner ignores observed node presence | **2 FAIL** | 207 / 1 |
+| the subject-presence check | **2 FAIL** | 206 / 2 |
+| compiler no longer checks capabilities | — | 138 / 3 |
+| router substitutes an unknown capability | CRASH | 205 / 3 |
+| restored | **PASS** (29 checks) | **208 / 0** |
+
+The staleness control initially reported **no failure at all** — 208/0, live PASS. Removing the age
+check changed nothing because a *second* check (no re-observation supplied) refused with the same
+`observation-stale` code. Defence in depth was real and the measurement of it was not. Supplying a
+matching re-observation left the age check as the only thing that could refuse, and then it bit.
+
+#### Four defects found in my own code while building this
+
+- **The planner summarised the wrong folder.** It checked that the subject was *inside* the observed
+  root, but not that it was *present*. Asked to summarise `<root>\gone`, it produced a plan for
+  `<root>` — because the root's files were right there — and would have written a confident summary
+  of a folder the user never named. Caught by a test, not by reading the code.
+- **`export { X } from ...` does not work under Node's type-stripping.** The re-exported binding never
+  materialised and every consumer saw `REFUSED_PROGRAMS is not defined`, with the type checker silent.
+  Importing the name and re-exporting the local binding does work.
+- **The observer used `require` in an ESM module.** It threw on every call and took 36 tests with it.
+- **A fixture's "outside" directory was inside the workspace** in M5, and the same shape recurred: in
+  M6 the recovery harness's scenarios R2 and R3 reused the primary scenario's observation, so each
+  planned against a directory that did not exist in its own world and reported "attempts 0". A
+  harness setup fault that reads exactly like a recovery failure.
+
+#### A limit I had documented wrongly
+
+`WorldState.fingerprint` was described as detecting "a file changed but kept its name". A test
+asserting that FAILED — the digest is built from `lstat` metadata, so a same-length in-place edit is
+invisible to it. The claim was wrong, not the digest, and the fix was to document the boundary
+(ledger row 51) rather than to trade a real cost for a guarantee nothing asked for.
+
+A second documented limit, found by measurement rather than assumption: I had assumed `lstat` reports
+a Windows junction as a directory and that the observer therefore walks out of the root through one.
+It does not — Node opens reparse points with `FILE_FLAG_OPEN_REPARSE_POINT`, so a junction comes back
+as a symlink and the walk skips it. The guess was wrong and the measurement was safer (ledger row 52
+records it as verified-and-safe, with the test that proves it).
+
+---
 ### Terminal mode
 ```
 npm run mission:terminal
@@ -400,7 +484,11 @@ than any individual entry.
 | A control sharing one probe file across scenarios | later controls failed at the dependency gate, never reaching the one under test |
 | Control F disabling verification mission-wide | showed `"nothing happened`" rather than `"approved but unverified`" |
 | Verifier threw ENOENT on a missing file | deleting the artifact destroyed the evidence instead of reporting it |
-| A control's "outside" directory was inside the workspace | it reported a governance failure that had not happened |
+| A control's `"outside`" directory was inside the workspace | it reported a governance failure that had not happened |
+| The planner checked the subject was inside the observed root, not present in it | it would summarise a folder the user never named |
+| `export { X } from` under Node type-stripping | the binding never materialised; consumers saw "not defined" |
+| A fingerprint claimed to detect same-size edits | a test asserting the claim failed; the claim was wrong, not the digest |
+| A staleness control removed one of two checks that refuse identically | it reported no failure and the protection looked redundant |
 | A negative control removed one of three refusal layers | it PASSED and proved nothing; only removing all three bit |
 | A control removed only the existence check | PASSED, because the content comparison caught the same case |
 

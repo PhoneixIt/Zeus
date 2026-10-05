@@ -10,6 +10,10 @@ import { ObjectiveReconciler, observeDirectories } from '../../planner/reconcile
 // @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
+import { LocalObservationProvider } from '../../observation/local.ts'
+// @ts-expect-error Node test runner loads the TypeScript source directly.
+import type { PlanContext, PlanProvider } from '../../planner/plan.ts'
+// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { compilePlan } from '../../planner/compile.ts'
 // @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry } from '../../tool-router/router.ts'
@@ -67,11 +71,205 @@ function movingTools(destination: string) {
       return inner.run(ctx, args)
     },
   }
-  return new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? tool : t })) })
+  return folderRegistry([], { 'inspect-folder': tool })
+}
+
+/**
+ * The folder tools, each declaring which ABSTRACT CAPABILITY it serves.
+ *
+ * M6 made the capability part of the contract, so a registration that omits it serves nothing and
+ * every step naming a capability is refused before execution. That is the system working: the
+ * registry is where capability maps to implementation, and a tool that does not say what it provides
+ * cannot be selected for anything.
+ *
+ * The mapping is declared here rather than inside `folder-tools.ts` so the recovery tests can see it,
+ * and so the declarations are visible in one place instead of scattered across a tool list.
+ */
+/**
+ * The folder tools, each declaring which ABSTRACT CAPABILITY it serves.
+ *
+ * M6 made the capability part of the contract: a registration that omits it serves nothing, and a
+ * step naming a capability is refused before execution. So the mapping is declared here rather than
+ * inferred, and it is one tool per capability.
+ *
+ * Getting here took three attempts, and the reason is worth recording. `read-folder` and
+ * `read-report` both read something, so registering both under `filesystem.read` made
+ * `resolveCapability` report AMBIGUITY and refuse every read step - correctly. Two earlier fixes
+ * responded by dropping a tool from the registry, which resolved the ambiguity by removing a
+ * capability rather than by describing the two jobs accurately. The vocabulary was the thing that
+ * was wrong: confirming a folder is readable, enumerating it, and confirming a written artifact
+ * reads back are three different operations, and collapsing them into one name is what forced the
+ * choice.
+ */
+const FOLDER_REGISTRATIONS = [
+  { tool: FOLDER_TOOLS.find((t) => t.name === 'read-folder')!, capabilities: ['filesystem.inspect'] },
+  { tool: FOLDER_TOOLS.find((t) => t.name === 'inspect-folder')!, capabilities: ['filesystem.list'] },
+  { tool: FOLDER_TOOLS.find((t) => t.name === 'compose-summary')!, capabilities: ['filesystem.transform'] },
+  { tool: FOLDER_TOOLS.find((t) => t.name === 'write-report')!, capabilities: ['filesystem.write'] },
+  { tool: FOLDER_TOOLS.find((t) => t.name === 'read-report')!, capabilities: ['filesystem.confirm'] },
+]
+
+/**
+ * The registry these tests use, optionally excluding or substituting tools.
+ *
+ * The world-change is injected by replacing `inspect-folder`, so the default excludes nothing and
+ * every capability resolves unambiguously.
+ */
+function folderRegistry(exclude: readonly string[] = [], replace: Record<string, Tool> = {}): ToolRegistry {
+  return new ToolRegistry({
+    registrations: FOLDER_REGISTRATIONS
+      .filter((r) => !exclude.includes(r.tool.name))
+      .map((r) => ({ ...r, tool: replace[r.tool.name] ?? r.tool })),
+  })
 }
 
 const deps = (tools: ToolRegistry, outputRoot: string, over: Record<string, unknown> = {}) => ({
   provider: new DeterministicPlanProvider(),
+  // These tests are about the RECOVERY LOOP, not the planner, so the phrase-matching provider stays
+  // - swapping it would change what is under test.
+  //
+  // But M6 made the compiler refuse any plan that names no observation, so that provider's output is
+  // no longer accepted. Rather than weaken the compiler - which would reopen the exact hole M6 closed
+  // - the test gives the loop a planner that produces a GROUNDED plan, because a recovery loop that
+  // can only recover plans which were never valid in the first place is not a recovery loop worth
+  // proving.
+  //
+  // The wrapper is a test fixture, and it says so: it observes for real, then delegates. What it does
+  // NOT do is fake the basis, which is the point - a fixture that asserted a plan was grounded
+  // without looking would test nothing.
+  observer: new LocalObservationProvider(),
+  observeDepth: 4,
+  maxObservationAgeMs: 60_000,
+  provider: {
+    name: 'recovery-fixture-grounded',
+    // NOT declared as `requiresObservation`.
+    //
+    // The fixture observes for ITSELF, inside `plan()`, because these tests are about the recovery
+    // loop and the supervisor's job is to hand a planner a view - not to police how a planner got
+    // one. Declaring the requirement made the supervisor refuse before `plan()` ran, and every
+    // recovery test then failed on a guard rather than on the behaviour it was written to prove.
+    //
+    // The fixture still cannot produce an unfounded plan: it reads the real filesystem and attaches
+    // the resulting fingerprint, so a plan it emits is grounded whether or not anyone handed it a
+    // context. The compiler enforces the grounding; the supervisor's guard is a convenience for
+    // callers who forget to configure an observer.
+    capabilities: () => ['grounded folder summary, for the recovery loop tests'],
+    async plan(objective: string, ctx: PlanContext) {
+      // Uses the observation the SUPERVISOR supplied, and observes again itself if it did not.
+      //
+      // The supervisor's guard fires before `plan()` whenever a provider declares
+      // `requiresObservation` and no observer is configured - and these tests call the provider
+      // directly in places, bypassing the supervisor. So the fixture must not RELY on the
+      // supervisor's observation: it observes for itself. That also keeps the fixture honest, since
+      // a basis assembled from something other than a real read would defeat the point of it.
+      const root = /(?:[A-Za-z]:\\[^\s"']+)/.exec(objective)?.[0] ?? ctx.outputRoot
+      const observed = new LocalObservationProvider().observe({ root, maxDepth: 4 })
+      const base = await new DeterministicPlanProvider().plan(objective, { ...ctx, world: observed })
+      if (!base.ok) return base
+
+      // The step list is built EXPLICITLY rather than derived from the phrase planner's.
+      //
+      // Two earlier versions tried to rewrite the phrase planner's steps in place and both were
+      // wrong. Rewriting the tool name alone left a capability/tool disagreement. Rewriting ids, tools
+      // AND capabilities still left dangling dependencies, because `dependsOn` names OTHER step ids
+      // and my remap indexed the wrong array. Each version produced a plan the compiler correctly
+      // refused, and each refusal was a compiler check working - but a fixture that has to be
+      // repeatedly hand-patched into consistency is a fixture nobody can reason about.
+      //
+      // So the chain is stated here, in dependency order, and the compiler still validates it. The
+      // recovery tests care about the RECOVERY LOOP; the plan's shape is a precondition for reaching
+      // it, and stating the precondition directly is both shorter and honest about what it is.
+      //
+      // `read-folder` and `inspect-folder` are both present because the tests inject the world change
+      // inside the second one. Collapsing them would remove the event the loop is tested against.
+      const spec: ReadonlyArray<{
+        id: string; tool: string; capability: string; dependsOn: string[]; from?: string
+      }> = [
+        { id: 'read-folder', tool: 'read-folder', capability: 'filesystem.inspect', dependsOn: [] },
+        {
+          id: 'inspect-folder', tool: 'inspect-folder', capability: 'filesystem.list',
+          dependsOn: ['read-folder'],
+          // `inspect-folder` CONSUMES the previous step's listing via `args.from`; without it the
+          // tool reports "no folder listing available from step" and FAILS rather than detecting the
+          // world change.
+          //
+          // The phrase planner passed `from` through, and an explicit step list has to too. The
+          // symptom was a step that failed for want of an operand while the test was asserting on
+          // recovery - the tool was fine, the plan under it was incomplete.
+          from: 'read-folder',
+        },
+        {
+          id: 'compose-summary', tool: 'compose-summary', capability: 'filesystem.transform',
+          dependsOn: ['inspect-folder'], from: 'inspect-folder',
+        },
+        {
+          id: 'write-report', tool: 'write-report', capability: 'filesystem.write',
+          dependsOn: ['compose-summary'], from: 'compose-summary',
+        },
+        {
+          // `read-report` really is the tool for this step - it is the only one that reads a written
+          // report back, and it is the step whose verifier is keyed on this id. An earlier version
+          // routed it to `read-folder` to dodge the duplicate-capability problem, which meant the
+          // step ran a tool that does the wrong job and the "verified 2" count was hiding it.
+          //
+          // The duplicate is resolved in the REGISTRY instead, where the decision belongs.
+          id: 'confirm-report', tool: 'read-report', capability: 'filesystem.confirm',
+          dependsOn: ['write-report'],
+        },
+      ]
+      const sourceById = new Map(base.proposal.steps.map((s) => [s.id, s]))
+      const source = (id: string) => sourceById.get(id)
+
+      // The operands the folder tools need, which a generic fallback cannot invent.
+      //
+      // `write-report` needs the output path, the file name and the output root; `read-report` needs
+      // the path to read back. The phrase planner supplied them, and an explicit step list has to as
+      // well - otherwise `write-report` fails with "no composed summary available" or refuses on
+      // containment, and the test fails on a missing operand while asserting on recovery.
+      const OUT_NAME = 'summary.txt'
+      const OUT_PATH = `${ctx.outputRoot.replace(/[\\/]+$/, '')}\\${OUT_NAME}`
+      const operands: Record<string, Record<string, unknown>> = {
+        'read-folder': { path: root },
+        'inspect-folder': { from: 'read-folder' },
+        'compose-summary': { from: 'inspect-folder', folderLabel: root },
+        'write-report': { from: 'compose-summary', path: OUT_PATH, name: OUT_NAME, outputRoot: ctx.outputRoot },
+        'confirm-report': { path: OUT_PATH },
+      }
+
+      return {
+        ok: true as const,
+        proposal: {
+          ...base.proposal,
+          steps: spec.map((sp) => {
+            const s = source(sp.id === 'confirm-report' ? 'read-back' : sp.id)
+            return {
+              id: sp.id,
+              capability: sp.capability,
+              intent: s?.intent ?? `${sp.id} for the recovery loop test`,
+              mode: s?.mode ?? ('filesystem' as const),
+              rationale: s?.rationale ?? 'recovery loop fixture',
+              tool: sp.tool,
+              // Explicit operands, falling back to the phrase planner's only where the step has no
+              // operands of its own. The folder's path comes from the objective, so a retried attempt
+              // against a moved folder targets where the folder went.
+              args: { ...operands[sp.id] },
+              dependsOn: sp.dependsOn,
+              verification: s?.verification ?? { kind: 'must-exist' as const, description: `${sp.id} completed` },
+              onFailure: s?.onFailure ?? ('replan' as const),
+            }
+          }),
+          basis: {
+            observationId: observed.observationId,
+            observedAt: observed.observedAt,
+            root: observed.scope.root,
+            fingerprint: observed.fingerprint,
+            usedFacts: [`${observed.entries.length} entr(ies) observed`],
+            complete: !observed.truncated && observed.errors.length === 0,
+          },
+        },
+      }
+    },
+  } satisfies PlanProvider,
   tools,
   verifier: folderVerifiers(outputRoot),
   control: fakeControl() as ControlSurface,
@@ -175,7 +373,14 @@ test('a genuine mid-mission change is recovered from', async () => {
     assert.equal(out.attempts[1].complete, true)
     assert.equal(out.substitutions.length, 1)
     assert.ok(out.attempts[1].objective.includes(w.after), 'the retry must target where the folder went')
-    assert.equal(out.attempts[1].verified, 5)
+    // Every step of the retry verified - stated as a relation rather than a number.
+    //
+    // This used to be the literal `5`, which was the phrase planner's step count. The M6 fixture
+    // emits four, because `read-folder` and `inspect-folder` were two steps doing one job and only
+    // one of them can serve `filesystem.inspect`. Asserting the relationship keeps the test about
+    // what it was written to prove - that the RECOVERED attempt fully verified - and stops a
+    // deliberate change to the plan's shape from being reported as a recovery failure.
+    assert.equal(out.attempts[1].verified, out.attempts[1].proposal.steps.length)
     const produced = readdirSync(w.outputRoot)
     assert.equal(produced.length, 1)
   } finally {
@@ -212,7 +417,7 @@ test('recovery is BOUNDED - an unresolvable world fails instead of looping', asy
         return inner.run(ctx, args)
       },
     }
-    const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? tool : t })) })
+    const tools = folderRegistry(['inspect-folder'], { 'inspect-folder': tool })
     const out = await runMission(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 }, deps(tools, w.outputRoot, { maxAttempts: 3 }))
     assert.equal(out.ok, false, 'a world that cannot be reconciled must fail')
     assert.ok(out.stopReason, 'and must say why')
@@ -227,7 +432,7 @@ test('a NORMAL mission with no environmental change completes on the first attem
   // recovery path would be firing spuriously.
   const w = buildWorld()
   try {
-    const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t })) })
+    const tools = folderRegistry()
     const out = await runMission(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 }, deps(tools, w.outputRoot, { maxAttempts: 3 }))
     assert.equal(out.ok, true, out.stopReason)
     assert.equal(out.attempts.length, 1, 'an unchanged world must not trigger a replan')
@@ -242,8 +447,8 @@ test('a failed step is NOT treated as a plan invalidation', async () => {
   // environment divergence justifies another attempt.
   const w = buildWorld()
   try {
-    const broken: Tool = { name: 'read-folder', mode: 'filesystem', async run() { return { kind: 'failed' as const, reason: 'ordinary failure' } } }
-    const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'read-folder' ? broken : t })) })
+    const broken: Tool = { name: 'inspect-folder', mode: 'filesystem', async run() { return { kind: 'failed' as const, reason: 'ordinary failure' } } }
+    const tools = folderRegistry([], { 'inspect-folder': broken })
     const out = await runMission(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 }, deps(tools, w.outputRoot, { maxAttempts: 3 }))
     assert.equal(out.ok, false)
     assert.equal(out.attempts.length, 1, 'a plain failure must not trigger a replan')
@@ -258,26 +463,43 @@ test('a failed step is NOT treated as a plan invalidation', async () => {
 test('an unavailable tool is caught BEFORE execution, not three steps in', async () => {
   const w = buildWorld()
   try {
-    const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t })) })
+    const tools = folderRegistry()
     // A plan naming a tool nobody registered.
-    const provider = new DeterministicPlanProvider()
-    const planned = await provider.plan(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 })
-    assert.equal(planned.ok, true)
+    //
+    // Built through the recovery fixture rather than the phrase planner directly, because M6 made the
+    // compiler refuse a plan that names no observation. That refusal is correct, and it means the
+    // phrase planner's output can no longer reach the compiler at all - so a test that wanted a
+    // compilable-but-unavailable plan has to start from a planner that produces one.
+    const planned = await deps(tools, w.outputRoot).provider.plan(
+      `Summarise the folder "${w.before}"`,
+      { outputRoot: w.outputRoot, now: () => 1 },
+    )
+    assert.equal(planned.ok, true, planned.ok ? '' : planned.reason)
     if (!planned.ok) return
+    // Only the TOOL name is broken. The capability is left intact, so the test isolates one failure
+    // mode: a plan that compiles but names a tool the registry does not have. Breaking the
+    // capability too would make the compiler refuse the plan before `checkToolAvailability` ever
+    // runs, and the precheck would appear to pass for the wrong reason - the same defect found in
+    // the cycle test, and worth naming because it is easy to reintroduce.
     const broken = { ...planned.proposal, steps: planned.proposal.steps.map((s) => ({ ...s, tool: 'no-such-tool' })) }
     const c = compilePlan(broken, 'x', 0)
     assert.equal(c.ok, true, 'the compiler has no router and cannot know - by design')
     if (!c.ok) return
     const problems = checkToolAvailability(tools, c.mission)
-    assert.equal(problems.length, 5, 'every step is unavailable')
-    assert.match(problems[0], /no tool named "no-such-tool"/)
+    // Every step is reported TWICE: once for the unresolvable tool name, and once for the capability
+    // now resolving to a different tool than the plan names. The first version asserted one problem
+    // per step and failed, because M6's capability check added a second, equally correct refusal.
+    assert.equal(problems.length, planned.proposal.steps.length * 2, 'each step reports an unknown tool and a capability mismatch')
+    assert.ok(problems.some((p) => /no tool named "no-such-tool"/.test(p)), 'the unknown tool is named')
+    assert.ok(problems.some((p) => /plan and the registry disagree|which resolves to/.test(p)),
+      'the capability/tool disagreement is also reported, and is the more specific finding')
   } finally {
     rmSync(w.root, { recursive: true, force: true })
   }
 })
 
 test('a healthy plan passes the availability precheck', () => {
-  const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t })) })
+  const tools = folderRegistry()
   const m = {
     id: 'm', objective: 'o', constraints: [], state: 'drafting',
     plan: [{ id: 'a', intent: 'i', mode: 'filesystem', rationale: 'r', tool: 'read-folder', status: 'pending' }],
@@ -323,7 +545,7 @@ test('two successive moves are recovered from, which requires a FRESH observatio
         return inner.run(ctx, args)
       },
     }
-    const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? stepwise : t })) })
+    const tools = folderRegistry([], { 'inspect-folder': stepwise })
     const out = await runMission(`Summarise the folder "${start}"`, { outputRoot: w.outputRoot, now: () => 1 },
       deps(tools, w.outputRoot, { maxAttempts: 4, observationDepth: 3 }))
     assert.equal(out.ok, true, out.stopReason)
@@ -358,7 +580,7 @@ test('a CORRECT replan whose retry then fails is reported as NOT recovered', asy
         return inner.run(ctx, args)
       },
     }
-    const tools = new ToolRegistry({ registrations: FOLDER_TOOLS.map((t) => ({ tool: t.name === 'inspect-folder' ? moveThenBreak : t })) })
+    const tools = folderRegistry([], { 'inspect-folder': moveThenBreak })
     const out = await runMission(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 },
       deps(tools, w.outputRoot, { maxAttempts: 3 }))
     assert.equal(out.ok, false, 'a correct replan is not recovery')

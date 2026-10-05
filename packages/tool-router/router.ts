@@ -69,6 +69,18 @@ export interface ToolRegistration {
    */
   readonly preflight?: (step: Step) => { blocked: string; needsHuman: boolean } | undefined
   /**
+   * Which ABSTRACT CAPABILITIES this registration serves.
+   *
+   * The mapping from capability to implementation lives HERE, in the registry, rather than in the
+   * planner. A plan names what it needs; this decides what provides it. That direction is what lets
+   * an implementation be swapped without invalidating a plan, and what stops a planner from
+   * reasoning about one tool's quirks as though they were facts about the task.
+   *
+   * More than one implementation may serve a capability. That is not a fallback: it is two routes to
+   * the same requirement, and `resolveCapability` refuses rather than choosing between them.
+   */
+  readonly capabilities?: readonly string[]
+  /**
    * What this tool is a substitute FOR, if anything.
    *
    * Only used when a caller explicitly allows fallback. Keyed by tool name, so the mapping is
@@ -93,6 +105,7 @@ export interface RegistryOptions {
  */
 export class ToolRegistry implements ToolRouter {
   private readonly byName = new Map<string, ToolRegistration>()
+  private readonly byCapability = new Map<string, ToolRegistration[]>()
 
   constructor(opts: RegistryOptions) {
     for (const r of opts.registrations) {
@@ -102,7 +115,48 @@ export class ToolRegistry implements ToolRouter {
         throw new Error(`duplicate tool registration: ${r.tool.name}`)
       }
       this.byName.set(r.tool.name, r)
+      for (const cap of r.capabilities ?? []) {
+        const list = this.byCapability.get(cap)
+        if (list) list.push(r)
+        else this.byCapability.set(cap, [r])
+      }
     }
+  }
+
+  /** Every abstract capability anything registered can serve. For a planner's `capabilities()`. */
+  capabilities(): string[] {
+    return [...this.byCapability.keys()].sort()
+  }
+
+  /**
+   * Resolve an abstract capability to a tool.
+   *
+   * AMBIGUITY IS REFUSED, not resolved. Two implementations serving one capability is a wiring
+   * decision someone has to make deliberately, and picking by registration order would make the
+   * system's behaviour depend on the order a list happened to be written in - which is the same
+   * class of bug as the duplicate-name check above, one level up.
+   */
+  resolveCapability(capability: string): { tool: Tool } | { unavailable: string; candidates: readonly string[] } {
+    const matches = this.byCapability.get(capability) ?? []
+    if (matches.length === 0) {
+      return {
+        unavailable:
+          `no registered tool serves the capability "${capability}". ` +
+          `Nothing will be substituted for it: a plan that says "${capability}" must not be served ` +
+          `by something else, because then the plan no longer describes what runs.`,
+        candidates: this.capabilities(),
+      }
+    }
+    if (matches.length > 1) {
+      return {
+        unavailable:
+          `${matches.length} tools serve the capability "${capability}" ` +
+          `(${matches.map((m) => m.tool.name).join(', ')}). Choosing between them is a wiring ` +
+          `decision, not something to resolve by load order.`,
+        candidates: matches.map((m) => m.tool.name),
+      }
+    }
+    return { tool: matches[0].tool }
   }
 
   /** Every registered name, for diagnostics and for the router's own test of its contents. */
