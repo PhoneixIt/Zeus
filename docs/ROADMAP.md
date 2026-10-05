@@ -63,7 +63,9 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 21 | GUI, mission-chosen action | **BLOCKED** | needs 20, and an arming decision |
 | 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
 | 23 | Window management governance | **PARTIAL** | `/show`,`/focus` ungated (no injection needed) |
-| 24 | Recovery / replanning, live | **PARTIAL** | logic + tests, never exercised on a real failure |
+| 24 | Recovery / replanning, live | **PROVEN** | mission:recovery, genuine divergence, 2 attempts |
+| 24b | Recovery bounded, no inherited evidence | **PROVEN** | ecovery.test.ts, 3 unresolvable-world cases |
+| 24c | Objective reconciliation | **PROVEN** | planner/reconcile.ts, refuses ambiguity |
 | 25 | Browser mode | **NOT STARTED** | package empty |
 | 26 | API mode | **NOT STARTED** | no tool |
 | 27 | **Model / provider layer** | **NOT STARTED** | **there is no AI in AIOS yet** |
@@ -97,14 +99,25 @@ prerequisites → capability gaps → integration → reliability → product.
 Plan contract, planner boundary, deterministic planner, tool router, operand safety,
 summarizer boundary, plan inspection, step data flow, 7 negative controls, real end-to-end run.
 
-### M2 — Recovery and replanning, exercised for real — NEXT
-`replan-required` and `replan` paths exist and are unit-tested but have never fired on a real
-mission. Build a mission that genuinely fails mid-way, and prove the engine re-observes and
-re-plans rather than merely aborting. Also close **capability 24**.
+### M2 — Recovery and replanning, exercised for real ✅ COMPLETE
+A genuine mid-mission environmental change, detected from observation, reconciled against a fresh
+observation, replanned, recompiled and re-executed to verified completion. Plus two scenarios
+built specifically so the negative controls could bite: a world that moves twice, and a correct
+replan whose retry then fails. Supervisor added, bounded at 3 attempts, carrying nothing forward
+without evidence.
 
-*Unblocked. No human decision required.*
+### M3 — Deepen the governance contract — NEXT
 
-### M3 — Deepen the governance contract
+Selected over M5 on evidence: recovery exposed that a mission can now plan, recover and write a file
+while the governance contract is still a single 123-line file with no approval path for consequential
+actions. The Purchase/Delete/ExternalSend/CredentialUse evidence kinds exist and NOTHING
+produces them, so a mission has no way to require authorisation even in principle. That is a
+gap between what the engine claims to model and what it can enforce, and it is load-bearing for every
+capability added after it.
+
+Concretely: an approval gate in the executor for steps declaring a consequential effect, a
+pendingApprovals flow that actually blocks, and a negative control proving an unapproved
+consequential step cannot execute.
 One 123-line file is thin for the role it plays. Add approval requirements for consequential
 actions (`Purchase`, `Delete`, `ExternalSend`, `CredentialUse` evidence kinds already exist but
 nothing produces them), and prove a consequential step cannot execute without authorisation.

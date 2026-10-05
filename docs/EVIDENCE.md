@@ -104,14 +104,79 @@ end.
 
 ### Execution substrate
 ```
-npm test                                        116 pass / 0 fail
+npm test                                        131 pass / 0 fail
 npm run mission:live                            PASS
 npm run mission:two-step                        PASS
 npm run mission:filesystem                      PASS
 npm run mission:gui-audit                       PASS
 npm run mission:gui-accept                      PASS
 npm run mission:folder                           PASS
+npm run mission:recovery                          PASS
 ```
+
+### Recovery from a genuine environmental change
+```
+npm run mission:recovery
+```
+A folder is renamed on disk between two steps by ordinary filesystem calls. No flag is set.
+
+```
+ATTEMPT 1   plan  read-folder -> inspect-folder -> compose-summary -> write-report -> confirm-report
+           state recovering   complete=false   verified 1  failed 0  skipped 3
+           invalidation  environment-changed: the folder this step was told to list is gone
+           observed      "...\reports no longer exists; ...\ now contains [out, archive]"
+
+WORLD       "reports" exists: false    "...\archive\reports" exists: true
+
+ATTEMPT 2   amended objective  Summarise the folder "...\archive\reports"
+           substitutions      1
+             ...\reports -> ...\archive\reports
+             why: no longer exists; exactly one directory named "reports" was observed
+           state complete   verified 5
+           evidence  directory-present · folder-contents · summary-composed
+                     · file-written · file-read-back
+
+recovered: true   attempts: 2
+```
+
+Two extra scenarios exist specifically so the negative controls can bite:
+
+```
+R2  the world moves TWICE          -> 3 attempts, 2 substitutions, recovered
+R3  a correct replan, retry fails  -> ok=false, reported as NOT recovered
+```
+
+Nothing carries forward without evidence: a replanned attempt starts a fresh mission and
+re-runs every step, because a verification true of the old world says nothing about the new one.
+
+### Recovery negative controls — both layers
+
+| removed protection | unit | live |
+|---|---|---|
+| fresh re-observation (stale observation reused) | **130 / 1 FAIL** | **1 FAILURE** |
+| detection treated as recovery (`replan-required` → `ok`) | **126 / 5 FAIL** | **5 FAILURES** |
+| restored | **131 / 0** | **PASS** |
+
+Exact failing assertions, so it is clear each failed for its own reason and not because an
+unrelated guard tripped:
+
+```
+fresh re-observation removed:
+  "attempt 3: the planner refused the objective - the folder \"...\" ..."
+  chain: stale observation -> amended objective names a dead folder -> planner refuses
+
+detection treated as recovery:
+  "with no recovery budget the mission must not complete"
+  "a world that cannot be reconciled must fail"
+  "invalidated, invalidated, recovered"
+  "a correct replan is not recovery"
+  attempts.length 1, expected 2
+```
+
+The first two of these initially did **not** bite at all, in either layer. A single
+mid-mission change recovers on attempt 2, so a supervisor that reused its observation, or that
+treated "we replanned" as recovery, behaved identically to a correct one. The suite reported
+129/0 with either defect present. R2 and R3 were built to close that.
 
 ---
 
@@ -161,6 +226,15 @@ than any individual entry.
 | Verifier keyed on a tool name instead of a step id | a verifier that silently claimed nothing |
 | `/g`-flagged regex used with `.test()` | intermittent refusal of valid objectives |
 | Two missions asserting a machine state | proofs that were snapshots, not invariants |
+| `/hooks` self-measurement | the audit partly observing its own side effect |
+| `recordResult` hardcoding `output: undefined` | no data flow between steps at all |
+| Verifier keyed on a tool name instead of a step id | a verifier that silently claimed nothing |
+| `/g`-flagged regex used with `.test()` | intermittent refusal of valid objectives |
+| Renaming a folder *during* a step | invalidated that step's own verification — harness bug, system right |
+| Scenario reusing another scenario's verifier | containment check correctly refused, wired to the wrong world |
+| Observation depth hardcoded | a folder moved too deep became invisible and unreconcilable |
+| A harness that crashed under its own controls | could not show the controls failed for the right reason |
+| Two recovery controls that could not fail | suite reported 129/0 with either protection removed |
 
 ---
 
