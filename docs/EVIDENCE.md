@@ -104,7 +104,7 @@ end.
 
 ### Execution substrate
 ```
-npm test                                        148 pass / 0 fail
+npm test                                        181 pass / 0 fail
 npm run mission:live                            PASS
 npm run mission:two-step                        PASS
 npm run mission:filesystem                      PASS
@@ -113,8 +113,125 @@ npm run mission:gui-accept                      PASS
 npm run mission:folder                           PASS
 npm run mission:recovery                          PASS
 npm run mission:approval                         PASS
+npm run mission:terminal                         PASS
 ```
 
+### Terminal mode
+```
+npm run mission:terminal
+```
+The real mission: inspect the workspace → run a deterministic node script over it → write a report
+→ **independently verify the report** → read it back. 3 steps verified, mission complete.
+
+The two computations that matter are deliberately different code. The child reads the input files
+and writes an answer; the verifier reads the same inputs and derives the answer again, in-process,
+with its own arithmetic. Neither can vouch for the other.
+
+```
+EXPECTED (computed before anything ran)
+  "alpha:3\nbeta:7\ndelta:0\ngamma:11\nTOTAL:21\n"
+
+APPROVED run
+  step inspect      verified
+  step tally        verified      node.exe 1 arg(s)
+  step read-report  verified
+  process state     completed  exit=0  signal=null  timedOut=false
+  report content    "alpha:3\nbeta:7\ndelta:0\ngamma:11\nTOTAL:21\n"
+  events            approval-satisfied=1  tool-selected=3
+  complete          true
+```
+
+Process lifecycle, all measured on this machine:
+
+| situation | result |
+|---|---|
+| exit 0, artifact present, content matches | `verified` |
+| exit 0, **nothing produced**, stdout claims success | `rejected` — control A |
+| exit 0, artifact present, **content wrong** | `rejected` — control A2 |
+| non-zero exit | `failed`, stderr reaches the human — control B |
+| asks for a password | `needs-human` in 77ms, no credential supplied — control C |
+| hangs with a live grandchild | `failed` at 1.4s, **grandchild reaped, wrote nothing** — control D |
+| script outside the workspace / `..` / shell / `node -e` | refused — controls E, E2 |
+| executable missing | `failed`, never `nothing-found` — control F |
+| consequential, unapproved | `needs-human`, 0 `tool-selected` — control G |
+| approved + executed, verification suppressed | cannot complete, action DID run — control H |
+
+36 live checks, 0 failures.
+
+**What is enforced, and what is not** — four distinct things, kept apart because conflating them is
+how "we set the working directory" becomes "sandboxed":
+
+- **Executable allowlist — real.** Absolute paths only; a bare name is refused, so a PATH entry
+  cannot substitute a program. Measured: `node.exe` on PATH resolves to the same file the allowlist
+  names, and `where.exe` is refused even though it exists, so the refusal is a policy decision and
+  not "file not found".
+- **Argv / path validation — real.** Resolved through `realpath` on both sides, so a **junction**
+  out of the workspace is caught; a textual prefix test would pass it. The test FAILS if it cannot
+  create the junction, so it cannot pass vacuously.
+- **Working directory — set, and weak.** It controls where relative paths resolve. It restricts
+  nothing else, and a program wanting to read `C:\` does not have to try hard.
+- **OS-level isolation — ABSENT.** No Job Object, no AppContainer, no restricted token, no
+  container. A permitted process runs as the user and is not contained.
+
+Not restricted: reading or writing any file the user can reach · network egress · spawning children
+(they are reaped on timeout, not validated) · registry, services, scheduled tasks, WMI · DLL
+loading, so code this policy never saw. `LIMITATIONS` in `terminal-policy.ts` says all of this, and
+a unit test asserts the list still contains it so the documentation cannot quietly drift.
+
+Environment, measured rather than assumed: requested 7 names, the child received those **plus 8
+injected by the Windows loader** (`HOMEDRIVE, HOMEPATH, LOGONSERVER, SYSTEMDRIVE, USERDOMAIN,
+USERNAME, USERPROFILE, WINDIR`) which the parent cannot suppress. A secret in the parent
+environment did not arrive. A real reduction, not a sealed set.
+
+Consequences are read from the **arguments**, not a static flag — because one flag cannot express
+`git status` (read) and `git push` (sends). `effectOf` lets the tool classify the specific step, and
+the executor gates on the tool's answer. A plan that *misdescribes* its own command is a plan
+defect that fails the step, not one to be corrected silently.
+
+#### Controls, both layers
+
+| protection removed | live | unit |
+|---|---|---|
+| the whole approval gate | — | 171 / **10 FAIL** |
+| the tool supplies no `effectOf` | — | 176 / **5 FAIL** |
+| `..` traversal check | — | 148 / **1 FAIL** |
+| timeout never fires | — | 148 / **1 FAIL** |
+| preflight refusal skipped | **6 FAILURES** | 180 / 1 |
+| absolute-path-outside check | **2 FAILURES** | 179 / 2 |
+| content comparison dropped | **1 FAILURE** | 180 / 1 |
+| all three refusal layers | **6 FAILURES** | 177 / 4 |
+| restored | **PASS** (36) | **181 / 0** |
+
+Two controls initially did not bite, and both were my measurement failing rather than the protection
+being absent:
+
+1. **"verifier trusts exit code 0" reported live PASS.** Removing only the `existsSync` guard left
+   the content comparison to catch the same case — the existence check is redundant *for rejection*
+   and its unique contribution is the error message. Removing the whole filesystem comparison made
+   control A2 fail. So the honest statement is: rejection rests on the content comparison; the
+   existence check is a clearer message, not a second wall.
+2. **"shell refusal table not consulted" reported live PASS.** The control removed
+   `REFUSED_PROGRAMS` but `cmd.exe` is *also* on the allowlist, whose own `classify()` refused it —
+   so the control proved nothing. It only bit with all three layers gone (refusal table, allowlist
+   entry, and the tool's own re-check in `run()`). Defence in depth was real; my first measurement
+   of it was not.
+
+#### Two defects found in my own code while building this
+
+- **The verifier threw ENOENT instead of rejecting** when the existence check was removed. A
+  verifier that crashes on a missing file can be broken by *deleting the thing it verifies*, so the
+  absence of evidence destroyed the evidence. The read is now inside a `try`; the existence check
+  remains for the message but is no longer load-bearing.
+- **The live harness's "outside" directory was inside the workspace.** Control E created
+  `join(w, 'outside')` and passed `workspace: w`, so the policy was correct to *allow* it and the
+  control reported a governance failure that had not happened. A control whose setup contradicts
+  its own assertion is worse than no control, because it looks like evidence.
+
+Plus the recurring harness defect: five crashes on the reporting path (`approved.r` vs
+`approvedRun.r`), each after the evidence had already been collected. A harness that dies while
+reporting destroys evidence it already holds.
+
+---
 ### Consequential-action governance
 ```
 npm run mission:approval
@@ -281,7 +398,11 @@ than any individual entry.
 | Approval gate keyed only on the plan's declaration | a planner could omit it and act unapproved |
 | Gate reading the approval twice with a non-null assertion | removing the gate crashed the harness instead of failing it |
 | A control sharing one probe file across scenarios | later controls failed at the dependency gate, never reaching the one under test |
-| Control F disabling verification mission-wide | showed "nothing happened" rather than "approved but unverified" |
+| Control F disabling verification mission-wide | showed `"nothing happened`" rather than `"approved but unverified`" |
+| Verifier threw ENOENT on a missing file | deleting the artifact destroyed the evidence instead of reporting it |
+| A control's "outside" directory was inside the workspace | it reported a governance failure that had not happened |
+| A negative control removed one of three refusal layers | it PASSED and proved nothing; only removing all three bit |
+| A control removed only the existence check | PASSED, because the content comparison caught the same case |
 
 ---
 

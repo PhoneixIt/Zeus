@@ -1,4 +1,20 @@
-# Known defects and honest limitations
+# Known defects
+
+## M5 — terminal mode: what it does not do
+
+Recorded here because the failure mode is a *claim* rather than a crash. Nothing below is a bug to
+be fixed later; it is the boundary of the capability, and the risk is describing it as a sandbox.
+
+| absent | consequence |
+|---|---|
+| OS-level isolation (Job Object, AppContainer, restricted token) | a permitted process runs as the user and is not contained |
+| child-process validation | a permitted process may spawn anything; children are reaped on timeout, not validated |
+| network restriction | no permitted program is a network client by design, but nothing stops one becoming one |
+| a sealed environment | the Windows loader injects 8 variables the parent cannot suppress |
+
+The allowlist bounds **which program runs**. It does not bound **what that program then does**.
+Running a workspace script is therefore classified consequential and gated — the mitigation is
+governance, not containment, and it is honest to say so. and honest limitations
 
 Nothing here is a surprise. Each was measured, not suspected.
 

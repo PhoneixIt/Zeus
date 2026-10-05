@@ -24,6 +24,7 @@
 
 import type { Tool, ToolRouter } from '../mission-engine/executor.ts'
 import type { ExecutionMode, Step } from '../mission-engine/state.ts'
+import type { DeclaredEffect } from '../governance/approval.ts'
 
 /** One registered capability. */
 export interface ToolRegistration {
@@ -41,6 +42,32 @@ export interface ToolRegistration {
    * remembering" principle the injection gate was built on.
    */
   readonly consequential?: boolean
+  /**
+   * WHAT THIS STEP WOULD ACTUALLY DO, decided by the tool from its own arguments.
+   *
+   * `consequential: true` above is a static yes/no, which is right for a tool that is always
+   * consequential and useless for one whose consequence depends on what it is asked to do. The
+   * terminal tool is the case that forced this: `git status` reads and `git push` sends, and a
+   * single static flag would either demand a human for the first or wave the second through.
+   *
+   * So a tool may classify the SPECIFIC step. The executor asks before deciding about
+   * authorisation, which means the gate is placed on the command rather than on the capability -
+   * and a plan cannot under-declare its way past it, because the tool's own reading of the
+   * arguments is the one the gate uses.
+   *
+   * Returns `undefined` for "no effect", which is a positive claim: the tool has looked and found
+   * nothing consequential. A tool that cannot classify must return nothing rather than guess.
+   */
+  readonly effectOf?: (step: Step) => DeclaredEffect | undefined
+  /**
+   * A refusal the tool would issue for this step, checked BEFORE authorisation is considered.
+   *
+   * Separated from `effectOf` because the two answers mean different things: a blocked command is
+   * not something a human can authorise (there is no approval that makes `cmd.exe` acceptable),
+   * whereas a consequential one is exactly what approval exists for. Asking for approval for a
+   * refused command would be asking the human to decide something that was never on the table.
+   */
+  readonly preflight?: (step: Step) => { blocked: string; needsHuman: boolean } | undefined
   /**
    * What this tool is a substitute FOR, if anything.
    *
@@ -101,6 +128,35 @@ export class ToolRegistry implements ToolRouter {
   isConsequential(step: Step): boolean | undefined {
     const r = step.tool ? this.byName.get(step.tool) : undefined
     return r?.consequential === true ? true : undefined
+  }
+
+  /**
+   * The effect this step WOULD have, according to the tool that would run it.
+   *
+   * The dynamic counterpart to `isConsequential`, and preferred where both are available: a tool
+   * that can read its own arguments knows more about what it is about to do than a static flag or
+   * a plan step's own declaration does.
+   */
+  effectOf(step: Step): DeclaredEffect | undefined {
+    const r = step.tool ? this.byName.get(step.tool) : undefined
+    return r?.effectOf?.(step)
+  }
+
+  /** A refusal the named tool would issue for this step, if any. */
+  preflight(step: Step): { blocked: string; needsHuman: boolean } | undefined {
+    const r = step.tool ? this.byName.get(step.tool) : undefined
+    return r?.preflight?.(step)
+  }
+
+  /**
+   * Every registered name that would refuse this step, for diagnostics when a mission fails in a
+   * way that looks like a plan defect.
+   */
+  refusalsFor(step: Step): string[] {
+    return this.names()
+      .map((n) => this.byName.get(n)!.preflight?.({ ...step, tool: n }))
+      .filter((x): x is { blocked: string } => x !== undefined)
+      .map((x) => x.blocked)
   }
 
   resolve(step: Step, opts: { allowFallback?: boolean } = {}): ReturnType<ToolRouter['resolve']> {

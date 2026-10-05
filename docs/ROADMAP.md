@@ -63,6 +63,14 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 19c | Approval ≠ verification | **PROVEN** | control F |
 | 19d | Approval does not survive a replan | **PROVEN** | plan epoch, control E |
 | 19e | Emergency stop outranks approval | **PROVEN** | control G |
+| 33 | Terminal: allowlisted programs, no shell | **PROVEN** | 36 live checks, 2 refusal layers |
+| 34 | Terminal: workspace boundary, junction-proof | **PROVEN** | controls E, E2; a junction test that FAILS if it cannot set up |
+| 35 | Terminal: bounded lifetime, tree reaped | **PROVEN** | control D — grandchild wrote nothing |
+| 36 | Terminal: exit code 0 is not evidence | **PROVEN** | controls A, A2 |
+| 37 | Terminal: consequence from ARGS, not a flag | **PROVEN** | `effectOf`; git status vs git push |
+| 38 | Terminal: environment reduced | **PARTIAL** | 7 requested, 8 injected by the loader |
+| 39 | Terminal: OS-level isolation | **ABSENT** | no Job Object / AppContainer / restricted token |
+| 40 | Terminal: child processes governed | **ABSENT** | reaped on timeout, not validated |
 | 20 | Mouse injection + attribution | **BLOCKED** | P0: `dwExtraInfo` lost on mouse path |
 | 21 | GUI, mission-chosen action | **BLOCKED** | needs 20, and an arming decision |
 | 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
@@ -126,18 +134,48 @@ controls biting in both the unit suite and on real hardware. A governance hole w
 while building it: the gate keyed only on the plan's DECLARATION, so omitting it would have
 acted unapproved. Registrations now carry consequential and a mismatch is a plan defect.
 
-### M5 — Terminal mode — NEXT
+### M5 — Terminal mode ✅ COMPLETE
 
-Selected over M4 on evidence. Governance now blocks consequential actions, so the
-next capability added should be the one with the widest legitimate use and the least
-consequence: running a process. A terminal capability needs no injection, no arming and no
-human decision, and it unlocks real work immediately - whereas browser OBSERVATION (M4) is
-valuable but narrower, and its interactive half is blocked behind H1 anyway.
+`run-process`: an allowlisted program, an explicit argument vector, captured output, bounded
+lifetime, a reaped process tree, and a reduced environment. Classified **PARTIALLY PROVEN** — see
+the isolation section below for exactly what is and is not enforced.
 
-Concretely: a cli/	erminal tool that spawns a process inside the workspace, captures
-stdout/stderr and the exit code, refuses to run outside the workspace, refuses interactive
-programs and anything that could prompt for a credential, and is verified by re-running
-independently or by checking the exit code against the filesystem. Sandbox first, breadth second.
+**It is not a sandbox.** Four boundaries, kept apart:
+
+| | enforced? | what it actually does |
+|---|---|---|
+| executable allowlist | **yes, real** | absolute paths only, so PATH cannot substitute a program |
+| argv / path validation | **yes, real** | resolved through `realpath` (a junction cannot smuggle a path out) |
+| working directory | set, **weak** | controls where relative paths resolve; restricts nothing else |
+| OS-level isolation | **absent** | no Job Object, AppContainer, restricted token, or container |
+
+Not restricted, because nothing here can restrict it: reading or writing any file the user can
+reach, network egress, spawning children, the registry, services, scheduled tasks, DLL loading.
+The allowlist bounds **which program runs**, not **what that program then does** — so running a
+workspace script is classified consequential and requires authorisation rather than treated as
+routine.
+
+Env scrubbing measured, not assumed: with a 7-name allowlist the child received those **plus 8 the
+Windows loader injects** and the parent cannot suppress. A secret in the parent environment did not
+arrive. It is a real reduction, not a sealed set.
+
+`taskkill /T /F` genuinely reaps grandchildren — measured on a live tree, after an earlier probe
+gave a false negative by letting the parent exit first.
+
+### M6 — The planner that reads the world — NEXT
+
+Selected on evidence, not on milestone number. AIOS can now plan, execute, recover, verify and
+govern consequences — but every plan still comes from a hand-written `INTENTS` table, so the
+capability it unlocked is only reachable if a human anticipated the phrasing.
+
+The highest-value next step is not another capability. It is making the EXISTING capabilities
+reachable from ordinary language, which is the gap between a working engine and a usable product.
+Concretely: an `ObservationProvider` that reports what is actually on the machine (workspace
+contents, available programs, git state) so the planner selects from real options rather than a
+guess, and a `PlanProvider` implementation that can be driven without a model.
+
+Browser observation (M4) stays queued: valuable, but its interactive half is blocked behind H1
+and read-only DOM work is largely covered by the terminal capability now in place.
 One 123-line file is thin for the role it plays. Add approval requirements for consequential
 actions (`Purchase`, `Delete`, `ExternalSend`, `CredentialUse` evidence kinds already exist but
 nothing produces them), and prove a consequential step cannot execute without authorisation.

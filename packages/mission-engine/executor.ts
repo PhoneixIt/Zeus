@@ -111,6 +111,17 @@ export interface Verifier {
 
 export interface ToolRouter {
   resolve(step: Step): { tool: Tool; fellBack: boolean; reason: string } | { unavailable: string; candidates: readonly string[] }
+  /**
+   * Optional: the effect a step WOULD have, according to the tool that would run it.
+   *
+   * Optional because a router that cannot answer must not be forced to guess. A router that
+   * implements it is saying "I have read this step's arguments and here is what it does", which
+   * is a stronger claim than "this tool exists" - and the one the approval gate needs, because a
+   * tool's consequence can depend on its arguments (`git status` versus `git push`).
+   */
+  effectOf?(step: Step): DeclaredEffect | undefined
+  /** Optional: a refusal the named tool would issue for this step, before authorisation. */
+  preflight?(step: Step): { blocked: string; needsHuman: boolean } | undefined
 }
 
 // ---------------------------------------------------------------- executor config
@@ -355,13 +366,64 @@ export async function execute(
     // approval surviving a replan: a replanned step keeps its id (ids come from the plan's shape)
     // while meaning something different, so an approval keyed on the id alone would silently
     // authorise the new action.
-    // A step is governed if it DECLARES an effect, OR if its tool is registered as inherently
-    // consequential. The second half is not belt-and-braces: keying only on the declaration left
-    // a hole a planner could walk straight through - omit `effect` and the delete ran unapproved.
-    // A property of the implementation cannot be established by a property of the request, so the
-    // tool's own nature is consulted and the declaration is required to MATCH it.
-    if (step.effect || deps.tools.isConsequential?.(step)) {
-      if (!step.effect) {
+    // ---- PREFLIGHT: can this step run AT ALL, regardless of authorisation?
+    //
+    // Checked before the approval gate, deliberately. A refused command is not something a human
+    // can authorise - there is no approval that makes `cmd.exe` an acceptable program - so asking
+    // for one would be asking the human to decide something that was never on the table. It also
+    // means a blocked command reports WHY, rather than sitting at `needs-human` implying a person
+    // could unblock it.
+    const preflight = deps.tools.preflight?.(step)
+    if (preflight) {
+      emit({ type: 'step-refused', stepId: step.id, reason: preflight.blocked } as never)
+      recordResult(step.id, {
+        kind: preflight.needsHuman ? 'needs-human' : 'failed',
+        reason: preflight.blocked,
+      }, cfg.now())
+      continue
+    }
+
+    // ---- THE EFFECT THIS STEP WOULD ACTUALLY HAVE.
+    //
+    // Three sources, in descending order of authority:
+    //
+    //   1. the TOOL's own reading of its arguments   - knows what it is about to do
+    //   2. the tool's static `consequential` flag     - always the same, whatever the arguments
+    //   3. the plan step's DECLARATION                - the weakest, and the only one a planner
+    //                                                   controls
+    //
+    // (1) exists because of the terminal tool. A single static flag is right for a tool that is
+    // always consequential and useless for one that depends on its arguments: marking the
+    // terminal tool consequential would demand a human for `git status`, and NOT marking it would
+    // wave `git push` through. Keying on the command rather than the capability is the difference
+    // between a policy that can be used and one that is either ignored or unusable.
+    //
+    // A disagreement between (1) and (3) is a PLAN DEFECT and fails the step. The tool is taken as
+    // the authority on what it will do - it is about to do it - and a plan that describes a
+    // different action than the one queued is a plan that cannot be trusted, rather than one to
+    // be quietly corrected.
+    const toolEffect = deps.tools.effectOf?.(step)
+    const declared = step.effect
+    if (toolEffect && declared) {
+      const mismatch =
+        toolEffect.kind !== declared.kind || toolEffect.target !== declared.target
+      if (mismatch) {
+        recordResult(step.id, {
+          kind: 'failed',
+          reason:
+            `plan defect: the step declares ${declared.kind} on "${declared.target}" but ` +
+            `"${step.tool}" reports it would ${toolEffect.kind} on "${toolEffect.target}". ` +
+            `The tool is taken as the authority on what it will do, and a plan that describes a ` +
+            `different action is not one to be corrected silently.`,
+        }, cfg.now())
+        continue
+      }
+    }
+    /** The effect the approval key is built from. Never the planner's word for it alone. */
+    const effect = toolEffect ?? declared
+
+    if (effect || deps.tools.isConsequential?.(step)) {
+      if (!effect) {
         // A plan defect, not a transient failure: retrying cannot help, because the declaration
         // is absent rather than wrong.
         recordResult(step.id, {
@@ -373,8 +435,8 @@ export async function execute(
         }, cfg.now())
         continue
       }
-      const key = keyFor(mission.id, step.id, step.effect, planEpoch)
-      approvals?.request(key, `${step.effect.kind} on ${step.effect.target}: ${step.effect.reason}`)
+      const key = keyFor(mission.id, step.id, effect, planEpoch)
+      approvals?.request(key, `${effect.kind} on ${effect.target}: ${effect.reason}`)
 
       // Fetched ONCE. An earlier version called `approvals.permits(key)` and then
       // `approvals.lookup(key)!` a second time to name who decided - so the two reads could
@@ -390,26 +452,26 @@ export async function execute(
         emit({
           type: 'approval-required',
           stepId: step.id,
-          kind: step.effect.kind,
-          target: step.effect.target,
-          reason: step.effect.reason,
-          irreversible: step.effect.irreversible,
+          kind: effect.kind,
+          target: effect.target,
+          reason: effect.reason,
+          irreversible: effect.irreversible,
           state: rejected ? 'rejected' : 'pending',
         } as never)
 
         recordResult(step.id, {
           kind: 'needs-human',
           reason: rejected
-            ? `authorisation was REFUSED for ${step.effect.kind} on ${step.effect.target}`
-            : `awaiting human authorisation for ${step.effect.kind} on ${step.effect.target}: ${step.effect.reason}`,
+            ? `authorisation was REFUSED for ${effect.kind} on ${effect.target}`
+            : `awaiting human authorisation for ${effect.kind} on ${effect.target}: ${effect.reason}`,
         }, cfg.now())
         break
       }
       emit({
         type: 'approval-satisfied',
         stepId: step.id,
-        kind: step.effect.kind,
-        target: step.effect.target,
+        kind: effect.kind,
+        target: effect.target,
         decidedBy: decision.decidedBy,
       } as never)
     }

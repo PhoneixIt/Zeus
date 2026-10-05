@@ -121,6 +121,26 @@ export type Evidence =
    * approved action can fail, and an action that happened can have been unapproved.
    */
   | { kind: 'file-deleted'; path: string; effect?: string; corroboratedBy: string }
+  /**
+   * A terminal step's effect was independently confirmed on the filesystem.
+   *
+   * Deliberately carries NO stdout and NO claim derived from the process's own output. The
+   * corroboration string is fixed at construction time to say where the evidence came from,
+   * because the whole point of this evidence kind is that the process is not its own witness: an
+   * exit code of 0 and a cheerful stdout line are the process's account of itself, and the only
+   * reason to record this as verified is that the verifier looked at the world and agreed.
+   */
+  | {
+      kind: 'command-verified'
+      executable: string
+      path: string
+      bytes: number
+      exitCode: number | null
+      durationMs: number
+      /** How many environment variables the child actually received, measured not assumed. */
+      envVarCount: number
+      corroboratedBy: string
+    }
 
 /** Why a mission must re-observe before its next action. */
 export type PlanInvalidation =

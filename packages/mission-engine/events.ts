@@ -160,6 +160,21 @@ export type ExecutionEvent =
       irreversible: boolean
       state: 'pending' | 'rejected'
     }
+  /**
+   * A step was refused before any authorisation was considered.
+   *
+   * Distinct from `approval-required` on purpose: a refused command is not waiting for a human,
+   * it is not something a human could authorise. Asking for approval for a program on the refused
+   * list would be asking someone to decide something that was never available.
+   */
+  | {
+      type: 'step-refused'
+      seq: number
+      at: number
+      missionId: string
+      stepId: string
+      reason: string
+    }
   /** An approval was found and the step may proceed. Records WHO decided. */
   | {
       type: 'approval-satisfied'

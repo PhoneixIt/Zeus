@@ -20,6 +20,7 @@
                     "control:audit-routes":  "node packages/control-core/audit-injection-routes.mjs",
                     "mission:folder":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-folder-mission.ts",
                     "mission:recovery":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-recovery.ts",
-                    "mission:approval":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-approval.ts"
+                    "mission:approval":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-approval.ts",
+                    "mission:terminal":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-terminal.ts"
                 }
 }
