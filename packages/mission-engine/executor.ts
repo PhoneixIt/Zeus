@@ -45,6 +45,7 @@ import {
   type StepResult,
 } from './state.ts'
 import type { ExecutionEvent, ExecutionRecord } from './events.ts'
+import { keyFor, type ApprovalStore } from '../governance/approval.ts'
 
 // ---------------------------------------------------------------- tool contract
 
@@ -154,6 +155,17 @@ const DEFAULTS: Required<Pick<ExecutorConfig, 'maxAttempts' | 'permission' | 'em
 
 export interface ExecuteOptions {
   readonly signal?: AbortSignal
+  /**
+   * WHICH PLAN THIS IS. Part of every approval key.
+   *
+   * It exists because step ids are stable across replans - they come from the plan's shape - so
+   * an approval keyed on the step id alone would silently authorise a DIFFERENT action that
+   * happens to share an identifier. A replan increments the epoch, and every approval granted
+   * under the old one stops matching.
+   *
+   * Defaults to 0, so a mission that is never replanned has a stable key.
+   */
+  readonly planEpoch?: number
 }
 
 export interface ExecuteResult {
@@ -169,10 +181,17 @@ export async function execute(
     verifier: Verifier
     control: ControlSurface
     config?: Partial<ExecutorConfig>
+    /**
+     * THE APPROVAL AUTHORITY. Absent means NO step may declare a consequential effect - a
+     * mission with a consequential step and no store fails that step rather than running it.
+     */
+    approvals?: ApprovalStore
   },
   opts: ExecuteOptions = {},
 ): Promise<ExecuteResult> {
   const cfg = { ...DEFAULTS, ...deps.config }
+  const planEpoch = opts.planEpoch ?? 0
+  const approvals = deps.approvals
   const signal = opts.signal
   const events: ExecutionEvent[] = []
   let seq = 0
@@ -314,6 +333,85 @@ export async function execute(
         blockedBy: blocking,
       }, cfg.now())
       continue
+    }
+
+    // ---- CONSEQUENTIAL-EFFECT GATE.
+    //
+    // Runs after the dependency gate and BEFORE tool selection, which is before the tool can be
+    // called at all. A step that declares a consequential effect and has no matching approval
+    // does not run: it becomes `needs-human` with the request recorded, and the mission stops
+    // being able to complete.
+    //
+    // WHY HERE AND NOT INSIDE THE TOOL
+    //
+    // A gate a tool can forget is not a gate. The tool is the thing being governed, and in this
+    // system the tool is code that will eventually be chosen at runtime. Putting the check in the
+    // executor means the decision is made by the component that owns mission state, and that a
+    // tool physically cannot reach its effects without passing it.
+    //
+    // WHY THE KEY IS EXACT
+    //
+    // The key binds mission, step, effect kind, target AND plan epoch. The epoch is what stops an
+    // approval surviving a replan: a replanned step keeps its id (ids come from the plan's shape)
+    // while meaning something different, so an approval keyed on the id alone would silently
+    // authorise the new action.
+    // A step is governed if it DECLARES an effect, OR if its tool is registered as inherently
+    // consequential. The second half is not belt-and-braces: keying only on the declaration left
+    // a hole a planner could walk straight through - omit `effect` and the delete ran unapproved.
+    // A property of the implementation cannot be established by a property of the request, so the
+    // tool's own nature is consulted and the declaration is required to MATCH it.
+    if (step.effect || deps.tools.isConsequential?.(step)) {
+      if (!step.effect) {
+        // A plan defect, not a transient failure: retrying cannot help, because the declaration
+        // is absent rather than wrong.
+        recordResult(step.id, {
+          kind: 'failed',
+          reason:
+            `plan defect: "${step.tool}" is registered as a consequential tool but this step ` +
+            `declares no effect, so there is nothing to authorise. Omitting the declaration ` +
+            `must not be a way to act.`,
+        }, cfg.now())
+        continue
+      }
+      const key = keyFor(mission.id, step.id, step.effect, planEpoch)
+      approvals?.request(key, `${step.effect.kind} on ${step.effect.target}: ${step.effect.reason}`)
+
+      // Fetched ONCE. An earlier version called `approvals.permits(key)` and then
+      // `approvals.lookup(key)!` a second time to name who decided - so the two reads could
+      // disagree, and removing the gate made the second one throw on a missing decision. Reading
+      // it once removes the class of bug entirely: there is no assertion to be wrong about.
+      const decision = approvals?.lookup(key)
+
+      // Emergency stop and takeover are checked ABOVE and halt the mission outright, so an
+      // approval can never outrank them. Here we decide only authorisation, and a human who has
+      // taken the machine is not reachable by any approval.
+      if (decision?.state !== 'approved') {
+        const rejected = decision?.state === 'rejected'
+        emit({
+          type: 'approval-required',
+          stepId: step.id,
+          kind: step.effect.kind,
+          target: step.effect.target,
+          reason: step.effect.reason,
+          irreversible: step.effect.irreversible,
+          state: rejected ? 'rejected' : 'pending',
+        } as never)
+
+        recordResult(step.id, {
+          kind: 'needs-human',
+          reason: rejected
+            ? `authorisation was REFUSED for ${step.effect.kind} on ${step.effect.target}`
+            : `awaiting human authorisation for ${step.effect.kind} on ${step.effect.target}: ${step.effect.reason}`,
+        }, cfg.now())
+        break
+      }
+      emit({
+        type: 'approval-satisfied',
+        stepId: step.id,
+        kind: step.effect.kind,
+        target: step.effect.target,
+        decidedBy: decision.decidedBy,
+      } as never)
     }
 
     // ---- tool selection, recorded so "which tool ran" is never a guess.

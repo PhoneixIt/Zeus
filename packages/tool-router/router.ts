@@ -29,6 +29,19 @@ import type { ExecutionMode, Step } from '../mission-engine/state.ts'
 export interface ToolRegistration {
   readonly tool: Tool
   /**
+   * Whether this tool is INHERENTLY consequential, whatever the plan says.
+   *
+   * Added because the approval gate originally keyed only on the step's DECLARED effect - and
+   * that is a hole a planner can walk through: omit the declaration and the delete runs
+   * unapproved. A property of the implementation cannot be established by a property of the
+   * request, so the tool's own nature is registered here and the executor requires a declaration
+   * to MATCH it.
+   *
+   * The check is on the tool, not on the plan, so it is exactly the "do not rely on each route
+   * remembering" principle the injection gate was built on.
+   */
+  readonly consequential?: boolean
+  /**
    * What this tool is a substitute FOR, if anything.
    *
    * Only used when a caller explicitly allows fallback. Keyed by tool name, so the mapping is
@@ -77,6 +90,17 @@ export class ToolRegistry implements ToolRouter {
       if (r.tool.name === wanted || r.substituteFor?.includes(wanted)) out.add(r.tool.name)
     }
     return [...out].sort()
+  }
+
+  /**
+   * Whether the named tool is registered as inherently consequential.
+   *
+   * Consulted by the executor's approval gate. It reads the REGISTRATION, not the plan, so a
+   * planner cannot make a consequential tool look harmless by omitting a declaration.
+   */
+  isConsequential(step: Step): boolean | undefined {
+    const r = step.tool ? this.byName.get(step.tool) : undefined
+    return r?.consequential === true ? true : undefined
   }
 
   resolve(step: Step, opts: { allowFallback?: boolean } = {}): ReturnType<ToolRouter['resolve']> {

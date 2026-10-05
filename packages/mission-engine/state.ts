@@ -1,3 +1,5 @@
+import type { DeclaredEffect } from '../governance/approval.ts'
+
 /**
  * Mission state.
  *
@@ -110,6 +112,15 @@ export type Evidence =
   | { kind: 'summary-composed'; bytes: number; provenance: string; folder: string }
   | { kind: 'file-written'; path: string; bytes: number; lines: number }
   | { kind: 'file-read-back'; path: string; bytes: number; heading: string }
+  /**
+   * A consequential action was independently confirmed to have happened.
+   *
+   * Separate from every observation kind because it answers a governance question as well as a
+   * physical one, and both answers are needed: the action was PERMITTED (at the gate, by a human)
+   * and it OCCURRED (here, corroborated from outside the tool). Neither implies the other - an
+   * approved action can fail, and an action that happened can have been unapproved.
+   */
+  | { kind: 'file-deleted'; path: string; effect?: string; corroboratedBy: string }
 
 /** Why a mission must re-observe before its next action. */
 export type PlanInvalidation =
@@ -161,6 +172,14 @@ export interface Step {
   readonly mode: ExecutionMode
   /** Why this step is needed - what breaks without it. */
   readonly rationale: string
+  /**
+ * The CONSEQUENTIAL EFFECT this step declares, if any.
+ *
+ * A DECLARATION, not a permission. It obliges the step to obtain human authorisation before the
+ * tool runs, and there is deliberately no field anywhere on a plan meaning "approved" - so a plan
+ * can require an approval but can never grant one. The executor is the authority.
+ */
+readonly effect?: DeclaredEffect
   /**
    * What this step operates ON, handed to the tool at run time.
    *

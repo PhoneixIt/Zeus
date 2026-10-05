@@ -142,6 +142,36 @@ export type ExecutionEvent =
       reason: string
     }
   /**
+   * A consequential step needs human authorisation and does not have it.
+   *
+   * Emitted BEFORE the tool is selected, so its presence is itself evidence the tool never ran.
+   * `state` distinguishes still-outstanding from refused, because "awaiting approval" and
+   * "refused" call for different responses from a human.
+   */
+  | {
+      type: 'approval-required'
+      seq: number
+      at: number
+      missionId: string
+      stepId: string
+      kind: string
+      target: string
+      reason: string
+      irreversible: boolean
+      state: 'pending' | 'rejected'
+    }
+  /** An approval was found and the step may proceed. Records WHO decided. */
+  | {
+      type: 'approval-satisfied'
+      seq: number
+      at: number
+      missionId: string
+      stepId: string
+      kind: string
+      target: string
+      decidedBy: string
+    }
+  /**
    * A step declared that the PLAN no longer matches the world.
    *
    * Distinct from `step-failed` on purpose, and the distinction is the whole point of the
