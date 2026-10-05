@@ -58,7 +58,11 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 16 | **User-driven end-to-end mission** | **PROVEN** | `mission:folder` |
 | 17 | Plan inspection ("what I intend to do") | **PROVEN** | `planner/inspect-plan.ts` |
 | 18 | Step-to-step data flow (`ctx.prior`) | **PROVEN** | compose → write |
-| 19 | Governance contract | **PARTIAL** | 123 lines, one file; needs depth |
+| 19 | Governance contract | **PROVEN** | governance/approval.ts, exact 5-part key |
+| 19b | Consequential-action approval, enforced | **PROVEN** | mission:approval, 6 controls both layers |
+| 19c | Approval ≠ verification | **PROVEN** | control F |
+| 19d | Approval does not survive a replan | **PROVEN** | plan epoch, control E |
+| 19e | Emergency stop outranks approval | **PROVEN** | control G |
 | 20 | Mouse injection + attribution | **BLOCKED** | P0: `dwExtraInfo` lost on mouse path |
 | 21 | GUI, mission-chosen action | **BLOCKED** | needs 20, and an arming decision |
 | 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
@@ -106,7 +110,7 @@ built specifically so the negative controls could bite: a world that moves twice
 replan whose retry then fails. Supervisor added, bounded at 3 attempts, carrying nothing forward
 without evidence.
 
-### M3 — Deepen the governance contract — NEXT
+### M3 — Governance depth: consequential-action approval ✅ COMPLETE
 
 Selected over M5 on evidence: recovery exposed that a mission can now plan, recover and write a file
 while the governance contract is still a single 123-line file with no approval path for consequential
@@ -115,9 +119,25 @@ produces them, so a mission has no way to require authorisation even in principl
 gap between what the engine claims to model and what it can enforce, and it is load-bearing for every
 capability added after it.
 
-Concretely: an approval gate in the executor for steps declaring a consequential effect, a
-pendingApprovals flow that actually blocks, and a negative control proving an unapproved
-consequential step cannot execute.
+Delivered: an exact five-part approval key (mission, step, kind, target, plan epoch), an
+executor gate placed before the tool is even SELECTED, an approval store that refuses any key
+never requested, a disposable consequence simulator that travels the same gate, and six negative
+controls biting in both the unit suite and on real hardware. A governance hole was found
+while building it: the gate keyed only on the plan's DECLARATION, so omitting it would have
+acted unapproved. Registrations now carry consequential and a mismatch is a plan defect.
+
+### M5 — Terminal mode — NEXT
+
+Selected over M4 on evidence. Governance now blocks consequential actions, so the
+next capability added should be the one with the widest legitimate use and the least
+consequence: running a process. A terminal capability needs no injection, no arming and no
+human decision, and it unlocks real work immediately - whereas browser OBSERVATION (M4) is
+valuable but narrower, and its interactive half is blocked behind H1 anyway.
+
+Concretely: a cli/	erminal tool that spawns a process inside the workspace, captures
+stdout/stderr and the exit code, refuses to run outside the workspace, refuses interactive
+programs and anything that could prompt for a credential, and is verified by re-running
+independently or by checking the exit code against the filesystem. Sandbox first, breadth second.
 One 123-line file is thin for the role it plays. Add approval requirements for consequential
 actions (`Purchase`, `Delete`, `ExternalSend`, `CredentialUse` evidence kinds already exist but
 nothing produces them), and prove a consequential step cannot execute without authorisation.

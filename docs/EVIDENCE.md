@@ -104,7 +104,7 @@ end.
 
 ### Execution substrate
 ```
-npm test                                        131 pass / 0 fail
+npm test                                        148 pass / 0 fail
 npm run mission:live                            PASS
 npm run mission:two-step                        PASS
 npm run mission:filesystem                      PASS
@@ -112,8 +112,51 @@ npm run mission:gui-audit                       PASS
 npm run mission:gui-accept                      PASS
 npm run mission:folder                           PASS
 npm run mission:recovery                          PASS
+npm run mission:approval                         PASS
 ```
 
+### Consequential-action governance
+```
+npm run mission:approval
+```
+```
+BLOCKED (no approval)
+  mission state      blocked-on-human   complete=false
+  step 2 outcome     needs-human
+  reason             awaiting human authorisation for delete on <ws>\alpha.txt: ...
+  tool-selected      0            <- the tool was never even SELECTED
+  approval-required  1
+  journal entries    +0           <- nothing happened
+  probe still exists true
+
+APPROVED (explicit human decision)
+  key   m-approval|remove-probe|delete|<ws>\alpha.txt|#0
+  state approved   by test-human
+  step 2 outcome   verified        mission complete
+  tool-selected    1
+  journal          ["deleted <ws>\alpha.txt"]
+  probe exists     false
+```
+
+Negative controls, both layers:
+
+| removed protection | result |
+|---|---|
+| the entire approval gate | live: **8 FAILURES** — the UNAPPROVED delete executed and the mission reported `complete` |
+| gate keyed on the declaration only | unit 147 / **1 FAIL** |
+| `decide()` accepts any key | unit 147 / **1 FAIL** |
+| epoch dropped from the key | unit 146 / **2 FAIL** |
+| restored | unit **148 / 0**, live **PASS** |
+
+The `decide()` refusal is what makes "the planner grants itself approval" impossible: the planner
+has no reference to the store, and even if it could, a decision for a key nobody requested is
+rejected.
+
+The declaration/tool mismatch check closes a hole found while building this: keying the gate only
+on the plan's DECLARATION let a planner omit it and act unapproved. A property of the
+implementation cannot be established by a property of the request.
+
+---
 ### Recovery from a genuine environmental change
 ```
 npm run mission:recovery
@@ -235,6 +278,10 @@ than any individual entry.
 | Observation depth hardcoded | a folder moved too deep became invisible and unreconcilable |
 | A harness that crashed under its own controls | could not show the controls failed for the right reason |
 | Two recovery controls that could not fail | suite reported 129/0 with either protection removed |
+| Approval gate keyed only on the plan's declaration | a planner could omit it and act unapproved |
+| Gate reading the approval twice with a non-null assertion | removing the gate crashed the harness instead of failing it |
+| A control sharing one probe file across scenarios | later controls failed at the dependency gate, never reaching the one under test |
+| Control F disabling verification mission-wide | showed "nothing happened" rather than "approved but unverified" |
 
 ---
 
