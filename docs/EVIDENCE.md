@@ -104,7 +104,7 @@ end.
 
 ### Execution substrate
 ```
-npm test                                        208 pass / 0 fail
+npm test                                        227 pass / 0 fail
 npm run mission:live                            PASS
 npm run mission:two-step                        PASS
 npm run mission:filesystem                      PASS
@@ -115,8 +115,91 @@ npm run mission:recovery                          PASS
 npm run mission:approval                         PASS
 npm run mission:terminal                         PASS
 npm run mission:world-aware                      PASS
+npm run mission:review                          PASS
 ```
 
+### Plan review, amendment, and dry run
+```
+npm run mission:review
+```
+
+```
+1. THE USER GIVES AN OBJECTIVE
+     "Summarise the contents of the folder "...\project"
+2. WHAT THE MACHINE ACTUALLY LOOKS LIKE
+     files 4: README.md, index.js, lib/util.js, notes.txt
+     extensions js, md, txt   max depth 2   fingerprint 1155d9...
+
+5. THE REVIEWER AMENDS ONE MEANINGFUL PARAMETER
+     !! "write-8430b92c".args changed  - path: "...\summarys-1155d9.txt" -> "...\summary-b.txt"
+     !! "confirm-ea581140".args changed - path: "summarys-1155d9.txt"   -> "...\summary-b.txt"
+     original digest 9d298a8ebb5a2fb3    amended digest f7c035772062abc6
+6. DRY RUN - what would happen, and nothing has
+     output root before ["1155d9.raw"]  after ["1155d9.raw"]   unchanged true
+7. COMPILE THE AMENDED PROPOSAL, AND EXECUTE THAT
+     proposal digest == reviewed digest: true
+     mission state complete   complete=true   verified 4 failed 0 skipped 0
+8. THE ARTIFACT, INSPECTED FROM OUTSIDE THE MISSION
+     output root contains: 1155d9.raw, summary-b.txt
+     summary-b.txt exists  true
+     summary-a.txt exists  false        <- must be false
+     the file says 4   the disk has 4
+```
+
+**`summary-a.txt` not existing is the load-bearing evidence.** A system that displayed the reviewed
+plan and executed a different one would leave the file the reviewer saw. 27 live checks, 0 failures.
+
+#### Negative controls
+
+| protection removed | live | unit |
+|---|---|---|
+| executor ignores the reviewed digest | **1 FAIL** | 225 / 2 |
+| compiler stops stamping the digest | **1 FAIL** | 225 / 2 |
+| **compiler stops copying the declared effect** | **1 FAIL** | 225 / 2 |
+| the stale-world blocker | — | 208 / 1 |
+| compiler stops requiring a verification | — | 138 / 4 |
+| dry run stops reporting unknown capabilities | — | 226 / 1 |
+| the digest's field enumeration | — | 226 / 1 |
+| restored | **PASS** (27) | **227 / 0** |
+
+One control did not bite, and the finding is the interesting part: **the defensive `structuredClone`
+in `amend` is redundant.** Removing it changed nothing, because every amendment case already builds a
+new `steps` array by mapping rather than mutating, so the original was never reachable. It is kept as
+defence in depth for a future amendment kind that pushes into an array — and documented as redundant
+rather than as a protection, because a comment claiming it guards something a test showed it does not
+would be worse than no comment.
+
+#### A GOVERNANCE HOLE FOUND IN M7, IN M3's OWN CODE
+
+`compilePlan` **did not copy `step.effect` onto the mission step.** A plan could declare a
+consequential effect, the compiler silently dropped it, and the executor's approval gate never saw it —
+so the action ran unapproved.
+
+It went unnoticed for three milestones because every M3 test hand-built a `Mission` with `effect`
+already set, bypassing the compiler. The only path that turns a *declaration* into a mission was never
+tested at all. M7's "amendment must not bypass governance" control is precisely the case that finds
+it: a reviewer amends a plan to be consequential, and the amendment was having no effect whatsoever.
+
+This is the same shape as M3's declaration-vs-implementation hole, one layer up: M6 closed "a plan may
+under-declare what a tool will do"; M7 closed "a plan's declaration may not survive compilation".
+
+#### Four more defects in my own work
+
+- `session.ts` imported `amendAll` but called `amend` — a `ReferenceError` on the first amendment.
+- `dry-run.ts` returned `{ planLevelBlockers, }` as a shorthand for a variable named `planBlockers`.
+  The field was silently `undefined`, so every consumer of the reason list saw nothing and the report
+  would have claimed a plan was executable while omitting why it was not.
+- `diff.ts` nested ternaries with comments between `?` and the expression; Node's type-stripper
+  rejected the file and every test in the suite reported as failing. Rewritten as an if-chain.
+- The live harness called a hoisted function that closes over `const`s, and died with
+  "Cannot access 'terminalRun' before initialization" before printing a step.
+
+And two controls that could not fail, both mine: a staleness control that disabled the *wrong*
+blocker, and a capability control that wrote `capability` into `args` — producing a plan that looked
+amended and was not, which is worse than not offering the amendment at all. That is now a real
+`set-capability` amendment, and writing a step FIELD through `set-arg` is impossible by construction.
+
+---
 ### World-aware planning
 ```
 npm run mission:world-aware
@@ -489,6 +572,9 @@ than any individual entry.
 | `export { X } from` under Node type-stripping | the binding never materialised; consumers saw "not defined" |
 | A fingerprint claimed to detect same-size edits | a test asserting the claim failed; the claim was wrong, not the digest |
 | A staleness control removed one of two checks that refuse identically | it reported no failure and the protection looked redundant |
+| `compilePlan` dropped `step.effect`, so declared consequences were never gated | found by M7's governance-bypass control; untested for three milestones |
+| A shorthand property returned a field that was `undefined` | the dry run would claim executable while hiding every reason |
+| A control wrote `capability` into `args` | the plan looked amended and was not; now a real `set-capability` |
 | A negative control removed one of three refusal layers | it PASSED and proved nothing; only removing all three bit |
 | A control removed only the existence check | PASSED, because the content comparison caught the same case |
 

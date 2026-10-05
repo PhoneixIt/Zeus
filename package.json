@@ -22,6 +22,7 @@
                     "mission:recovery":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-recovery.ts",
                     "mission:approval":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-approval.ts",
                     "mission:terminal":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-terminal.ts",
-                    "mission:world-aware":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-world-aware.ts"
+                    "mission:world-aware":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-world-aware.ts",
+                    "mission:review":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-review.ts"
                 }
 }

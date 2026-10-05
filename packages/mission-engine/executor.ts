@@ -191,6 +191,21 @@ export interface ExecuteOptions {
    * Defaults to 0, so a mission that is never replanned has a stable key.
    */
   readonly planEpoch?: number
+  /**
+   * THE PROPOSAL THE USER REVIEWED. Its digest.
+   *
+   * Supply it and the executor will refuse to run a mission compiled from a different proposal. That
+   * is the mechanism behind "amendment produces a new plan": a reviewer amends, the plan is compiled
+   * again, and the mission that was already compiled cannot be used in its place, because the digest
+   * the reviewer holds no longer describes it.
+   *
+   * OPTIONAL, deliberately. Omitting it means "nobody reviewed this and nobody claims to have" - which
+   * is the situation for every mission the supervisor runs on its own. Making it mandatory would buy
+   * nothing for those callers and would push them to pass a digest computed from the very proposal
+   * they just compiled, which is a check that cannot fail. The review path always supplies one, and
+   * that is where it is load-bearing.
+   */
+  readonly reviewedProposalDigest?: string
 }
 
 export interface ExecuteResult {
@@ -220,6 +235,52 @@ export async function execute(
   const signal = opts.signal
   const events: ExecutionEvent[] = []
   let seq = 0
+
+  // ---- IS THIS THE PLAN SOMEONE REVIEWED?
+  //
+  // Checked before anything else, and before the loop, because a mismatch means the caller is about
+  // to run a plan other than the one they believe they approved. That is worth refusing over
+  // everything, including an approval that would otherwise be present and valid.
+  //
+  // WHY IT IS HERE AND NOT IN THE COMPILER
+  //
+  // Because the compiler cannot know what a reviewer saw. It knows what it produced; only the review
+  // session knows what was put in front of a person. So the compiler stamps the identity and the
+  // executor compares it, and neither has to trust the other.
+  if (opts.reviewedProposalDigest !== undefined) {
+    const stamped = mission.proposalDigest
+    if (!stamped) {
+      return {
+        mission,
+        record: {
+          missionId: mission.id, startedAt: 0, finishedAt: 0, state: mission.state,
+          complete: false, verified: 0, failed: 0, needsHuman: 0, skipped: mission.plan.length,
+        },
+        events: [{
+          type: 'step-refused', seq: 0, at: 0, missionId: mission.id, stepId: '(mission)',
+          reason:
+            `a reviewed proposal digest was supplied but this mission records none, so it cannot be ` +
+            `shown to be the plan that was reviewed. Refusing rather than assuming.`,
+        }] as never,
+      }
+    }
+    if (stamped !== opts.reviewedProposalDigest) {
+      return {
+        mission,
+        record: {
+          missionId: mission.id, startedAt: 0, finishedAt: 0, state: mission.state,
+          complete: false, verified: 0, failed: 0, needsHuman: 0, skipped: mission.plan.length,
+        },
+        events: [{
+          type: 'step-refused', seq: 0, at: 0, missionId: mission.id, stepId: '(mission)',
+          reason:
+            `this mission was compiled from proposal ${stamped}, but the proposal that was reviewed is ` +
+            `${opts.reviewedProposalDigest}. The plan was amended after compilation, so this mission is ` +
+            `not the reviewed plan. Compile the amended proposal and run that instead.`,
+        }] as never,
+      }
+    }
+  }
   const t0 = cfg.now()
 
   const emit = (e: Omit<ExecutionEvent, 'seq' | 'at' | 'missionId'> & { missionId?: string }): void => {

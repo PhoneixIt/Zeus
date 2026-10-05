@@ -277,6 +277,18 @@ export interface Mission {
    * that came through the compiler has it.
    */
   readonly basis?: import('../planner/plan.ts').PlanBasis
+  /**
+   * THE DIGEST OF THE PROPOSAL THIS MISSION WAS COMPILED FROM.
+   *
+   * Stamped by the compiler and re-checked by `execute()` against whatever the caller says the user
+   * reviewed. Without it, amending a proposal and then executing the mission compiled from the
+   * earlier one would go unnoticed: the amendment would be a change to a document nobody was looking
+   * at any more, while a different plan ran.
+   *
+   * Optional at the type level so a hand-built mission in a test may omit it. Every mission that came
+   * through the compiler has it.
+   */
+  readonly proposalDigest?: string
 }
 
 export interface HistoryEntry {

@@ -83,6 +83,16 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 50 | Planner cannot read or write | **PROVEN** | one `realpathSync`, asserted |
 | 51 | Fingerprint detects same-size edits | **ABSENT** | listing metadata only; documented |
 | 52 | Junction containment in the observer | **ABSENT** | a junction is followed; tools re-check |
+| 53 | PlanProposal inspected before execution | **PROVEN** | `renderProposal` names every field a reviewer needs |
+| 54 | Amendment yields a NEW proposal | **PROVEN** | original byte-identical; arrays not aliased |
+| 55 | Superseded mission refused at execution | **PROVEN** | `proposalDigest`; control B |
+| 56 | Dry run: zero side effects | **PROVEN** | byte-identical world; a control that acts IS caught |
+| 57 | Stale world blocks execution | **PROVEN** | `too-old` / `world-changed` / `cannot-verify` |
+| 58 | Diff classifies behavioural vs cosmetic | **PROVEN** | `materialChanges` |
+| 59 | Review ≠ authorisation | **PROVEN** | no `approvePlan`; approval events still raised |
+| 60 | Injected approval fields are inert | **PROVEN** | digest unchanged; compiler ignores them |
+| 61 | Compiler carries the declared effect | **PROVEN** | **repaired in M7** — see below |
+| 62 | Defensive clone in `amend` | **REDUNDANT** | control showed every path already maps |
 | 20 | Mouse injection + attribution | **BLOCKED** | P0: `dwExtraInfo` lost on mouse path |
 | 21 | GUI, mission-chosen action | **BLOCKED** | needs 20, and an arming decision |
 | 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
@@ -196,7 +206,24 @@ A and B differ in their plan text (file counts, extensions, depth, output name) 
 planner emits **byte-identical step intents and expected results** for both. C is the load-bearing
 one: identical objective, identical folder, different observation, **different plan**.
 
-### M7 — A plan the user can read and amend — NEXT
+### M7 — Plan review, amendment, and dry run ✅ COMPLETE
+
+A `PlanProposal` is **reviewable data**, not executable authority. `packages/review/` shows it,
+amends it, diffs it, dry-runs it, and compiles the result — and imports no executor, no
+`child_process`, no filesystem (in the dry run) and no governance, which the tests check by reading
+the import graph.
+
+**Amendment is a new plan, never an in-place mutation.** `compilePlan` stamps a `proposalDigest` on
+the mission; `execute()` re-checks it against whatever the caller says the user reviewed. Amend,
+then run the mission that was already compiled, and the executor refuses with
+`amended after compilation`.
+
+**The dry run has a real no-action boundary.** It is not "execute and ignore": the module cannot
+reach a tool's `run` at all, and it says nothing about whether a step would *succeed* — only whether
+it could be dispatched. A control writes the same report through an implementation that *does* call
+the tool, to show the check is load-bearing.
+
+### M8 — The first AI planning provider — NEXT
 
 Selected on evidence, not on milestone number. AIOS can now plan, execute, recover, verify and
 govern consequences — but every plan still comes from a hand-written `INTENTS` table, so the

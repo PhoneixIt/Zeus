@@ -1,5 +1,19 @@
 # Known defects
 
+## M7 — review: what a reviewer still cannot tell
+
+| absent | consequence |
+|---|---|
+| a UI | the review surface is text; a person reads it in a terminal, not on a dialog |
+| a way to reject a plan *in the system* | `commit()` returning a refusal is the only path; nothing records "a human said no" |
+| plan-to-plan provenance | a reviewer's amendments are in the session, not in the mission's history |
+| a preview of the FINAL artifact | a dry run reports dispatch and consequence, never the content a step would produce |
+
+The last row is the real limit of a dry run and it is deliberate: predicting an artifact's contents
+requires doing the work. So the dry run answers "would this run, and would it need a human", and
+verification answers "did it work". It never answers "what exactly will it say" - because that is
+what the execution is for.
+
 ## M6 — world-aware planning: what the observation does not see
 
 | absent | consequence |

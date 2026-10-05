@@ -32,6 +32,12 @@ import type { Mission, Step } from '../mission-engine/state.ts'
 // compiler must be able to refuse an unknown capability, and a type-only import would leave the
 // check as a comment.
 import { CAPABILITIES, isCapability, type PlanProposal } from './plan.ts'
+// A dependency from the compiler to the REVIEW layer, which is the wrong direction and is worth
+// naming. `digest.ts` imports nothing but `node:crypto` and the plan contract, so nothing can be
+// reached through it; but the cleaner fix is for the mission to record the proposal's own identity
+// rather than for the compiler to compute one. Until then this is a leaf import, and the test suite
+// checks it stays one.
+import { digestOf } from '../review/digest.ts'
 
 export type CompileResult =
   | { readonly ok: true; readonly mission: Mission; readonly warnings: readonly string[] }
@@ -153,6 +159,16 @@ export function compilePlan(proposal: PlanProposal, missionId: string, startedAt
     capability: s.capability,
     rationale: s.rationale,
     tool: s.tool,
+    // THE DECLARED EFFECT IS COPIED. It was not, and that was a governance hole rather than an
+    // oversight: a plan declaring a consequential effect had it silently dropped here, so the
+    // executor's approval gate never saw it and the action ran unapproved.
+    //
+    // It went unnoticed because every M3 test hand-built a `Mission` with `effect` already on the
+    // step, bypassing the compiler entirely - so the only path that turns a DECLARATION into a
+    // mission was never tested. Found by M7's "amendment must not bypass governance" control, which
+    // is precisely the case it was written for: a reviewer (or a model) amends a plan to be
+    // consequential, and nothing about the amendment was having any effect at all.
+    ...(s.effect ? { effect: s.effect } : {}),
     args: s.args,
     dependsOn: s.dependsOn,
     status: 'pending' as const,
@@ -176,6 +192,14 @@ export function compilePlan(proposal: PlanProposal, missionId: string, startedAt
     // ask whether the world still looks the way the plan assumed - and re-observe and replan rather
     // than retry when it does not. Without it, staleness is undetectable after the fact.
     basis: proposal.basis,
+    // The digest of the PROPOSAL this mission was compiled from. Stamped here, checked at execution.
+    //
+    // It exists because a mission and a proposal otherwise share no identity: a reviewer could amend
+    // the proposal, and the mission compiled from the earlier one would still be sitting there looking
+    // perfectly executable. With the digest, `execute()` can be told which proposal the user actually
+    // reviewed and refuse when the mission does not match - so an amendment is a new plan rather than
+    // something that quietly happens beside an already-compiled one.
+    proposalDigest: digestOf(proposal),
   }
   return { ok: true, mission, warnings }
 }
