@@ -102,7 +102,11 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 24c | Objective reconciliation | **PROVEN** | planner/reconcile.ts, refuses ambiguity |
 | 25 | Browser mode | **NOT STARTED** | package empty |
 | 26 | API mode | **NOT STARTED** | no tool |
-| 27 | **Model / provider layer** | **NOT STARTED** | **there is no AI in AIOS yet** |
+| 27 | **Model / provider layer** | **PARTIAL** | `packages/model/` PROVEN as a boundary: HTTP transport, strict accept-or-reject parsing, zero import routes to anything actionable. **No model weights connected** — see H5. |
+| 27a | Model output parsed without repair | **PROVEN** | `model/parse.ts`, one named normalisation; 43 unit controls |
+| 27b | Untrusted-reasoner boundary, live | **PROVEN** | 24 adversarial scenarios over a real socket, each stopped at a declared layer |
+| 27c | Model cannot grant authority | **PROVEN** | approval-shaped fields produce a **byte-identical digest** |
+| 27d | Real language model connected | **NOT STARTED** | blocked on H5 |
 | 28 | Desktop application | **NOT STARTED** | |
 | 29 | Integrated chat | **NOT STARTED** | |
 | 30 | Long-running missions | **NOT STARTED** | |
@@ -119,8 +123,13 @@ These cannot be resolved by engineering judgement. Each needs a person.
 |---|---|---|
 | **H1** | Arm the operator for real injection | Arming means the automation may act on the user's live desktop. The automation arming itself is the failure mode this project exists to prevent. Every real-injection milestone needs a human to arm, deliberately. |
 | **H2** | Release/resume design | Blocked behind H1. A human cannot currently return control to the operator after a takeover, so no real mission can be interrupted and resumed. |
-| **H3** | Model provider | §zero-new-spend. Free/local options exist but choosing one is a product and privacy decision, not a technical default. |
+| **H3** | Model provider | **RESOLVED IN PART by M8.** The instruction was to use an available zero-new-spend provider; measurement showed **none is available** — no runtime, no weights, no credentials. So the provider *boundary* was built and proven against an out-of-process adversarial peer, and the remaining choice is now **H5** (install local weights vs. use a hosted free tier). H3 remains open in the sense that no provider is connected. |
 | **H4** | Whether to fix the mouse sentinel by changing injection internals | It is in the injection layer, deliberately untouched so far, and the fix weakens nothing but does change a proven component. |
+| **H5** | **How to obtain a real reasoner** (new, from M8) | Installing a third-party runtime plus several hundred MB of weights, or sending prompts and folder contents to a third party. Both are human-authority decisions: supply chain, disk, network, and data leaving the machine. The code is done and the seam is one URL; nothing here is an engineering problem. |
+
+**H5 in one line:** do you want AIOS to run a model locally (nothing leaves the machine, needs a
+~0.5–4 GB download and a Python/llama.cpp runtime), or call a hosted free-tier API (no local
+footprint, better plans, but the user's objective and folder contents leave the machine)?
 
 ---
 
@@ -223,61 +232,99 @@ reach a tool's `run` at all, and it says nothing about whether a step would *suc
 it could be dispatched. A control writes the same report through an implementation that *does* call
 the tool, to show the check is load-bearing.
 
-### M8 — The first AI planning provider — NEXT
+### M8 — The first AI planning provider ✅ BOUNDARY COMPLETE · WEIGHTS NOT CONNECTED
 
-Selected on evidence, not on milestone number. AIOS can now plan, execute, recover, verify and
-govern consequences — but every plan still comes from a hand-written `INTENTS` table, so the
-capability it unlocked is only reachable if a human anticipated the phrasing.
+Selected on evidence, not on milestone number. AIOS could plan, execute, recover, verify and govern
+consequences, but every plan came from hand-written logic, so the capability was only reachable if a
+human anticipated the phrasing.
 
-The highest-value next step is not another capability. It is making the EXISTING capabilities
-reachable from ordinary language, which is the gap between a working engine and a usable product.
-Concretely: an `ObservationProvider` that reports what is actually on the machine (workspace
-contents, available programs, git state) so the planner selects from real options rather than a
-guess, and a `PlanProvider` implementation that can be driven without a model.
+**What is proven.** A reasoner can be introduced with **zero changes** to the compiler, the executor,
+the governance contract, the router, the verifiers or a single tool. `packages/model/` is a
+`PlanProvider` that sends an observation over HTTP and returns a `PlanProposal`. Its output is parsed
+**strictly: accepted or rejected, never repaired.** It imports no executor, no governance, no
+`ControlSurface`, no tool, no `child_process` and no `node:fs` — so "the model cannot act" is a
+property of the import graph, checked by reading it.
 
-Browser observation (M4) stays queued: valuable, but its interactive half is blocked behind H1
-and read-only DOM work is largely covered by the terminal capability now in place.
-One 123-line file is thin for the role it plays. Add approval requirements for consequential
-actions (`Purchase`, `Delete`, `ExternalSend`, `CredentialUse` evidence kinds already exist but
-nothing produces them), and prove a consequential step cannot execute without authorisation.
+The real proof is an **out-of-process adversarial peer** on a real socket
+(`packages/model/adversarial-peer.ts`), driven through 24 scenarios. Each declares the layer that must
+stop it, so a scenario stopped for the wrong reason is reported as a failure rather than counted as a
+pass. 24/24 stopped where intended; 42 live checks pass; 43 new unit tests; 270 total, 0 fail.
 
-*Unblocked.*
+Required controls, and where each is actually proven:
 
-### M4 — Browser mode, observation first
-`packages/browser` is empty. Start with **read-only** browser observation — enumerate tabs,
-read the DOM, extract text — which needs no injection and no arming. That alone unlocks real
-research capability safely. Interaction comes later, behind the release/resume blocker.
+| Control | Stopped at |
+|---|---|
+| malformed output | parser |
+| unknown tool | **router**, not the parser |
+| missing verifier | parser/compiler |
+| dangling + forward dependency | parser |
+| consequential plan | **approval gate** |
+| fake approval in output | digest whitelist — produces a **byte-identical digest** |
+| direct tool invocation | **import graph**, machine-checked |
+| stale target | tool containment + freshness contract |
+| model claims success | compiles to `pending`; verifiers are the only route to `verified` |
+
+**Two controls were built specifically so they could fail.** A `lawful-terminal` scenario proves the
+policy discriminates rather than refusing everything — it passes preflight and stops at the approval
+gate. And suppressing the verifiers fails the *first* step, so every dependent is **skipped**: an
+unproven step is not a usable one, which is stronger than "produced but unverified". The same plan
+with real verifiers completes, so suppression is demonstrably what changed the answer.
+
+**What is NOT proven, and is not claimed.** No language model ran. This machine has **no model
+runtime, no weights and no credentials** — measured, not assumed (`EVIDENCE.md` §M8). The peer is
+adversarial and deterministic; it defeats far less than a real model would find. Whether a real
+model's output distribution is *usable* — well-formed often enough to be worth having — is
+untested. Connecting weights is a change to **one URL**.
+
+### M9 — Connect a real model — BLOCKED ON H5
+
+The M8 boundary is proven and the seam is one URL. What is missing is the reasoner itself, and
+nothing about it is a code problem: this machine has no model runtime, no weights and no credentials,
+and installing a third-party runtime plus several hundred megabytes of weights is a **human-authority
+decision** (supply chain, disk, network, and whose data leaves the machine).
+
+Two options, both requiring a human:
+
+- **Local weights** — nothing leaves the machine. Costs a runtime install and a model download, and
+  the plan quality depends on model size. A small model may well fail the strict parser often enough
+  that the useful output rate is low; *that is a finding worth having, not a reason to relax the
+  parser.*
+- **A free-tier hosted provider** — no local footprint, better plan quality, but prompts and folder
+  contents leave the machine. That is a privacy decision, not an engineering one.
+
+Whichever is chosen, the acceptance test is unchanged and already written: the same 24 scenarios plus
+a **usefulness** measure — how often a competent reasoner produces a plan that compiles, and what its
+residual failure modes are. A provider that is safe but never emits a valid plan has not delivered.
+
+### M10 — Read-only browser observation (was M4)
+`packages/browser` is empty. Enumerate tabs, read the DOM, extract text — no injection, no arming.
+Interaction comes later, behind H1.
 
 *Unblocked for the read-only half. Interaction needs H1.*
 
-### M5 — Terminal mode
-`cli` observation is proven but there is no terminal *tool*. A terminal capability is the
-highest-leverage addition for real work and needs no injection (spawn a process, capture
-output). Must be sandboxed to the workspace and must never bypass credential prompts.
+### M11 — Desktop application
+Only once the execution foundation is trustworthy — which is now the case for a bounded, supervised
+subset. Per the specification: no decorative UI before the underlying capability is ready.
 
-*Unblocked.*
+### M12 — Long-running missions, history, completion reporting
 
-### M6 — Release/resume — BLOCKED ON H1 + H2
-The single largest blocker to the Definition of Done. Cannot start without a human arming
-decision, because every candidate design must be validated against a real takeover.
-
-### M7 — Mouse attribution — BLOCKED ON H4
-P0. The sentinel does not survive the Windows mouse path, so operator clicks are classified as
-human. Conservative but wrong. Must not be attempted while `mouseTaggedSeen` is 0.
-
-### M8 — Model layer — BLOCKED ON H3
-`PlanProvider` exists precisely so this is a substitution rather than a rewrite. Blocked only on
-the provider decision.
-
-### M9 — Desktop application
-Only once M2, M3 and M5 give it real capability to present. Per the specification: no
-decorative UI before the underlying capability is ready.
-
-### M10 — Long-running missions, history, completion reporting
-
-### M11 — Tool discovery and safe installation
+### M13 — Tool discovery and safe installation
 Provenance, version, licence, purpose, dependencies, security implications, rollback — all
 established before any install.
+
+---
+
+## Superseded, kept so the numbering does not drift
+
+- **M4** read-only browser observation → **M10**.
+- **M5** terminal mode → **complete**.
+- **M6** release/resume → still blocked on H1 + H2 (unchanged).
+- **M7** mouse attribution → still blocked on H4 (unchanged).
+- **M8** model layer → **boundary complete**, weights → **M9**.
+
+**Release/resume (H1 + H2) remains the single largest blocker to the Definition of Done**, and mouse
+attribution (H4) remains the largest *correctness* defect. Neither is worked on without its human
+decision.
 
 ---
 

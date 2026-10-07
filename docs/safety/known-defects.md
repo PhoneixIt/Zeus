@@ -1,5 +1,49 @@
 # Known defects
 
+## M8 — the model boundary: what is proven, and what is not
+
+**The single most important entry in this file, because the gap is easy to misread as a strength.**
+
+| | status |
+|---|---|
+| A reasoner can be introduced without weakening any M1–M7 property | **PROVEN**, live |
+| Model output that is malformed/unsafe/contradictory/unverifiable is rejected, not repaired | **PROVEN** |
+| The model cannot name an approval, a verifier result, a step status, or a tool | **PROVEN** — byte-identical digest |
+| The model cannot reach a tool, the control surface, or the filesystem | **PROVEN** by import graph |
+| **That a language model works** | **NOT PROVEN — no model ran** |
+| **That a model's output distribution is usable** | **NOT PROVEN** |
+| Any specific provider | **NOT CONNECTED** — none available; see H5 |
+
+This machine has **no model runtime, no weights and no credentials** — measured by probing, recorded in
+`EVIDENCE.md` §M8. The peer used in the proofs is an **adversarial deterministic HTTP server**, which
+defeats far less than a real model would find. It proves the substrate; it says nothing about a model.
+
+### The risks that remain, stated as risks
+
+- **Silent narrowing by repetition.** A real model will be tuned — prompted, given examples, given a
+  retry — until it emits plans the parser accepts. Every one of those adjustments is a chance to
+  *weaken the parser to fit the model*, which is exactly the failure this milestone refuses. The
+  strictness must be defended as a property, and the acceptance test for a provider must include the
+  24 refusal scenarios, not just the valid one.
+- **Over-trust in a low refusal rate.** "The model only misbehaves 2% of the time" is not a safety
+  property. What matters is that the 2% cannot act, and that is what the boundary proves.
+- **Prompt-driven authority creep.** The system instructions forbid self-authorisation, and the parser
+  enforces it. But a future "helpful" change — auto-adding a missing verifier, retrying with a
+  corrected capability — would be a repair. There is one normalisation, it is named in
+  `TRANSPORT_NORMALISATIONS`, and a test asserts the list has exactly one entry.
+- **The basis could drift into decoration.** `toProposal` attaches it from the `WorldState` this
+  process holds. If anyone ever lets the model's own claim through, a plan could claim grounding it
+  never had. Two tests assert a peer-supplied `basis` is reported and ignored.
+
+### Why the peer is adversarial rather than a stub
+
+A stub that returns a valid plan proves nothing about untrusted input. A stub that returns garbage
+proves only that the parser dislikes garbage it was written to dislike. The peer is engineered to find
+holes — and two controls exist specifically so the suite cannot pass trivially: `lawful-terminal`
+(shows the refusals discriminate rather than refuse everything) and verifier suppression (shows
+completion is earned). Every scenario also declares the layer that must stop it, so one stopped for the
+wrong reason is a failure.
+
 ## M7 — review: what a reviewer still cannot tell
 
 | absent | consequence |
