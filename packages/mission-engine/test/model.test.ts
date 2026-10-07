@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 
 import { parseModelPlan, toProposal, TRANSPORT_NORMALISATIONS } from '../../model/parse.ts'
 import { ModelPlanProvider, buildRequest, observedFacts } from '../../model/provider.ts'
-import { SYSTEM_INSTRUCTIONS, RESPONSE_SCHEMA } from '../../model/protocol.ts'
+import { SYSTEM_INSTRUCTIONS, buildExample } from '../../model/protocol.ts'
 import { CAPABILITIES, type PlanContext, type WorldState } from '../../planner/plan.ts'
 import { compilePlan } from '../../planner/compile.ts'
 import { digestOf, authorityLookingFields } from '../../review/digest.ts'
@@ -471,13 +471,14 @@ test('the raw response is withheld unless the caller asked to retain it', async 
 
 test('the request names the capabilities the model may choose from, and nothing that grants', () => {
   const r = buildRequest('summarise', WORLD, 'C:\\w\\out', CAPABILITIES)
-  assert.deepEqual(r.availableCapabilities, [...CAPABILITIES])
-  assert.equal(r.outputRoot, 'C:\\w\\out')
+  assert.deepEqual(r.input.mayUse, [...CAPABILITIES])
+  assert.equal(r.input.mayWriteHere, 'C:\\w\\out')
+  assert.equal(r.input.task, 'summarise')
   // Programs carry an observed path so a lawful terminal step is expressible, and a `permitted` flag
   // that is a READING of the policy table rather than a grant.
-  const node = r.world.programs.find((p) => p.name === 'node.exe')
+  const node = r.input.observed.programs.find((p) => p.name === 'node.exe')
   assert.ok(node?.permitted === true)
-  const cmd = r.world.programs.find((p) => p.name === 'cmd.exe')
+  const cmd = r.input.observed.programs.find((p) => p.name === 'cmd.exe')
   assert.ok(cmd?.permitted === false)
   // No field anywhere in the request could be mistaken for an authorisation.
   const serialised = JSON.stringify(r).toLowerCase()
@@ -486,27 +487,93 @@ test('the request names the capabilities the model may choose from, and nothing 
   assert.ok(!serialised.includes('"credential"'))
 })
 
-test('the system instructions forbid exactly what the parser enforces', () => {
-  // Prose that promises a rule the code does not implement would be a lie told to the model. These
-  // assertions check the rules are actually stated, so the prompt and the parser cannot drift apart.
+test('NEVER-PASSED CONTROL: no request key can be mistaken for a response key', () => {
+  // MEASURED: with `objective`, `availableCapabilities`, `outputRoot` and `world` in the request, the
+  // model returned an object with THOSE SAME KEYS - it was echoing the request rather than answering
+  // it. Four attempts, four echoes. A completion model reads a JSON object as a template for what
+  // comes next, so a request shaped like the answer teaches the wrong shape.
   //
-  // Whitespace is normalised first. The instructions are hard-wrapped at ~90 columns for the model's
-  // benefit, so "there is no result to\n   report" spans a line break - and the first version of this
-  // test matched a phrase that does fit and reported a MISSING RULE that was present and correct. A
-  // test asserting against formatted prose has to be indifferent to the formatting.
-  const flat = SYSTEM_INSTRUCTIONS.replace(/\s+/g, ' ')
-  for (const rule of [
-    /only from the list you were given/i,
-    /must declare a verification requirement/i,
-    /declaring one does NOT authorise/i,
-    /Do not include a field named approved/i,
-    /outside the output root/i,
-    /no result to report/i,
-    /earlier in the array/i,
-  ]) {
-    assert.match(flat, rule)
+  // This control asserts the fix structurally rather than trusting that the model will now behave. If a
+  // future request field is named after a response field, this fails - and it is the control that has
+  // to keep failing, because the failure mode is silent and produces plausible-looking JSON.
+  const request = buildRequest('summarise', WORLD, 'C:\\w\\out', CAPABILITIES) as unknown as Record<string, unknown>
+  const requestKeys = new Set(Object.keys(request))
+
+  // THE STRUCTURAL HALF: the request must present EXACTLY ONE top-level key. Four keys look like the
+  // shape of an answer, and the model filled one of them in - measured twice, with both fixes failing.
+  // One key cannot be mistaken for a three-key response, so the whole class is gone rather than an
+  // instance of it.
+  assert.equal(requestKeys.size, 1, `the request must have exactly one top-level key, found: ${[...requestKeys].join(', ')}`)
+  assert.ok(requestKeys.has('input'), 'the single top-level key must be "input"')
+
+  // Every key the RESPONSE contract uses, at the top level, must be absent.
+  const responseKeys = ['objective', 'constraints', 'steps', 'expectedResult', 'refusal']
+  const collisions = responseKeys.filter((k) => requestKeys.has(k))
+  assert.deepEqual(collisions, [], `request keys collide with response keys: ${collisions.join(', ')}`)
+
+  // And the nested observation must not reuse them either.
+  const input = request.input as Record<string, unknown>
+  const observed = input.observed as Record<string, unknown>
+  for (const scope of [input, observed]) {
+    const nested = new Set(Object.keys(scope))
+    const nestedCollisions = responseKeys.filter((k) => nested.has(k))
+    assert.deepEqual(nestedCollisions, [], `nested keys collide: ${nestedCollisions.join(', ')}`)
   }
-  assert.match(RESPONSE_SCHEMA, /availableCapabilities|must be one of/)
+
+  // The predicates must be able to detect a collision, or they prove nothing.
+  assert.ok('steps' in ({ steps: 1 } as Record<string, unknown>), 'the collision predicate cannot see a present field')
+  assert.equal(new Set(Object.keys({ a: 1, b: 2 })).size, 2, 'the top-level key count cannot detect anything')
+})
+
+test('the system instructions state every rule the parser enforces', () => {
+  // Prose that promises a rule the code does not implement would be a lie told to the model, and a rule
+  // the code enforces but the prose does not mention is a rule the model is being set up to break.
+  //
+  // These assert the RULE, not the phrasing. The first version pinned exact sentences, and M9 then
+  // reworded the instructions (justified by measurement: the 0.5B model scored 0/4 against the old
+  // contract) and this test failed on wording. A test that fails when the prompt is legitimately
+  // rewritten trains you to never rewrite the prompt - which is the wrong lesson, and the wrong
+  // incentive. So the assertions are on meaning, and are deliberately loose about words.
+  //
+  // Whitespace is normalised because the instructions are wrapped for the model's benefit.
+  const flat = SYSTEM_INSTRUCTIONS.replace(/\s+/g, ' ')
+  const rules: Array<[string, RegExp]> = [
+    ['a capability must come from the given list', /only from the list you were given/i],
+    ['a verification requirement is mandatory', /must declare a verification requirement/i],
+    ['declaring an effect is not authorising it', /does NOT authorise/i],
+    ['approval-shaped fields are forbidden', /field named approved/i],
+    ['writes are confined to the output root', /outside the output root/i],
+    ['nothing has run yet, so no results may be reported', /no result to report/i],
+    ['dependencies point backwards only', /earlier steps/i],
+  ]
+  for (const [what, re] of rules) {
+    assert.match(flat, re, `the instructions do not state: ${what}`)
+  }
+  // And the example must be a real object, not a description of one. A pseudo-schema with English in
+  // the key position was the specific cause of the 0/4 result: the model copied the descriptions back.
+  const example = JSON.parse(buildExample('C:\\real\\observed\\folder', 'C:\\real\\out\\summary.txt'))
+  assert.ok(Array.isArray(example.steps) && example.steps.length >= 2, 'the example must contain real steps')
+  assert.ok(typeof example.expectedResult === 'string')
+  for (const s of example.steps) {
+    assert.ok(typeof s.id === 'string' && typeof s.capability === 'string')
+    assert.ok(s.verification && typeof s.verification.kind === 'string', 'every example step declares verification')
+    assert.ok(Array.isArray(s.dependsOn))
+  }
+  // The example must not smuggle an authority-shaped field, because a model copying it would be
+  // taught to emit one.
+  assert.ok(!/approved|authorised|authorized|confirmed|override/i.test(JSON.stringify(example)),
+    'the worked example must not contain an authority-shaped field')
+
+  // MEASURED: the example once used the literal placeholder `<the observed root>`, and the model
+  // returned that placeholder verbatim in a plan. A worked example with fake data teaches copying, so
+  // the example now carries REAL values - and this asserts it, because a placeholder creeping back in
+  // would fail silently: the plan would still parse, and still be wrong.
+  const exampleText = buildExample('C:\\real\\observed\\folder', 'C:\\real\\out\\summary.txt')
+  assert.ok(!exampleText.includes('<'), 'the example must not contain a placeholder')
+  assert.ok(exampleText.includes('C:\\\\real\\\\observed\\\\folder'),
+    'the example must carry the ACTUAL observed root for this request')
+  // And the predicate must be able to see a placeholder when one exists.
+  assert.ok('<the observed root>'.includes('<'), 'the placeholder detector cannot detect a placeholder')
 })
 
 test('the request never contains a method or a handle: it is JSON, all the way down', () => {

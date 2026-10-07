@@ -319,7 +319,7 @@ const server = createServer((req, res) => {
       /* the peer answers the same refusal either way */
     }
     const userMessage = (envelope.messages ?? []).find((m) => m.role === 'user')
-    let modelReq: { objective?: string; outputRoot?: string; world?: Req } = {}
+    let modelReq: { input?: { task?: string; mayWriteHere?: string; observed?: Req } } = {}
     if (typeof userMessage?.content === 'string') {
       try {
         modelReq = JSON.parse(userMessage.content)
@@ -330,9 +330,18 @@ const server = createServer((req, res) => {
       }
     }
 
-    const world = modelReq.world ?? {}
+    // M9 renamed the request keys, twice, for a MEASURED reason: with `objective`/`outputRoot`/`world`
+    // at the top level the real model echoed them back instead of answering. The request is now nested
+    // under one key so its shape cannot be mistaken for a response's.
+    //
+    // This peer was NOT updated with it, and the M8 mission failed with a 400 - which is the correct
+    // outcome and the reason the harness exits 2 rather than reporting a partial run as a pass. A stale
+    // peer that had quietly carried on would have produced 24 scenarios against a request shape the
+    // system no longer sends.
+    const input = modelReq.input ?? {}
+    const world = input.observed ?? {}
     const inner: Req = {
-      root: world.root, outputRoot: modelReq.outputRoot,
+      root: world.root, outputRoot: input.mayWriteHere,
       files: world.files as unknown[], observationId: world.observationId,
       programs: world.programs as unknown[],
     }

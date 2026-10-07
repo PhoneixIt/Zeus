@@ -631,6 +631,126 @@ unchanged, because the model layer introduces no new way to touch the machine.
 
 ---
 
+### M9 — A real local model, and what it actually did
+
+```
+npm run model:fetch -- --model qwen2.5-0.5b-instruct     # or 1.5b
+python packages/model/local/verify-model.py qwen2.5-0.5b-instruct
+npm run mission:local                                    # real mission + adversarial suite
+node --experimental-strip-types --no-warnings packages/mission-engine/live/probe-request-shape.ts
+```
+
+#### An environment constraint, diagnosed rather than bypassed
+
+The first choice — `node-llama-cpp`, prebuilt win-x64 binaries, same toolchain, no Python — **is
+blocked by policy**. The machine enforces a WDAC "Enterprise signing level" policy:
+
+```
+Code Integrity determined that a process (node.exe) attempted to load
+\...\node-llama-cpp\win-x64\...\ggml.v0.5.0.dll that did not meet the Enterprise signing
+level requirements or violated code integrity policy (Policy ID 0283ac0f-fff1-49ae-ada1-8a933130cad6)
+```
+
+Smart App Control is off (`VerifiedAndReputablePolicyState: 1`); this is a separate **enterprise WDAC
+policy**, and it refuses to load *unsigned* native binaries. The policy was not circumvented. The
+dependency was removed entirely — the repository has **zero npm dependencies** — and inference moved to a
+Python subprocess using **Microsoft-signed** `onnxruntime`, which loads without incident. This is also
+the better architecture: the model must be a separate OS process, so it must not be an in-process
+dependency.
+
+#### Integrity: the checkpoint is real and the decode loop is sound
+
+A corrupt 488 MB file does not announce itself. `verify-model.py` checks the protobuf header, loads the
+graph, compares the graph's KV tensor count against `config.json`, **and asks the model a question whose
+answer is known**:
+
+```
+qwen2.5-0.5b    31 prompt tokens, 3 generated, 3.4 tok/s  ANSWER: 'capital - Paris'   COHERENT
+qwen2.5-1.5b    31 prompt tokens, 1 generated, 0.8 tok/s  ANSWER: 'Paris'             COHERENT
+```
+
+This matters more than any plan result: a broken KV cache still returns text, just noise, so
+"it produced output" proves nothing. A correct answer to a factual question is evidence the cache is
+genuinely read back.
+
+#### Four bugs in the decode loop, caught before the model was blamed
+
+Every one would have presented as "a small model produces garbage" — a conclusion about the *model*
+drawn from bugs in the harness:
+
+| bug | effect if shipped |
+|---|---|
+| cache written to `past_0.key`, inputs are `past_key_values.0.key` | cache silently never read back; every token after the first had **no history** |
+| `position += cur.shape[1]` read *after* `cur` was reassigned | always added 1, so the model was told it was at position 1 forever |
+| symbolic ONNX dims substituted `0` | empty cache shaped with a **batch of 0** |
+| `stopped_on_eos` derived from a token never appended | always reported false |
+
+Plus two more found by running it: a `TimeoutError` mid-transfer that a narrow `except` clause missed,
+killing the fetcher at 342 MB of 1165; and greedy decoding that emitted one sentence forty times to the
+token ceiling (900 tokens, 126 s, zero JSON).
+
+#### The measurement
+
+| | qwen2.5-0.5B | qwen2.5-1.5B |
+|---|---|---|
+| startup | 2.3 s | 9.2 s |
+| throughput | ~7 tok/s | ~0.8 tok/s |
+| first token | 0.38 s | 1.14 s |
+| **plans surviving the parser** | **0 / 9** | **0 / 6** |
+| typical latency per attempt | 24–120 s | 65–200 s |
+
+**What each model actually did — more useful than the rate:**
+
+- **0.5B, echoed the request.** With request keys `objective` / `availableCapabilities` / `outputRoot` /
+  `world`, it returned an object bearing *those exact keys*. It was transcribing the request.
+- **0.5B, copied the example's placeholder.** `"path": "<the observed root>"` — verbatim. The example
+  used a placeholder, and a placeholder is the most copyable string in the prompt.
+- **1.5B, close.** Structurally correct steps, real capability names, real paths, proper
+  `verification` objects, `dependsOn` in order. It failed on **truncation** at the token ceiling, and once
+  on emitting a *step* where the plan *envelope* belonged.
+
+#### Three model-facing fixes, each forced by a measurement, none touching acceptance
+
+1. **Request keys renamed, then nested under one key.** Measured twice: v1's keys were echoed back; v2's
+   `task` was adopted as the container for the model's own answer. One top-level key cannot be mistaken
+   for a three-key response. A unit control asserts the request has **exactly one** top-level key,
+   because this class of bug is silent and will recur.
+2. **The schema became a real, filled-in example.** The old pseudo-schema put English descriptions in
+   the *key position* (`"unique within the plan": "string"`), so the model copied them as data.
+3. **The example was compressed** from ~450 to ~254 tokens. The 1.5B copied its verbosity and ran out of
+   tokens mid-JSON — a structurally correct plan rejected as unterminated.
+
+**`parse.ts` is byte-for-byte unchanged** and still has exactly one normalisation, asserted by a test
+that the list has exactly one entry. The instruction-satisfaction test was rewritten to assert the
+**rule** rather than the phrasing, because a test that fails when the prompt is legitimately rewritten
+trains you never to rewrite the prompt.
+
+#### What this milestone actually proved
+
+**Every model output — 15 attempts, two model sizes, five request renderings — was rejected at the
+correct layer with a precise reason, and nothing unsafe reached execution, the compiler, or a tool.**
+
+The architecture held on every input, including hostile and malformed ones. A real reasoner was
+introduced and no M1–M8 property weakened. The honest finding is narrower and still worth having: **the
+boundary is sound and the model is not good enough**, and those are separate problems that must not be
+conflated by making the parser more forgiving.
+
+#### Regression
+
+```
+npm test                     271 pass, 0 fail   (227 M1-M7 + 44 model)
+npm run mission:model        PASS - 42 checks, 24/24 scenarios
+npm run control:audit-routes PASS
+packages/control-core        byte-identical
+```
+
+One real regression was caught and fixed: the M8 adversarial peer still parsed the **old** request keys,
+so the M8 mission failed with a 400 and the runner exited 2 rather than reporting a partial run as a
+pass. A stale peer that had quietly continued would have produced 24 scenarios against a request shape
+the system no longer sends.
+
+---
+
 ## Blocked
 
 ### P0 — mouse attribution
@@ -710,6 +830,15 @@ than any individual entry.
 | **M8:** my own test used `!f in r` | parses as `(!f) in r`; it failed on a request containing no such field, and the message named a field that was never there |
 | **M8:** a test asserted a phrase from hard-wrapped prose | the rule was present and correct; the regex did not cross the line break |
 | **M8:** a test nested `options` inside `endpoint` | type-stripping accepted the extra property silently, so `retainRaw` was never set |
+| **M9:** the KV cache was written to `past_0.key` while inputs were named `past_key_values.0.key` | the cache was silently never read back, so every token after the first was generated with no history — which would have read as "the model is bad" |
+| **M9:** `position += cur.shape[1]` read *after* `cur` was reassigned to the single new token | always advanced by 1; the model was told it was at position 1 forever, degrading into noise rather than crashing |
+| **M9:** symbolic ONNX dims substituted `0` for the empty KV cache | a **batch of zero** — not an empty cache, nonsense |
+| **M9:** `stopped_on_eos` derived from a token that is never appended | always reported false, so a normal completion looked like a ceiling hit |
+| **M9:** the M8 adversarial peer kept parsing the old request keys | the M8 mission 400'd and the runner exited 2 — caught by the harness refusing to report a partial run as a pass |
+| **M9:** a mid-transfer `TimeoutError` escaped a narrow `except` | killed the fetcher at 342 MB of 1165 after two resume attempts had already saved it |
+| **M9:** greedy decoding on a 0.5B model | one sentence repeated forty times: 900 tokens, 126 s, zero JSON |
+| **M9:** the worked example used a literal `<the observed root>` placeholder | the model copied the placeholder verbatim into a plan; a worked example with fake data teaches copying |
+| **M9:** the request's top-level keys mirrored the response's | the model returned an object with the request's own keys, twice under two different key sets |
 
 **The class did not change, and it is worth naming precisely.** Every one of the above is
 *plausible-looking code that is wrong when executed* — and none of them was found by reading the code.

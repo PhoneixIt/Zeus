@@ -38,7 +38,8 @@
  * programming error.
  */
 
-import { SYSTEM_INSTRUCTIONS, RESPONSE_SCHEMA, type ModelRequest } from './protocol.ts'
+import { join } from 'node:path'
+import { SYSTEM_INSTRUCTIONS, buildExample, CAPABILITY_RULE, type ModelRequest } from './protocol.ts'
 import { parseModelPlan, toProposal, type ParseResult } from './parse.ts'
 import { CAPABILITIES, type PlanContext, type PlanProposal, type PlanResult } from '../planner/plan.ts'
 import type { PlanProvider } from '../planner/provider.ts'
@@ -82,7 +83,20 @@ export interface ProviderDeps {
   readonly fetchImpl?: typeof fetch
 }
 
-const DEFAULT_TIMEOUT = 60_000
+/**
+ * HOW LONG TO WAIT FOR A REASONER.
+ *
+ * MEASURED, not guessed. On this machine a local 0.5B model produces roughly 7 tokens/second on 2 CPU
+ * cores, and a structured plan is 300-500 tokens. The M8 peer answered in milliseconds, so this was
+ * originally 60 seconds - which was a timeout that could not fire for a real model, and would have
+ * produced a confusing "could not be reached" for what was really "still thinking".
+ *
+ * It is a CEILING rather than an expectation, and it is set above the measured worst case (a 512-token
+ * ceiling at 7 tokens/second is about 73 seconds; the server's own 150-second wall clock binds first).
+ * Raising it does not weaken any safety property: the bound still exists, and the server has a second,
+ * independent one.
+ */
+const DEFAULT_TIMEOUT = 200_000
 
 export class ModelPlanProvider implements PlanProvider {
   readonly name: string
@@ -218,8 +232,20 @@ export class ModelPlanProvider implements PlanProvider {
       model: this.deps.endpoint.model ?? 'local',
       temperature: 0,
       messages: [
-        { role: 'system', content: `${SYSTEM_INSTRUCTIONS}\n\n${RESPONSE_SCHEMA}` },
-        { role: 'user', content: JSON.stringify(request, null, 2) },
+        // The instructions, the capability rule, then a real short worked example.
+        //
+        // The example was ADDED after measurement, and it is a change to what the model is shown and
+        // not to what the system accepts. The 0.5B model scored 0/4 against a schema described in
+        // English, and returned my descriptions as data. An example is unambiguous where a description
+        // was not. `parse.ts` is byte-for-byte unchanged and still refuses every malformed shape.
+        { role: 'system', content: `${SYSTEM_INSTRUCTIONS}\n\n${CAPABILITY_RULE}\n\nEXAMPLE, using THIS request's real folder and output path:\n${buildExample(request.input.observed.root, join(request.input.mayWriteHere, 'summary.txt'))}` },
+        // COMPACT, not pretty-printed.
+        //
+        // Measured: the pretty-printed 1672-token request took 26s of prefill and produced echoed
+        // output. A single-line JSON object reads as a complete value, whereas indented JSON reads as the
+        // start of a document that continues - which is exactly the wrong cue for a completion model
+        // that is about to be asked for an object of its own.
+        { role: 'user', content: JSON.stringify(request) },
       ],
     }
     const res = await f(this.deps.endpoint.url, {
@@ -257,26 +283,40 @@ export function buildRequest(
   availableCapabilities: readonly string[],
 ): ModelRequest {
   return {
-    objective,
-    availableCapabilities: [...availableCapabilities],
-    outputRoot,
-    world: {
-      root: world.scope.root,
-      observationId: world.observationId,
-      observedAt: world.observedAt,
-      fingerprint: world.fingerprint,
-      files: filesIn(world).map((f) => ({
-        path: f.path, relative: f.relative, bytes: f.sizeBytes ?? 0, extension: f.extension ?? '',
-      })),
-      directories: directoriesIn(world).map((d) => d.relative),
-      maxDepth: deepestLevel(world),
-      extensions: extensionsIn(world),
-      programs: world.capabilities.map((c) => ({
-      name: c.name, path: c.path, exists: c.exists, permitted: c.permitted,
-    })),
+    // NESTED UNDER ONE KEY, and this is the third and final attempt at the same problem.
+    //
+    // v1: top-level keys `objective`, `availableCapabilities`, `outputRoot`, `world`.
+    //     MEASURED: the model returned an object with exactly those keys. It was echoing the request.
+    // v2: renamed to `task`, `mayUse`, `mayWriteHere`, `observed`.
+    //     MEASURED: the 1.5B returned `{"task": {...}}` - it adopted `task` as the container for its
+    //     ANSWER. Renaming the keys removed the exact collisions but not the class: four top-level keys
+    //     still look like "the four keys an answer has", and the model filled one of them in.
+    // v3: ONE top-level key. The request is a single `input` object, so its shape cannot be mistaken
+    //     for an answer's shape - there is only one thing at the top level, and the response example
+    //     shows three. Whatever key the model picks for its own container, it cannot be one it was given.
+    //
+    // Measured twice and fixed twice; this is the version that removes the mechanism rather than an
+    // instance of it. None of this touches what the system ACCEPTS.
+    input: {
+      task: objective,
+      mayUse: [...availableCapabilities],
+      mayWriteHere: outputRoot,
+      observed: {
+        root: world.scope.root,
+        observationId: world.observationId,
+        observedAt: world.observedAt,
+        fingerprint: world.fingerprint,
+        files: filesIn(world).map((f) => ({
+          path: f.path, relative: f.relative, bytes: f.sizeBytes ?? 0, extension: f.extension ?? '',
+        })),
+        directories: directoriesIn(world).map((d) => d.relative),
+        maxDepth: deepestLevel(world),
+        extensions: extensionsIn(world),
+        programs: world.capabilities.map((c) => ({
+          name: c.name, path: c.path, exists: c.exists, permitted: c.permitted,
+        })),
+      },
     },
-    consequentialCapabilities: [],
-    schema: RESPONSE_SCHEMA,
   }
 }
 

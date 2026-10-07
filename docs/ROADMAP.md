@@ -102,11 +102,13 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 24c | Objective reconciliation | **PROVEN** | planner/reconcile.ts, refuses ambiguity |
 | 25 | Browser mode | **NOT STARTED** | package empty |
 | 26 | API mode | **NOT STARTED** | no tool |
-| 27 | **Model / provider layer** | **PARTIAL** | `packages/model/` PROVEN as a boundary: HTTP transport, strict accept-or-reject parsing, zero import routes to anything actionable. **No model weights connected** — see H5. |
-| 27a | Model output parsed without repair | **PROVEN** | `model/parse.ts`, one named normalisation; 43 unit controls |
+| 27 | **Model / provider layer** | **PROVEN (boundary)** | `packages/model/` — HTTP transport, strict accept-or-reject parsing, zero import routes to anything actionable. A real local model now runs behind it. |
+| 27a | Model output parsed without repair | **PROVEN** | `model/parse.ts`, one named normalisation; 44 unit controls |
 | 27b | Untrusted-reasoner boundary, live | **PROVEN** | 24 adversarial scenarios over a real socket, each stopped at a declared layer |
 | 27c | Model cannot grant authority | **PROVEN** | approval-shaped fields produce a **byte-identical digest** |
-| 27d | Real language model connected | **NOT STARTED** | blocked on H5 |
+| 27d | **Local inference runtime** | **PROVEN** | `packages/model/local/`: ONNX Runtime + HF tokenizers, local weights, no egress. Blocked once by WDAC unsigned-binary policy; onnxruntime is signed and loads. |
+| 27e | Real model connected to the planner | **PROVEN** | Qwen2.5-0.5B and 1.5B, 127.0.0.1, zero changes to any boundary |
+| 27f | **A model that produces valid plans** | **NOT PROVEN** | **0 of 15 attempts across two model sizes.** Rejected correctly every time. See M10 — this is the binding constraint on being useful. |
 | 28 | Desktop application | **NOT STARTED** | |
 | 29 | Integrated chat | **NOT STARTED** | |
 | 30 | Long-running missions | **NOT STARTED** | |
@@ -276,39 +278,89 @@ adversarial and deterministic; it defeats far less than a real model would find.
 model's output distribution is *usable* — well-formed often enough to be worth having — is
 untested. Connecting weights is a change to **one URL**.
 
-### M9 — Connect a real model — BLOCKED ON H5
+### M9 — A REAL LOCAL MODEL ✅ ARCHITECTURE HELD · **THE MODEL WAS NOT GOOD ENOUGH**
 
-The M8 boundary is proven and the seam is one URL. What is missing is the reasoner itself, and
-nothing about it is a code problem: this machine has no model runtime, no weights and no credentials,
-and installing a third-party runtime plus several hundred megabytes of weights is a **human-authority
-decision** (supply chain, disk, network, and whose data leaves the machine).
+H5 resolved: **local inference only**. Nothing leaves the machine.
 
-Two options, both requiring a human:
+**The chain is unchanged.** `ModelPlanProvider` → `PlanProposal` → review/digest → compiler →
+governance → executor → tools → independent verification. Zero changes to the compiler, the executor,
+the governance contract, the router, the verifiers, or any tool. The only new thing is a peer at the
+far end of the same HTTP seam: `packages/model/local/server.py`, a Python process that does text in and
+text out and has no route to a tool, an approval, a status, or the machine.
 
-- **Local weights** — nothing leaves the machine. Costs a runtime install and a model download, and
-  the plan quality depends on model size. A small model may well fail the strict parser often enough
-  that the useful output rate is low; *that is a finding worth having, not a reason to relax the
-  parser.*
-- **A free-tier hosted provider** — no local footprint, better plan quality, but prompts and folder
-  contents leave the machine. That is a privacy decision, not an engineering one.
+**The answer to the milestone's question, measured: no, not at this size.**
 
-Whichever is chosen, the acceptance test is unchanged and already written: the same 24 scenarios plus
-a **usefulness** measure — how often a competent reasoner produces a plan that compiles, and what its
-residual failure modes are. A provider that is safe but never emits a valid plan has not delivered.
+| model | params | throughput | plans produced that survived the parser |
+|---|---|---|---|
+| Qwen2.5-0.5B-Instruct | 0.5B | ~7 tok/s | **0 / 9** attempts |
+| Qwen2.5-1.5B-Instruct | 1.5B | ~0.8 tok/s | **0 / 6** attempts |
 
-### M10 — Read-only browser observation (was M4)
+Both are locally coherent — the 0.5B answers "capital of France" correctly, which is what proves the
+decode loop is sound rather than the harness. Neither produces a plan.
+
+**What each actually did, which is more useful than the rate:**
+
+- **0.5B — echoed the request.** With request keys `objective`/`availableCapabilities`/`outputRoot`/
+  `world`, it returned an object with *those keys*. It was transcribing.
+- **1.5B — copied the example.** It emitted `"path": "<the observed root>"` — the placeholder, verbatim.
+- **1.5B, after three measured prompt fixes — got close.** Structurally correct steps, real capability
+  names, real paths, proper `verification` objects. It failed on *truncation* at the token ceiling, and
+  once on emitting a step where the plan envelope belonged.
+
+**Three model-facing changes were made, each forced by a measurement, and none touched acceptance:**
+
+1. **Request keys renamed, then nested under one key.** Measured twice: v1 keys were echoed back; v2's
+   `task` key was adopted as the container for its own *answer*. One top-level key cannot be mistaken for
+   a three-key response, so the mechanism is gone rather than an instance of it. A unit control asserts
+   the request has *exactly one* top-level key, because this failed twice and will fail again silently.
+2. **The schema description became a real, filled-in example.** The old "schema" put English
+   descriptions in the *key position*, so the model copied them as data.
+3. **The example was compressed** from ~450 to ~254 tokens. The 1.5B copied the example's verbosity and
+   ran out of tokens mid-JSON.
+
+`parse.ts` is byte-for-byte unchanged and still has exactly one normalisation. A prompt that produces
+better plans is legitimate; a parser that accepts worse plans is not, and no validity rate justifies it.
+
+**What this milestone did prove, which is the part that matters:**
+
+Every single model output — across 15 attempts, two model sizes, five request renderings, and a dozen
+truncation and echo modes — was **rejected at the correct layer with a precise reason**, and **nothing
+unsafe reached execution, the compiler, or a tool**. The architecture did its job on every input,
+including hostile and malformed ones. A reasoner was introduced and no property weakened.
+
+**Honest conclusion:** AIOS now has a real local model and it is not yet good enough to plan with. The
+next step is a model that is, or a genuinely different approach to structured output — not a weaker
+parser. Recorded as a defect, not smoothed over.
+
+### M10 — A larger local model, or a structured-output mechanism
+
+Options, in order of preference:
+
+- **A 3B–4B local model.** The 1.5B failed on truncation and envelope discipline, not on reasoning.
+  7B-class models emit correct plans routinely. Cost: 3–8 GB download and roughly 0.1–0.2 tok/s on this
+  2-core machine, which is a 20–40 minute plan. **A machine that cannot generate a plan in reasonable
+  time is itself the binding constraint** — so this is gated on hardware, not just on appetite.
+- **Constrained decoding (grammar/JSON-schema-guided generation).** llama.cpp and GGML support it, and it
+  makes malformed output impossible. It would change the threat model: the validator would no longer be
+  the thing that rejects bad structure, the grammar would be. That may be a fine trade *provided* the
+  grammar is itself treated as a security boundary and the adversarial suite is rerun against it. It is
+  explicitly **not** a way to make the validity rate look good.
+- **A hosted provider.** Better models, no local footprint, but data leaves the machine — a human
+  decision, and H5 chose local.
+
+### M11 — Read-only browser observation (was M4)
 `packages/browser` is empty. Enumerate tabs, read the DOM, extract text — no injection, no arming.
 Interaction comes later, behind H1.
 
 *Unblocked for the read-only half. Interaction needs H1.*
 
-### M11 — Desktop application
+### M12 — Desktop application
 Only once the execution foundation is trustworthy — which is now the case for a bounded, supervised
 subset. Per the specification: no decorative UI before the underlying capability is ready.
 
-### M12 — Long-running missions, history, completion reporting
+### M13 — Long-running missions, history, completion reporting
 
-### M13 — Tool discovery and safe installation
+### M14 — Tool discovery and safe installation
 Provenance, version, licence, purpose, dependencies, security implications, rollback — all
 established before any install.
 

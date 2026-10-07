@@ -1,5 +1,44 @@
 # Known defects
 
+## M9 — THE MODEL IS NOT GOOD ENOUGH (open, and the binding constraint on usefulness)
+
+**This is the most important entry in this file.** It is a capability gap, not a safety gap, and the
+distinction is the whole point of recording it separately.
+
+| | status |
+|---|---|
+| A real local model plans, is reviewed, compiles, executes and is verified | **NOT PROVEN** |
+| The model is connected behind `PlanProvider` with zero boundary changes | **PROVEN** |
+| Every model output was rejected at the correct layer, with a precise reason | **PROVEN — 15/15** |
+| Nothing unsafe reached execution, the compiler, or a tool | **PROVEN** |
+
+Measured on this machine: **Qwen2.5-0.5B produced 0 valid plans in 9 attempts; Qwen2.5-1.5B produced 0
+in 6.** The 1.5B came close — structurally correct steps, real capabilities, real paths, correct
+`verification` — and failed on token truncation and plan-envelope discipline.
+
+### The temptation this creates, and why it must be refused
+
+A system that rejects every plan is safe and useless. The pressure that creates is obvious: relax the
+parser, default the missing verifier, snap the near-miss capability, accept the truncated JSON. **Every
+one of those is a governance hole**, and each is a change that would make the validity rate look better
+while making the system worse.
+
+The boundary that holds here is a rule, and it is worth stating as one: **fix the model, never the
+validator.** A prompt may be rewritten on evidence. `parse.ts` may not, and its single normalisation is
+asserted by a test so that adding a second one fails.
+
+### What is genuinely a defect, and what is a fact about the machine
+
+- **A prompt defect, fixed:** the request's keys mirrored the response's, so the model echoed it. Fixed
+  by nesting the request under one key, with a unit control so it cannot recur.
+- **A machine limit, not a defect:** ~0.8 tok/s on 2 CPU cores. A 7B-class model would emit correct
+  plans routinely and take 20–40 minutes to do it here. **Generation latency, on this hardware, is now
+  a binding constraint on the product** — separate from whether the model is capable.
+- **Not yet decided:** constrained decoding (JSON-schema-guided generation) would make malformed output
+  impossible, but it would mean the grammar rather than the validator is what rejects bad structure.
+  That may be acceptable *if* the grammar is treated as a security boundary and the adversarial suite
+  is rerun against it. It is **not** a way to make a metric look good.
+
 ## M8 — the model boundary: what is proven, and what is not
 
 **The single most important entry in this file, because the gap is easy to misread as a strength.**

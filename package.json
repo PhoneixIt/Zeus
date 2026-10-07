@@ -1,30 +1,34 @@
-﻿{
-    "name":  "aios",
-    "private":  true,
-    "version":  "0.1.0",
-    "type":  "module",
-    "description":  "General-purpose AI operating layer for Windows",
-    "engines":  {
-                    "node":  "\u003e=22"
-                },
-    "scripts":  {
-                    "test":  "node --experimental-strip-types --no-warnings --test \"packages/*/test/*.test.ts\"",
-                    "control:start":  "node packages/control-core/start-operator-host.mjs",
-                    "control:syntax":  "powershell -NoProfile -Command \"\u0026 \u0027C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe\u0027 /target:library /warnaserror+ /out:$env:TEMP/aios-check.dll /reference:\u0027C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Windows.Forms.dll\u0027 /reference:\u0027C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Drawing.dll\u0027 packages/control-core/src/*.cs\"",
-                    "mission:live":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-live-mission.ts",
-                    "control:up":  "node packages/control-core/start-operator-host.mjs",
-                    "mission:two-step":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-two-step.ts",
-                    "mission:filesystem":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-filesystem.ts",
-                    "mission:gui-audit":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-audit.ts",
-                    "mission:gui-accept":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-accept.ts",
-                    "control:audit-routes":  "node packages/control-core/audit-injection-routes.mjs",
-                    "mission:folder":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-folder-mission.ts",
-                    "mission:recovery":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-recovery.ts",
-                    "mission:approval":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-approval.ts",
-                    "mission:terminal":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-terminal.ts",
-                    "mission:world-aware":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-world-aware.ts",
-                    "mission:review":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-review.ts",
-                    "model:peer":  "node --experimental-strip-types --no-warnings packages/model/adversarial-peer.ts 8791",
-                    "mission:model":  "node --experimental-strip-types --no-warnings packages/mission-engine/live/with-adversarial-peer.mjs"
-                }
+{
+    "name": "aios",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "description": "General-purpose AI operating layer for Windows",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "test": "node --experimental-strip-types --no-warnings --test \"packages/*/test/*.test.ts\"",
+        "control:start": "node packages/control-core/start-operator-host.mjs",
+        "control:syntax": "powershell -NoProfile -Command \"& 'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe' /target:library /warnaserror+ /out:$env:TEMP/aios-check.dll /reference:'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Windows.Forms.dll' /reference:'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/System.Drawing.dll' packages/control-core/src/*.cs\"",
+        "mission:live": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-live-mission.ts",
+        "control:up": "node packages/control-core/start-operator-host.mjs",
+        "mission:two-step": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-two-step.ts",
+        "mission:filesystem": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-filesystem.ts",
+        "mission:gui-audit": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-audit.ts",
+        "mission:gui-accept": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-gui-accept.ts",
+        "control:audit-routes": "node packages/control-core/audit-injection-routes.mjs",
+        "mission:folder": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-folder-mission.ts",
+        "mission:recovery": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-recovery.ts",
+        "mission:approval": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-approval.ts",
+        "mission:terminal": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-terminal.ts",
+        "mission:world-aware": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-world-aware.ts",
+        "mission:review": "node --experimental-strip-types --no-warnings packages/mission-engine/live/run-review.ts",
+        "model:peer": "node --experimental-strip-types --no-warnings packages/model/adversarial-peer.ts 8791",
+        "mission:model": "node --experimental-strip-types --no-warnings packages/mission-engine/live/with-adversarial-peer.mjs",
+        "model:fetch": "python packages/model/local/fetch-model.py",
+        "model:serve": "python packages/model/local/server.py --port 8792",
+        "mission:local": "node --experimental-strip-types --no-warnings packages/mission-engine/live/with-local-model.mjs",
+        "mission:local-adversarial": "node --experimental-strip-types --no-warnings packages/mission-engine/live/with-local-model.mjs --only adversarial"
+    }
 }
