@@ -517,3 +517,60 @@ Three exit codes, and the distinction is the point:
 `KNOWN_GAPS` grants nothing: it adds no route to `InjectionRoutes`, makes no check pass, and cannot
 produce exit 0. Adding a route to it does **not** silence the alarm - there is a control for that,
 because "just document it" is how a breach becomes permanent and invisible.
+
+
+---
+
+## M15 (2026-10-08) - the durable store exists and NOTHING writes to it
+
+**A capability gap, not a safety gap.** Stated plainly because the previous entry in this file said
+"no durable state at all" and that is no longer true, while the *useful* part of that statement still
+is.
+
+| | |
+|---|---|
+| Proven | a durable, versioned, session-scoped store, with evidence provenance and recovery rules |
+| **Not proven** | that a **live mission** persists anything |
+
+`packages/persistence/` is complete and tested, including against a genuine second OS process.
+`executor.ts` contains no reference to it. So today a crash still loses the history - the store simply
+is not on the path yet.
+
+**Why it was not wired in M15.** Doing it means deciding when the executor writes, and that interacts
+with the retry and recovery paths. Doing it hastily would put writes in the one component that must not
+be able to fail quietly. The module is standalone and proven first, which is the safer order.
+
+**Selected as the next milestone (M16): instrument the executor.**
+
+---
+
+## M15 - defects found in the durable layer itself (all fixed, all by controls)
+
+1. **Approvals survived a restart. The central failure of this milestone, shipped green.**
+   `invalidateForeignApprovals` ran `SELECT id, session_id` and then filtered on
+   `r.state === 'approved'` - a column it had never fetched. The filter was therefore always false,
+   `stale` was always empty, and **no approval was ever invalidated**. An approval granted by a process
+   that had died came back approved. Found by the one control that asserts an approval does not
+   survive, and by nothing else - the code reads correctly.
+
+2. **Evidence liveness was judged by a flag that never expires.** `observed_by = 'live-verifier'`
+   records how a row was *originally* obtained, so a restarted mission counted a dead process's
+   observation as current and believed it had just looked at the machine. Fixed by adding
+   `obs_session_id` and judging liveness by session, the same rule approvals use.
+
+3. **Recovery was not idempotent in its reporting.** The permit was built from "what did this read
+   invalidate", and that list is empty on the second read - so the approval obligation *evaporated* on
+   exactly the call a resuming process makes. Now derived from the approval rows, keyed on `grantedAt`
+   rather than on the mutated `state`.
+
+4. **Recovery notes were written after the record was read**, so `mission.history` omitted the very
+   event it had just performed.
+
+5. **The DDL control was defeated by its own documentation.** It searched the raw SQL for
+   `succeeded` / `authorised` / `verified` and failed - because the comment explaining why those columns
+   are absent contains the words. The fix was to strip SQL comments before searching. A control that can
+   be beaten by its own comment gets deleted instead of understood; this one was fixed.
+
+**Standing, unchanged:** release-after-takeover NOT PROVEN (H1/H2) · P0 mouse sentinel (H4) · **three
+ungated window routes (H5, ADR 0003)** · the 1.5B model cannot plan · controlled decoding manufactures
+false refusals.

@@ -65,6 +65,19 @@ Verified on this machine. Assume them until disproved.
   against the process CWD; regex bulk-rewrites of TypeScript imports mangle adjacent lines — verify
   after every bulk edit.
 - **`execFile` cannot spawn `.cmd`/`.ps1` npm shims.**
+- **A BACKTICK inside an SQL comment in a TypeScript template literal terminates the string.** The rest
+  of the SQL is then parsed as TypeScript and the error points at an unrelated line in a different file
+  ("Expected ',', got 'ident'"). Hit twice in one file; `assertNoBackticksInSql()` in
+  `persistence/schema.ts` now guards it.
+- **`rmSync` on a Windows temp directory fails with EPERM even after every handle is closed** - Defender
+  routinely holds a freshly-created file. Test cleanup must be best-effort, or the suite fails in
+  teardown and reports "the persistence layer is broken" when the truth is "the OS has not released a
+  handle yet".
+- **`require` does not exist in ESM.** Tests run as ESM; `import { DatabaseSync } from 'node:sqlite'`.
+- **An absolute Windows PATH in an import specifier is rejected** with
+  `ERR_UNSUPPORTED_ESM_URL_SCHEME`. Use `pathToFileURL(...).href`.
+- **A SQL predicate must only reference columns the SELECT fetches.** This was a real bug:
+  `SELECT id, session_id` filtered on `state`, so an approval survived a restart. See M15.
 - **WDAC enforces an Enterprise signing level** on this machine. Unsigned native binaries are refused.
   Microsoft-signed `onnxruntime` loads; `node-llama-cpp` did not. Do not attempt to circumvent — use a
   signed runtime or a separate process.
@@ -94,7 +107,7 @@ Verified on this machine. Assume them until disproved.
 ## 6. Before you commit
 
 ```
-npm test                                        # must be 0 failures
+npm test                                        # must be 0 failures (currently 301)
 npm run control:audit-routes                    # must not exit 2. Exit 1 is a DOCUMENTED gap
                                                 # (currently ADR 0003) and is the honest state.
 python packages/model/local/test-grammar.py     # must be 90/90

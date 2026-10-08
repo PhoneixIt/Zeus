@@ -134,9 +134,9 @@ rather than hidden. The static `consequential` flag cannot express `git status` 
 
 Stated plainly, because a reader finding these later should not have to infer them:
 
-- **No durable state.** No SQLite, no database, no file-backed event log. Mission state, evidence and
-  history are **in-memory**. A crash loses all of it. This blocks long-running missions and is the
-  next structural gap.
+- ~~**No durable state.**~~ **RESOLVED by M15.** See below. Mission state, evidence and history are
+  STILL in-memory *at runtime* - the store exists and is proven but **no live mission writes to it
+  yet**. That gap is recorded in `known-defects.md` and is the next step.
 - **No process-tree containment.** Zero Job Objects. Nothing guarantees a spawned process tree dies
   with its mission.
 - **No OS-level isolation of any kind.** The string "Sandbox" does not appear in product code. What
@@ -178,3 +178,64 @@ running: `npm run control:up`.
 **Harness discipline:** a harness that cannot run reports *why* and exits non-zero. A partial run is
 never reported as a pass — this caught a stale model server answering a measurement request with
 results from the wrong configuration.
+
+---
+
+## 7. Durable state (M15)
+
+`packages/persistence/` — `schema.ts` (migrations), `store.ts` (writes/reads), `recover.ts`
+(what must be re-established), `query.ts` (the read path). Built on `node:sqlite`, which is part of
+Node itself: **zero new npm dependencies**, so the repository keeps the property it has had since M9.
+
+### The rule the design exists to keep
+
+    A PERSISTED ROW IS A RECORD. IT IS NEVER AN AUTHORISATION.
+
+`readMission` deliberately does not return a runnable `Mission`. It returns a `RecoveredMission`
+paired with a recovery verdict, and `resumeMission` returns a list of obligations rather than a
+permission. `ResumePermit` has no `executable` or `authorised` member to set.
+
+### What is durable
+
+| Thing | Where | Note |
+|---|---|---|
+| Mission header | `missions` | objective, constraints, state, **proposalDigest**, **basis** |
+| Steps | `steps` | plan order, intent, mode, capability, tool, args, effect, deps, status, result |
+| Evidence | `evidence` | the `Evidence` value verbatim, **provenance**, verifier, `observed_by`, `obs_session_id` |
+| History | `history` | every event, never pruned |
+| Approvals | `approvals` | recorded **with the session that granted them** |
+| Sessions | `sessions` | every process that opened the store |
+
+`proposalDigest` and `basis` are persisted specifically so they can be **checked** after a restart
+rather than assumed. There is deliberately **no column meaning** `succeeded`, `approved`,
+`authorised`, `verified` or `is_complete` — completion is re-derived from steps and evidence on every
+read, and a test asserts those words are absent from the DDL.
+
+### What is intentionally ephemeral
+
+| Thing | Why |
+|---|---|
+| **Authority to inject** | a property of a live process and a human's presence; a file cannot testify to it |
+| **Approval validity** | every approval from a previous session is rejected on read, unconditionally |
+| **Emergency stop / latched stop** | runtime-only; a persisted "stopped" flag would be a stale claim |
+| **The operator's armed state** | same |
+| **Observation freshness** | `basis` is persisted so staleness can be *checked*; the check is mandatory, not the result |
+| **Pending approvals held in memory** | `Mission.pendingApprovals` is not restored; a prepared action is re-prepared |
+
+### Recovery rules, each with a control
+
+* A step found `running` returns as **`pending`**, with no result — never `done`, never `verified`.
+* A mission persisted as `executing` returns as not executing: nobody is executing it.
+* `requiresFreshObservation` is typed as the literal `true`, so it cannot become conditional.
+* Evidence is **live only if observed in the current session**. A row's `observed_by` flag records how
+  it was *originally* obtained and stays true forever, so liveness is judged by `obs_session_id`.
+* An approval is live only if `session_id` equals the current session.
+* A history that is internally inconsistent is **quarantined**, not resumed.
+* A corrupt file **refuses to open** rather than behaving like an empty one — an empty store looks like
+  a machine that has never run.
+* A database **newer** than this build is detected (`isFutureSchema()`).
+
+### Not yet integrated
+
+No live mission writes to the store. The module is proven against a real second OS process, but the
+executor does not call it. Recorded in `known-defects.md` and selected as the next milestone.

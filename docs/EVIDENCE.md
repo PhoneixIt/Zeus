@@ -1154,3 +1154,59 @@ no-self-release.
 
 282 unit tests, 0 failures (274 + 8 new) · 90 grammar controls · audit exits 1, not 0, and not silently
 green · no existing evidence removed · `control-core/src/*.cs` byte-identical · nothing pushed.
+
+
+---
+
+## M15 - DURABLE STATE (2026-10-08)
+
+`node:sqlite`, **zero new npm dependencies**. Versioned forward-only migrations, WAL, foreign keys, and
+a writability probe at open time so a store that cannot record anything refuses to start.
+
+### What was proven (19 controls)
+
+| Requirement | Control | Result |
+|---|---|---|
+| mission state survives restart | objective, plan, digest, basis, step results all round-trip | PROVEN |
+| evidence survives restart | `Evidence` verbatim + provenance + verifier + observing session | PROVEN |
+| history survives restart | ordered, grouped by kind | PROVEN |
+| **stale approvals cannot become authority** | prior session's approval is **rejected**; new session holds **zero** approved authority | PROVEN, in a **real second OS process** |
+| in-flight steps recover safely | `running` → `pending`, no result, note written to history | PROVEN |
+| a mission cannot read as executing after death | `executing` → not executing | PROVEN |
+| fresh observation always required | typed as the literal `true`; obligation always present | PROVEN |
+| stale plan basis reported | divergence becomes an explicit `revalidate-plan` obligation | PROVEN |
+| persisted evidence ≠ live observation | counted separately, and in prose | PROVEN |
+| no fabricated evidence | a row with no provenance is **refused at the write** | PROVEN |
+| completion is never stored | DDL contains no such column; asserted | PROVEN |
+| corruption fails safely | a corrupt file refuses to open rather than starting empty | PROVEN |
+| inconsistency quarantines | a row that lies about its own kind → `quarantined` | PROVEN |
+| future schema detected | `isFutureSchema()` | PROVEN |
+| migrations idempotent | three opens, one schema version, three sessions | PROVEN |
+| persistence never authorises | `ResumePermit` has no permission member | PROVEN |
+
+### The defect that mattered most
+
+**Approvals survived a restart — the exact failure this milestone exists to prevent, shipped green.**
+
+`invalidateForeignApprovals` ran `SELECT id, session_id` and then filtered on `r.state === 'approved'`,
+a column it never fetched. Every comparison was `undefined === 'approved'` → false, `stale` was always
+empty, and nothing was ever invalidated.
+
+It was found by the control asserting an approval does not survive, and by nothing else. The code reads
+correctly. **This is the strongest single argument in the project for testing the dangerous property
+rather than the intended one.**
+
+Also fixed: evidence liveness judged by a flag that never expires (a dead process's observation counted
+as current); recovery obligations evaporating on the second read; recovery notes absent from the
+returned record; and a DDL control defeated by its own comment.
+
+### Safety evidence preserved
+
+301 unit tests, 0 failures (282 + 19) · 90 grammar controls · route audit exits 1 with the three
+documented window gaps, unchanged · `control-core/src/*.cs` byte-identical, **0 changed** · nothing
+pushed, no remote, no paid service.
+
+### Explicitly not done
+
+**No live mission writes to the store.** `executor.ts` has no reference to it. The store is proven in
+isolation; it is not yet on the mission path. Recorded as a known defect and selected as M16.

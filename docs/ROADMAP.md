@@ -566,3 +566,52 @@ escalation only if a model-agnostic route exists that does not depend on this ha
 
 H1/H2 release-after-takeover (I will not ask you to press anything) · H4 mouse sentinel · **H5 window
 routes (ADR 0003)** · G6/G7 on the other repository.
+
+
+---
+
+## M15 - DURABLE STATE: COMPLETE (store proven; not yet on the mission path)
+
+| # | Capability | Status | Evidence |
+|---|---|---|---|
+| 30a | SQLite-backed durable store, zero npm deps | **PROVEN** | `node:sqlite`, WAL, FKs |
+| 30b | Versioned forward-only migrations | **PROVEN** | idempotent across three opens |
+| 30c | Mission/step/evidence/history survive restart | **PROVEN** | 19 controls |
+| 30d | Approvals invalidated on restart | **PROVEN** | incl. a real second OS process |
+| 30e | In-flight steps recover to `pending` | **PROVEN** | never `done`, never `verified` |
+| 30f | Corrupt / future / inconsistent stores fail safely | **PROVEN** | refuse, or quarantine |
+| 30g | Persisted evidence ≠ live observation | **PROVEN** | session-scoped, counted separately |
+| 30h | Persistence grants no authority | **PROVEN** | `ResumePermit` has no permission field |
+| 30i | A **live mission** persists anything | **NOT PROVEN** | `executor.ts` does not call the store |
+
+### The defect that mattered most
+
+Approvals survived a restart. `invalidateForeignApprovals` selected `id, session_id` and then filtered
+on `state` — a column it never fetched — so `stale` was always empty and **nothing was ever
+invalidated**. The exact outcome this milestone exists to prevent, shipped green, caught by the control
+that asserts the dangerous property rather than the intended one.
+
+### Next milestone: M16 - INSTRUMENT THE EXECUTOR
+
+Chosen from the evidence, not for convenience. The store is proven and unwired; that gap is now larger
+than anything else on the list that is not blocked on a human decision.
+
+Scope: the executor writes mission transitions, step results and evidence through the store; the live
+harnesses gain a restart-recovery proof; `resumeMission` gates the *resume* path only — never the
+governance path.
+
+**Explicit constraint:** writing must not be able to fail quietly, and must not be able to block or
+alter an action. If persistence fails mid-mission the correct behaviour is to fail the step loudly, not
+to continue as though it were recorded. There is a control for that in M16's scope.
+
+### Queued after that
+
+* **Browser reproducibility** — `playwright` is imported with **zero declared npm dependencies** and the
+  Chromium path is hardcoded to `ms-playwright/chromium-1243`. It works on this machine by accident of
+  layout and is not reproducible.
+* Model escalation — only if a model-agnostic route exists that does not depend on this hardware.
+
+### Still human-blocked
+
+H1/H2 release-after-takeover · H4 mouse sentinel · **H5 window routes (ADR 0003)** · G6/G7 on the other
+repository.
