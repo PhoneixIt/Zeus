@@ -841,3 +841,103 @@ PASS from it is therefore weaker evidence than a PASS from `prove-status-truth`.
 takeover, and `takeoverPending is STILL set` passes. **The remaining failures are instrumentation, not
 escape** - the swallow counter, the untagged-click tag, and one message that does not name the human's
 action. The refusals all hold.
+
+
+---
+
+## STABILISATION PASS (2026-10-08) - the evidence system itself
+
+### THE TYPECHECK DID NOT EXIST
+
+No `tsconfig.json`, TypeScript not installed, and every script ran `--experimental-strip-types`, which
+STRIPS types rather than checking them. Turning a real check on found **444 errors, 228 in product
+code**. All survived a green suite, because type-only imports are erased and their paths were therefore
+never resolved.
+
+Unresolvable references are now **zero**, and the whole project is **0 type errors across 82 files**.
+
+The gate has no baseline. An earlier version compared against a committed count and failed only on a
+regression; that was wrong, because a baseline says "these errors are accepted" and a number someone
+agreed to is not the same as a number someone decided about.
+
+`noUncheckedIndexedAccess` is deliberately OFF. It added ~126 errors overnight across never-checked
+code, and folding a retroactively-applied strictness increase into the same count as real defects
+produces a number that cannot tell whether the code is getting safer.
+
+### REAL DEFECTS THE TYPECHECK FOUND
+
+- **Durable evidence was written for REJECTED verifications.** `rec.verified()` sat above the
+  accepted/rejected test, so the store was told a step had been verified on the strength of a
+  verification that had just refused to verify it, with `undefined` as the evidence.
+- **The reviewed-plan check never ran in two harnesses.** `reviewedProposalDigest` was passed inside
+  `deps` instead of `opts`, so "is this the plan a human reviewed?" was silently skipped.
+- **`PlanStep` had no `effect` field** while `compile.ts` copied it, `review/render.ts` rendered it and
+  the model parser validated it. `compile.ts`'s own comment records the cost: a plan declaring a
+  consequential effect had it dropped, the approval gate never saw it, and the action ran UNAPPROVED.
+- **The supervisor's non-convergence refusal omitted `stepOutcomes`**, which its own caller reads.
+- **`ControlSurface` required `permission()`**, which nothing called and which the design forbids - a
+  permission query on the surface invites a caller to ask a surface to bless itself.
+- **`run-gui-audit` was the only caller** never updated when `guiVerifier` gained a required
+  `baselineOperatorEvents`, so the audit harness was the one place the control layer's event count was
+  not baselined before the step ran.
+- **`ModelRequest` described a v2 protocol** the code had been rewritten away from in v3.
+- The two "refused to run an unreviewed plan" early returns built a record of the **wrong shape** - no
+  `events`, `state` where the type says `finalState`, and a number where the type says a map.
+
+Control E ("no planner module can import anything that could execute") was NOT weakened. The planner's
+new type is routed through `mission-engine/state.ts`, which already held `Step.effect` and is not on
+Control E's forbidden list.
+
+### THE GATES, AND THE TWO WAYS THEY COULD NOT FAIL
+
+The first typecheck gate resolved its working directory to one level ABOVE the repo root, found no
+tsconfig and no source, reported zero errors and printed PASS. A gate that checks the wrong directory
+and reports success is worse than no gate, because it is believed.
+
+It now refuses to pass unless the tsconfig exists, tsc actually ran, AND it loaded real project source -
+"zero errors from zero files" is not the same as "zero errors". Five controls prove each of those, and
+one deliberate type error in a real product file makes it fail.
+
+### CONTAINMENT AND SETTLEMENT
+
+- The process sampler returned `[]` on EVERY call, for two compounding reasons: statements joined with a
+  space, then joined with `;` - and `-Command` argv parsing strips the quotes, leaving `SilentlyContinue`
+  as a bare word. So nothing was sampled, nothing was reaped, and `reapObserved` reported `clean: true`.
+  "Nothing observed" was being reported as "nothing survived." It now REFUSES to report clean when the
+  process table could not be read, including when the output comes back unparseable.
+- A successful command was recorded as a TIMEOUT FAILURE: the tool settled on `'close'`, which needs
+  stdio closed, and a backgrounded child holds the pipe. Measured: parent exits 0 at 1.4s, pipe still
+  open at 21.4s. The timeout handler then reaped the process the command legitimately started.
+  Now settles on `'exit'` with a bounded 250ms drain. **[measured] settle 2693ms, 2 descendants
+  observed and reaped, against a 20s timeout.**
+- **On Windows a non-detached grandchild does NOT outlive its parent** - measured across four
+  combinations. Only `detached: true` survives. So the orphan case requires a detached child.
+- `killAndConfirm` answered `true` for a pid that never existed, conflating "I killed it" with "it is
+  not running".
+- `childrenOf` could REJECT rather than resolve, when the binary could not be spawned at all.
+
+### DURABLE EXECUTOR INTEGRATION WAS NOT ON THE LIVE PATH
+
+Twenty-three `execute()` call sites outside the tests, and **none passed a recorder**. The store was
+fully implemented, fully proven in tests, and completely bypassed in production. The M16 controls passed
+because they construct the executor directly.
+
+`run-durable-mission.ts` now performs a real action against a real `DurableStore` on a real file, and
+proves - reading from the STORE and the DISK, never from the return value:
+
+    13 durable events (note 3, step 6, observation 2, recovery 2), surviving a close/reopen
+    evidence byte count matches the file on disk, attributed to a verifier with a session
+    a reopened row is marked RESTORED, never live
+    completion is re-derived from rows, not read from a stored flag
+    resumeMission on an interrupted step returns OBLIGATIONS: re-observe, recover-step
+    requiresFreshObservation is always true; liveEvidence is empty across a restart
+    the store holds ZERO approvals - persistence is not authority
+
+### STILL RED, AND STILL BLOCKING
+
+- `npm run control:proofs` exits **1**: `prove-chord-swallow` (4 claims), `prove-panel-release` (2),
+  `prove-no-self-release` (3). `prove-status-truth` and `prove-panel-colour` PASS. These are the
+  pre-existing control-core instrumentation defects and they require editing
+  `control-core/src/OperatorHost.cs`, which is not modified without an ADR and a human decision.
+- `npm run control:audit-routes` exits **1**: `/show`, `/restore`, `/focus` change machine state without
+  `MayInject()`. H5 / ADR 0003 remains open and untouched.

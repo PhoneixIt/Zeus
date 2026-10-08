@@ -111,11 +111,24 @@ export function childrenOf(pid: number, timeoutMs = 8_000): Promise<Descendant[]
     // rather than a shipped one. A sampler that always returns empty makes every "it is dead"
     // assertion in the suite unfalsifiable.
     const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name | ConvertTo-Json -Compress'
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => {
+
+    // `execFile` can THROW SYNCHRONOUSLY - not call back with an error - when the binary cannot be
+    // spawned at all. Measured: pointing PATH at a directory with no PowerShell in it produces
+    // `Error: spawn UNKNOWN` straight out of the call.
+    //
+    // Unhandled, that rejects the promise, so `await childrenOf(...)` THROWS instead of resolving with
+    // the honest "I could not look" signal. A caller on the reap path then sees an exception rather
+    // than a result carrying `samplerFailed` - which is precisely the outcome this file exists to
+    // distinguish from "nothing is running".
+    //
+    // So the spawn is guarded and a synchronous failure is reported through the SAME channel as an
+    // asynchronous one. There is no path by which a failure to look comes back as a confident list.
+    try {
+      execFile(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+        { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout) => {
         if (err) {
           // An unreadable process table is NOT "nothing is running".
           //
@@ -137,13 +150,28 @@ export function childrenOf(pid: number, timeoutMs = 8_000): Promise<Descendant[]
             .map((r) => r as { ProcessId?: unknown; ParentProcessId?: unknown; Name?: unknown })
             .filter((r) => typeof r.ProcessId === 'number')
             .map((r) => ({ pid: Number(r.ProcessId), parentPid: Number(r.ParentProcessId ?? 0), name: String(r.Name ?? '') })))
-        } catch {
-          // Unparseable output is treated as "nothing observed", NOT as "nothing running". Reporting
-          // the latter would be a lie that turns a broken sampler into a clean result.
+        } catch (e) {
+          // Unparseable output is NOT a healthy look that found nothing. It is a failed look, and it
+          // is marked as one.
+          //
+          // The first version resolved `[]` and left `samplerFailed` false, so `reapObserved` read it as
+          // a successful enumeration that happened to be empty - and could report `clean: true` about
+          // a machine it had never actually listed. That is the SAME conflation as the original
+          // defect, one step further along: the sampler ran, failed to parse, and said nothing.
+          samplerFailed = true
+          samplerError = `the process table came back unparseable: ${e instanceof Error ? e.message : String(e)}`
           done([])
         }
-      },
-    )
+        },
+      )
+    } catch (e) {
+      // A SYNCHRONOUS spawn failure - the binary is not there at all. Reported through the same
+      // channel as an asynchronous one, so there is no path by which a failure to look comes back as
+      // a confident list.
+      samplerFailed = true
+      samplerError = e instanceof Error ? e.message : String(e)
+      done([])
+    }
   })
 }
 
@@ -204,10 +232,21 @@ export function isAlive(pid: number, timeoutMs = 6_000): Promise<boolean> {
  * reaper that reports success without checking is how orphans survive a system that claims to clean up.
  */
 export async function killAndConfirm(pid: number, timeoutMs = 10_000): Promise<boolean> {
+  // WAS IT THERE TO BEGIN WITH, recorded before the kill.
+  //
+  // Without this the function answers `true` for a pid that never existed: `isAlive` is false, so
+  // "not running" is true, and a kill of nothing gets reported as a successful kill. That is the same
+  // conflation this file exists to prevent one level up - "I could not see it" reported as "it is not
+  // there" - wearing a different hat.
+  //
+  // So the return means what the name says: `true` is "it was running, and it is not now". A caller
+  // asking "is it gone?" must use `isAlive`; a caller asking "did my kill work?" wants this.
+  const wasAlive = await isAlive(pid)
   await new Promise<void>((done) => {
     execFile('taskkill', ['/PID', String(pid), '/T', '/F'],
       { timeout: timeoutMs, windowsHide: true }, () => done())
   })
+  if (!wasAlive) return false
   return !(await isAlive(pid))
 }
 
