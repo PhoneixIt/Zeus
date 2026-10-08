@@ -132,7 +132,8 @@ class Inference:
     """The model, its tokenizer, and a decoding loop. Nothing else exists in this file."""
 
     def __init__(self, model_dir: str, threads: int, log_level: str = "3",
-                 max_wall_seconds: float = MAX_WALL_SECONDS, grammar: bool = False):
+                 max_wall_seconds: float = MAX_WALL_SECONDS, grammar: bool = False,
+                 string_cap: int = PlanGrammar.__init__.__defaults__[0]):
         self.model_path = os.path.join(model_dir, "model.onnx")
         tok_path = os.path.join(model_dir, "tokenizer.json")
         for p in (self.model_path, tok_path):
@@ -191,7 +192,12 @@ class Inference:
         }
 
         # ---------------------------------------------------------------- constrained generation
-        self.grammar = PlanGrammar() if grammar else None
+        # M13 EXPERIMENT 2 - free-form string bounds, as a construction parameter.
+        #
+        # Not an env var and not a global: a bound passed into the instance is visible at the call site,
+        # and an experiment that mutates a module constant is indistinguishable from a real change to the
+        # shipped grammar. `test-grammar.py` asserts the default, so a drift here cannot go unnoticed.
+        self.grammar = PlanGrammar(string_cap=string_cap) if grammar else None
         self.vocab_text: dict[int, str] = {}
         self.by_first_byte: dict[int, list[int]] = {}
         self.vocab_unsafe = 0
@@ -657,6 +663,8 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=max(1, (os.cpu_count() or 4) - 1))
     ap.add_argument("--max-seconds", type=float, default=MAX_WALL_SECONDS,
                     help="per-request wall-clock ceiling; size it to the model actually loaded")
+    ap.add_argument("--string-cap", type=int, default=None,
+                    help="M13 experiment: bound free-form and prose string length (default: the grammar's own)")
     ap.add_argument("--grammar", action="store_true",
                     help="enable constrained generation (logit masking against the PlanProposal grammar)")
     args = ap.parse_args()
@@ -664,7 +672,8 @@ def main() -> int:
     print(f"[local-model] loading {args.model_dir} ...", flush=True)
     t0 = time.time()
     ENGINE = Inference(args.model_dir, args.threads, max_wall_seconds=args.max_seconds,
-                       grammar=args.grammar)
+                       grammar=args.grammar,
+                       **({} if args.string_cap is None else {"string_cap": args.string_cap}))
     print(f"[local-model] loaded in {time.time()-t0:.1f}s  threads={args.threads}", flush=True)
     print(f"[local-model] inputs: {ENGINE.input_names}", flush=True)
     for n, s in list(ENGINE.input_shapes.items())[:4]:

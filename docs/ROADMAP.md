@@ -448,3 +448,60 @@ measured ceiling rather than a benchmark score.
 - **Pivoting inference to `onnxruntime-genai`**: see `docs/ECOSYSTEM-AUDIT.md`. It is the right long
   term target and the wrong move now - it cannot load the M9 model without a re-export, so it is a
   model-conversion project, not a dependency swap.
+
+
+---
+
+## M13 - MODEL CEILING EXPERIMENTS: COMPLETE, NEGATIVE
+
+Both cheap interventions measured and both failed. Recorded rather than discarded.
+
+| Experiment | Change | Useful plans | Latency | Verdict |
+|---|---|---|---|---|
+| E1 | tokens 512->2048, **wall clock 150->900s** | 0/3 | 105-156s | syntax 3/3, semantics 0/3, **false refusals 3/3** |
+| E2 | E1 + string cap 400->120 chars | 0/3 | **307-309s** | no gain, 2.3x slower |
+| E3 | grammar backtracking | not built | — | **no failing case remains to fix** |
+
+**M10's diagnosis was wrong and is corrected in EVIDENCE.md.** The binding constraint was the
+150-second `MAX_WALL_SECONDS`, not the 512-token ceiling. Raising tokens 4x changed nothing because
+generation was never token-bound - it stopped at 398 tokens.
+
+**The finding that outranks all three experiments:** raising the ceiling turned an obviously-broken
+document into a well-formed one containing nonsense. Constrained decoding made a failure *harder to
+see*, because `refusal` is always available as a valid completion. Genuine refusal 0/3, false
+refusal 3/3.
+
+### Escalation decision
+
+A larger model is **still not justified**. The stated bar was: syntax no longer dominant, task quality
+insufficient, performance acceptable, hardware able to support it. Two of four are unmet.
+
+The honest read is that 1.5B cannot plan a two-step mission. Constrained decoding removed the
+*structural* obstacle and exposed the *capability* one, which is the real finding of M8-M13 taken
+together.
+
+### Next milestone, selected from the evidence: M14 - THE INJECTION AUDIT BLIND SPOT
+
+**Why this outranks everything else.** It is a safety defect, not a capability gap, and it makes a
+guarantee the project actually makes in writing narrower than believed:
+
+> the injection audit asks whether a route reaches an injection **primitive**; it should ask whether a
+> route changes the **machine**.
+
+`/show`, `/restore`, `/focus`, `/guifocus` reach no primitive, so they pass unexamined - yet they
+show, restore and focus real windows, and they do not consult `MayInject()`.
+
+Until the audit's model is widened, "every action that can change this machine passes through the
+declared gate" is an assertion the tooling cannot actually support. Every other candidate is blocked
+(H1, H2, H4), second-order (durable state, browser reproducibility), or measured to be dead
+(backtracking).
+
+**Blocked on a human decision (H5):** the routes are in `control-core`, which this project does not
+modify without an ADR and a human decision. Widening the *audit harness* would strictly increase
+detection and is not itself a regression, so it is separable and is the recommended first half.
+
+### Queued after M14
+
+durable state (SQLite) - evidence currently dies with the process · browser reproducibility -
+`playwright` undeclared and the Chromium path hardcoded · M15 model escalation, only if a
+model-agnostic route is found that does not depend on this hardware.

@@ -81,9 +81,22 @@ const ENDPOINT: ModelEndpoint = {
   //
   // The unconstrained path stays reachable, and deliberately so: a constrained run whose acceptance rate
   // is compared against nothing is not a measurement. `AIOS_MODEL_GRAMMAR` unset reproduces M9.
-  ...(process.env.AIOS_MODEL_GRAMMAR === '1'
-    ? { headers: { 'x-grammar': '1' } }
-    : {}),
+  // ONE headers object, assembled from parts.
+  //
+  // Two separate spreads both assigning `headers` was a bug found by M13: the later spread REPLACED the
+  // earlier one rather than merging, so setting AIOS_MODEL_MAX_TOKENS silently discarded `x-grammar` and
+  // every "constrained" attempt ran unconstrained. Nothing failed loudly - the run reported a perfectly
+  // plausible 0/3 for the wrong experiment.
+  //
+  // A measurement that quietly changes its own configuration is worse than no measurement, so the parts
+  // are named and merged once, where the omission is visible.
+  headers: {
+    ...(process.env.AIOS_MODEL_GRAMMAR === '1' ? { 'x-grammar': '1' } : {}),
+    // The server has always honoured this, so varying it is genuinely one variable.
+    ...(process.env.AIOS_MODEL_MAX_TOKENS ? { 'x-max-new-tokens': String(process.env.AIOS_MODEL_MAX_TOKENS) } : {}),
+    ...(process.env.AIOS_MODEL_REPETITION_PENALTY
+      ? { 'x-repetition-penalty': String(process.env.AIOS_MODEL_REPETITION_PENALTY) } : {}),
+  },
 }
 
 /** Attempts allowed for the real objective. Reported, never silently exhausted. */

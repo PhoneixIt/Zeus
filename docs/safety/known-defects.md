@@ -390,3 +390,65 @@ plans". M10 is more precise and slightly worse news.
 
 **Standing, unchanged:** release-after-takeover NOT PROVEN (H1/H2); P0 mouse sentinel (H4); window
 management still ungated.
+
+
+---
+
+## M13 (2026-10-08) - the injection audit has a BLIND SPOT, and it hides a real gap
+
+Sharper than the earlier "window management ungated" entry, and now diagnosed rather than merely
+observed.
+
+**What the audit asks:** does this route reach an injection primitive - `SendInput`, `Uia.Focus`,
+`Uia.Invoke`, `Uia.SetValue`?
+
+**What it should ask:** does this route change the machine?
+
+`/show`, `/restore`, `/focus`, `/guifocus` reach **none** of those primitives, so the audit classifies
+them as non-injecting and passes. But they show, restore and focus real windows. That is a
+user-visible change to the machine, and they do not consult `MayInject()`.
+
+**So there are two defects, and the second is why the first survived:**
+
+1. the four window routes are not permission-gated;
+2. the audit has no category for "changes the machine without injecting input", so an undeclared
+   window route would also pass.
+
+Defect 2 is the more dangerous one: it means the structural guarantee that "every action that can
+change this machine passes through the declared gate" is currently **narrower than its own claim**.
+
+**Why this was not fixed here.** The routes live in `control-core/src/OperatorHost.cs`. `control-core`
+is inherited, proven code holding takeover, the latched stop and no-self-release, and this project does
+not modify it without an ADR and a human decision. The audit harness is also in `control-core`, though
+widening it would strictly *increase* detection and so is not a safety regression.
+
+**Recommended, for a human decision:** treat this as H5. Widening the audit's model of
+"changes the machine" to include window management is the higher-value half, because until it exists
+the gate cannot be shown to be complete.
+
+---
+
+## M13 - constrained decoding MANUFACTURES FALSE REFUSALS (open)
+
+Supersedes nothing; extends the M10 entry.
+
+With both ceilings raised, the 1.5B model produced **3/3 syntactically valid documents, all of them
+refusals, all of them nonsense**:
+
+    ">>TheSummarizationTaskCannotBe"
+    ">TheFolderPathC:\Users\Samer\A"
+
+This is worse than M10's failure, not better. M10 produced an *obviously* broken document
+("unterminated string"), which is an honest signal. M13 produces a well-formed document whose content
+is meaningless, because `refusal` is a legitimate `PlanProposal` variant and therefore always offers the
+model an easy valid completion when it cannot plan.
+
+**Measured: genuine refusal 0/3, false refusal 3/3.**
+
+I10 says a refusal must be meaningful. The M10 fix caught only the *blank* case. A non-blank refusal
+whose text is a truncated fragment is still indistinguishable from a considered decline.
+
+**What is deliberately NOT done about it.** Removing `refusal` from the grammar would raise the plan
+rate and must never be done: declining is a *good* behaviour, and a system that cannot decline is a
+system that acts when it should not. The grammar stays permissive. The honest position is that this
+model cannot plan, and it now says so in a way that is easy to misread.

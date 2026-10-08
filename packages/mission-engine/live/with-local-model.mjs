@@ -51,6 +51,20 @@ if (!existsSync(join(MODEL_DIR, 'model.onnx'))) {
   ]
   if (GRAMMAR) serverArgs.push('--grammar')
 
+  // The WALL-CLOCK ceiling, made independently variable.
+  //
+  // Measured in M13: `MAX_WALL_SECONDS` is 150.0, and it was the BINDING constraint - not the 512-token
+  // ceiling M10 assumed. Generation was stopped by time at 398 tokens, comfortably under the token
+  // limit, which is why raising the token ceiling changed nothing at all. Two limits, one of which was
+  // invisible until it was measured.
+
+  const MAX_SECONDS = process.env.AIOS_MODEL_MAX_SECONDS
+  if (MAX_SECONDS) serverArgs.push('--max-seconds', MAX_SECONDS)
+
+  // M13 EXPERIMENT 2 - the free-form string bound.
+  const STRING_CAP = process.env.AIOS_MODEL_STRING_CAP
+  if (STRING_CAP) serverArgs.push('--string-cap', STRING_CAP)
+
   const server = spawn('python', serverArgs, { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'] })
 
 let ready = false
@@ -94,6 +108,7 @@ if (!ready) {
 }
 
 console.log(`[runner] local model is up on 127.0.0.1:${PORT} (pid ${server.pid})`)
+  console.log(`[runner] wall-clock ceiling: ${MAX_SECONDS ?? '150 (server default)'}s   token ceiling: ${process.env.AIOS_MODEL_MAX_TOKENS ?? '512 (server default)'}`)
   console.log(`[runner] constrained generation: ${
     GRAMMAR ? 'ON  (a structural grammar masks the logits)' : 'off  (unconstrained - this is the M9 baseline)'
   }`)

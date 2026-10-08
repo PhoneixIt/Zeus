@@ -953,3 +953,97 @@ Constrained decoding **does** what it was supposed to do to syntax, at negligibl
 and **does not** make this model useful. The bottleneck moved from output discipline to raw capability
 plus a token ceiling. Nothing was weakened to achieve that: 274 TS tests and 90 grammar controls pass,
 the route audit passes, and `control-core` is byte-identical.
+
+
+---
+
+## M13 - MODEL CEILING EXPERIMENTS (2026-10-08)
+
+Requested alongside M12: raise the generation ceiling, bound free-form strings, and consider
+backtracking. Measured in isolation. The model was NOT changed.
+
+### CORRECTION TO M10 FIRST, because it changes what was tested
+
+M10 concluded the binding failure was "a 512-token ceiling reached inside a string value". **That was
+wrong.** Raising the token ceiling 4x changed nothing, because the real constraint was invisible:
+
+    server.py:103   MAX_WALL_SECONDS = 150.0
+
+Generation was stopped by **TIME**. The probe produced 398 tokens against a 512 limit - it never
+approached the token ceiling. M10 read a truncated document as a token-limit problem, which is exactly
+the kind of plausible conclusion that survives because nobody checks the number that would have
+contradicted it.
+
+M10's own numbers contained the refutation (`latency` pinned at ~150s in every attempt) and it was not
+followed up. Recorded here rather than quietly corrected, because the error is the useful part.
+
+### E1 - raise both ceilings (tokens 512 -> 2048, wall clock 150s -> 900s)
+
+| Metric | Result |
+|---|---|
+| Syntax validity | **3/3 valid JSON**, generation finished on EOS |
+| Semantic validity | **0/3** - nothing reached the compiler |
+| Useful-plan rate | **0/3** |
+| Genuine refusal rate | **0/3** |
+| **False / degenerate refusal rate** | **3/3** |
+| Latency | 105-156s (min/mean/max 105.5 / 133.3 / 155.7s) |
+| Failure layer | parser, `not-understood` |
+
+Verbatim refusals, in full:
+
+    ">>TheSummarizationTaskCannotBe"
+    ">TheFolderPathC:\Users\Samer\A"
+    ">TheFolderPathC:\Users\Samer\A"
+
+**This is the finding that matters, and it is uncomfortable.** Raising the ceiling converted an honest
+"unterminated string" into a *well-formed document containing nonsense*. The output became more
+syntactically respectable and less informative at the same time.
+
+Because `refusal` is a legitimate `PlanProposal` variant, a model that cannot plan always has an easy
+valid completion available - and it takes it. **Constrained decoding made a failure harder to see.**
+
+This sharpens I10 ("refusal must be meaningful"). The blank-refusal fix from M10 caught the empty case;
+this is the same failure with the string filled in, and it is NOT caught. Recorded as an open defect.
+
+### E2 - bound free-form and prose strings (400 -> 120 chars), ceilings as E1
+
+| Metric | Result |
+|---|---|
+| Syntax validity | 0/3 |
+| Semantic validity | 0/3 |
+| Useful-plan rate | 0/3 |
+| Latency | **307-309s - SLOWER than E1** |
+| Outcome | No plan. The bound did not help and cost ~2.3x the latency. |
+
+A negative result, kept rather than discarded: the model spends the extra time fighting the bound.
+
+### E3 - grammar backtracking: NOT BUILT, and the reason is evidence, not budget
+
+Backtracking exists to recover from a dead prefix. **Prefix viability already removed the only
+observed dead prefix** - `outputFilePathCSharpCodeExample123456789` is refused at its first character
+now, and 90 controls assert no reachable state is a dead end. After E1 and E2 the model is not dying
+on a key prefix at all; it is choosing `refusal` from a state with many legal continuations.
+
+So backtracking has **no failing case left to fix**. Building it would be speculative work against an
+imagined failure, which this project does not do. Recorded as deferred with the evidence that deferred it.
+
+### Metrics kept separate, as required
+
+Never collapsed into one acceptance number: syntax 3/3 · semantic 0/3 · useful 0/3 · genuine refusal
+0/3 · false refusal 3/3. The one number that improved - syntax - is the one that matters least.
+
+### Safety regression check
+
+None. 274 unit tests, 90 grammar controls, route audit PASS, `control-core` byte-identical, zero
+executions. The experiments changed ceilings and a string bound - both structural inputs - and touched
+no validator.
+
+### Two defects found while setting the experiments up
+
+1. **Two object spreads both assigning `headers`**, in the mission harness, silently discarded
+   `x-grammar` whenever `AIOS_MODEL_MAX_TOKENS` was set. Every "constrained" attempt ran
+   *unconstrained*, and the run reported a plausible 0/3 for the wrong experiment. Nothing failed
+   loudly. Headers are now assembled once, where the omission is visible.
+2. **The probe printed the wrong mode.** It reported `unconstrained` while `npm run` output claimed
+   `ON`, because one had lost the header and the other had not. The probe's mode line is what caught
+   it - which is the argument for a harness printing its own configuration rather than trusting it.
