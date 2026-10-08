@@ -107,12 +107,28 @@ Verified on this machine. Assume them until disproved.
 ## 6. Before you commit
 
 ```
-npm test                                        # must be 0 failures (currently 301)
+npm test                                        # must be 0 failures (currently 317)
+npm run control:proofs                          # THE SAFETY GATE. Needs `npm run control:up`.
+                                                # MUST be 0. It currently exits 1 - see
+                                                # safety/known-defects.md, M17. Do not soften it.
 npm run control:audit-routes                    # must not exit 2. Exit 1 is a DOCUMENTED gap
                                                 # (currently ADR 0003) and is the honest state.
 python packages/model/local/test-grammar.py     # must be 90/90
 git status --porcelain                          # must be clean
 ```
+
+### About the control-core proof gate
+
+`npm run control:proofs` exits `0` only when every claim held **and nothing was skipped**. `1` means a
+claim failed or a proof was inconclusive. `3` from a single proof means it could not be tested.
+
+**It is currently red, and that is correct.** Until M17's three causes are fixed, this repository cannot
+honestly claim the control core's properties are demonstrated - only that the refusals were observed to
+hold. A red gate that says so is worth more than a green one that means nothing.
+
+Never make a proof pass by skipping an assertion, relaxing a threshold, or converting a failure into an
+inconclusive. The `SKIP` path exists for a *broken instrument*, and using it for a real defect would hide
+the defect.
 
 ### About the route audit exit code
 

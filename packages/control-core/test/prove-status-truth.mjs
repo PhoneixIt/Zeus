@@ -91,7 +91,21 @@ const refused = await op.type({ hwnd: 0, pid: 0, title: 'x', text: 'NO', delayMs
 check(/refus|guard|state|target/i.test(refused || ''), 'a type attempt while blocked is refused', String(refused).slice(0, 80))
 
 console.log('\n=== 4. the rendered indicator agrees with the host ===')
+// Corroborating evidence, not a claim.
+//
+// `/screen.png` currently fails on this machine - the host closes the connection without a response.
+// A CRASHED proof yields no verdict at all, which is strictly worse than an inconclusive one: it hides
+// the security assertions above, several of which passed. And an unavailable screenshot must never be
+// counted as a pass, so it is reported in words and the proof kit treats the run as INCONCLUSIVE.
+let corroborationLost = null
+try {
 await screen('status-truth-blocked')
+} catch (e) {
+corroborationLost = e
+console.log('\n=== INCONCLUSIVE: the blocking screenshot could not be taken ===')
+console.log('    The claims above stand on their own; this corroboration does not.')
+console.log('    ' + (e instanceof Error ? e.message : String(e)))
+}
 // Green is the colour that means "safe for you to work". It must not appear while blocked.
 const blockedNow = (await g()).mayInject === false
 check(blockedNow, 'captured while input is blocked, which is the state under test')
@@ -115,6 +129,11 @@ check(after.inputPermission === 'BLOCKED', 'and the report says BLOCKED')
 check(!/^ARMED$/.test(after.headline) || after.mayInject,
   'and the headline does not read a bare ARMED while blocked', `headline=${JSON.stringify(after.headline)}`)
 
-console.log(`\n=== SUMMARY: ${fails === 0 ? 'PASS' : fails + ' FAILURE(S)'} ===`)
+console.log(`\n=== SUMMARY: ${fails === 0 && !corroborationLost ? 'PASS' : fails !== 0 ? fails + ' FAILURE(S)' : 'INCONCLUSIVE'} ===`)
 if (fails !== 0) console.log('THE CLAIM IS NOT ESTABLISHED. Do not treat this run as evidence.')
-process.exit(fails ? 1 : 0)
+// A proof that prints PASS while something went untested is the defect that let five never-running
+// proofs be cited as evidence. The exit code is 3, not 0, so `npm test` and the proof gate both see it.
+if (fails === 0 && corroborationLost) {
+  console.log('THE CLAIMS HELD, BUT THE RUN WAS NOT COMPLETE. Do not read this as a clean pass.')
+}
+process.exit(fails ? 1 : corroborationLost ? 3 : 0)

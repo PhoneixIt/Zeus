@@ -695,3 +695,53 @@ part is the whole point - they rotted because nothing ran them. Re-baseline, and
 **Deferred behind it:** process containment (`reapTree` fires only on timeout, so a command that exits
 normally while leaving background children orphans them) and browser reproducibility proper (declare and
 pin `playwright`, resolve the binary).
+
+
+---
+
+## M17 - THE PROOF GATE: COMPLETE, AND IT IS RED
+
+### Delivered
+
+* `npm run control:proofs` runs all five control-core proofs and sorts each into PASS / FAILED /
+  **INCONCLUSIVE**, exiting non-zero unless every claim held AND nothing was skipped.
+* Two harnesses that used to **crash** now report INCONCLUSIVE, and their colour assertions are marked
+  **SKIP** rather than FAIL - a broken instrument must not be recorded as a defect in the measured thing.
+* A single proof can no longer print PASS while something went untested.
+
+### Measured verdict
+
+| Proof | Verdict |
+|---|---|
+| `prove-chord-swallow` | FAILED - 4 claims |
+| `prove-status-truth` | INCONCLUSIVE - screenshot unavailable |
+| `prove-panel-release` | FAILED - 2 claims |
+| `prove-panel-colour` | INCONCLUSIVE - 3 assertions skipped |
+| `prove-no-self-release` | FAILED - 3 claims |
+
+Not order-dependence: standalone runs give identical verdicts.
+
+### Three causes, all REPORTING rather than ESCAPE
+
+1. **`/screen.png` and `/panelgrid` do not respond** - the host closes the connection.
+2. **The swallow counter contradicts the hook's own outcome string** - `lastChordOutcome` says
+   "swallowed", the delta says `+0`. One of them is lying, and it is the kind this project exists to
+   eliminate.
+3. **`takeoverPending` is not reported** although `lastTakeoverAt` shows a takeover occurred.
+
+**The refusals all hold.** `/release` and `/rearm` refused · an injected untagged click refused and
+credited to the OPERATOR · injection refused while blocked · `/arm` and `/drain` cannot lift a takeover ·
+nothing forged as a human event.
+
+### Next: BLOCKED ON A HUMAN DECISION
+
+Fixing the three causes means editing `control-core/src` - the same class of change as H5, and the same
+reason it is deferred: the rule exists so proven code is not edited without a green baseline, and the
+absence of that baseline **is** the finding.
+
+Recommended, in order: (1) repair the pixel-capture endpoints · (2) reconcile the swallow counter with
+the outcome string · (3) report `takeoverPending` truthfully · (4) re-baseline until the gate is green ·
+(5) **only then** H5.
+
+Unlike H5, this is not optional cleanup. Until it is done this repository cannot honestly claim the
+control core's safety properties are demonstrated.

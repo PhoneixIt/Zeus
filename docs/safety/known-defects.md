@@ -687,3 +687,86 @@ Not "fix the control core" - fix the **harnesses**, in `.mjs`, which are not the
 
 Until (3) exists, any claim in this repository that rests on these proofs is documentation, not
 evidence.
+
+
+---
+
+## M17 (2026-10-08) - THE PROOF GATE EXISTS, AND IT SAYS THE CORE IS NOT DEMONSTRATED
+
+Part 1 made the five proofs runnable. Part 2 made them **honest and wired**, so this cannot recur.
+
+### What was built
+
+`test/proof-kit.mjs` and `test/run-proof-gate.mjs`, run by **`npm run control:proofs`**. It runs every
+proof and sorts the outcome into three states that were previously collapsed:
+
+| State | Meaning |
+|---|---|
+| PASS | every claim held, nothing skipped |
+| FAILED | a claim is false |
+| **INCONCLUSIVE** | a claim could not be tested because a dependency was unavailable |
+
+Exit codes: `0` all held · `1` a claim failed · `3` inconclusive. **The gate fails on inconclusive as
+well as on failure**, because a gate that passes when a proof was skipped is not a gate.
+
+Two harnesses previously CRASHED on the host's dead pixel-capture endpoints, which produced no verdict
+at all. They now report INCONCLUSIVE - and, critically, their colour assertions are marked **SKIP**, not
+FAIL, because a broken instrument must not be recorded as a defect in the thing being measured.
+
+### The measured verdict
+
+```
+FAILED         prove-chord-swallow      4 claims
+INCONCLUSIVE   prove-status-truth       corroborating screenshot unavailable
+FAILED         prove-panel-release      2 claims
+INCONCLUSIVE   prove-panel-colour       3 assertions skipped, pixels unreadable
+FAILED         prove-no-self-release    3 claims
+GATE EXIT 1
+```
+
+Not order-dependence: each proof run standalone gives the identical verdict.
+
+### The three causes, and they are all REPORTING, not ESCAPE
+
+**1. The host's pixel-capture endpoints do not respond.** `/screen.png` and `/panelgrid` both close the
+connection without a response. Two proofs are inconclusive because their instrument is dead.
+
+**2. The hook's swallow COUNTER contradicts its own outcome string.** The host reports
+`lastChordOutcome="Ctrl+Alt+Esc recognized; swallowed; emergency stop latched"` while the cumulative
+counter shows `kbdSwallowed: 12` and the proof measures a delta of `swallowed=+0`. The hook says it
+swallowed; the counter says it did not. One of those is a lie, and it is the kind this project exists to
+eliminate.
+
+**3. The pending-takeover state is not reported.** `/guard` returns `takeoverPending: false` with
+`emergencyLatched: true` and `lastTakeoverAt: 179145...`, so a takeover DID occur and the payload does
+not say so. The message also fails to name the action the human must take.
+
+### What this does and does not mean
+
+**The refusals hold.** Measured, repeatedly: `/release` refused · `/rearm` refused · an injected,
+untagged click refused by the hook and credited to the OPERATOR · injection refused while blocked ·
+`/arm` cannot lift a takeover · `/drain` alone cannot lift a takeover · nothing forged as a human event
+(`humanEvents 195496 -> 195496`, unchanged).
+
+**The evidence does not.** The behaviour looks right and the instrumentation cannot demonstrate it. For a
+project whose thesis is "verified results, never executed == succeeded", an unreliable status path is
+not a cosmetic problem - it undermines the project's own verification story.
+
+### Why this now needs a human decision
+
+Fixing (2) and (3) means changing the hook instrumentation and the status payload **inside
+`control-core/src`**. That is the same class of change as H5, and it is the same reason it was deferred:
+the rule exists so that proven code is not edited without a green baseline, and there is no green
+baseline - that is the finding.
+
+**Recommended sequence, and it needs a decision to begin:**
+
+1. fix `/screen.png` and `/panelgrid` (a capability defect, plausibly a GDI/capture path in the host)
+2. reconcile the swallow counter with the outcome string
+3. report `takeoverPending` truthfully
+4. re-baseline the gate until it is green
+5. **only then** H5 - gate `/show`, `/restore`, `/focus`
+
+Steps 1-3 all touch `control-core/src`. Per the ADR rule this is a human decision, and unlike H5 it is not
+optional work: until it is done, this repository cannot honestly claim the control core's properties are
+demonstrated.
