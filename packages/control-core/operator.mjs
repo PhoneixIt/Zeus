@@ -25,7 +25,35 @@
 // actually happened, not a narration: every entry is written after the corresponding
 // Win32 call returned.
 
-import { chromium } from 'playwright'
+// PLAYWRIGHT IS LOADED LAZILY, and the reason is worth stating plainly.
+//
+// It used to be a top-level import, and `playwright` is neither installed nor declared in
+// package.json - so this module could not be imported AT ALL, and every harness that needed the
+// operator (including all five proof harnesses: takeover, no-self-release, panel release, panel
+// colour, status truth) failed with ERR_MODULE_NOT_FOUND before running a single check.
+//
+// Those proofs are about WINDOWS and the panel. They never touch a browser. So a missing browser
+// library must not be able to prevent the safety properties of the whole control core from being
+// demonstrated.
+//
+// The Chromium BINARY is present (ms-playwright/chromium-1243); it is the npm package that is
+// absent. Browser driving is therefore genuinely unavailable today, and that is now reported as a
+// clear error at the point of use rather than as a module-load failure that takes the operator with
+// it.
+let chromium = null
+async function chromiumApi() {
+  if (chromium) return chromium
+  try {
+    ({ chromium } = await import('playwright'))
+    return chromium
+  } catch (e) {
+    throw new Error(
+      'the browser capability needs the playwright package, which is neither installed nor declared ' +
+      `in package.json (${e instanceof Error ? e.message : String(e)}). Every non-browser capability ` +
+      'works without it. See docs/known-defects under M17.',
+    )
+  }
+}
 import { op, listWindows, foreground, sleep, identity } from './driver.mjs'
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync } from 'node:fs'
@@ -311,7 +339,7 @@ export const focusBrowser = focus
 
 async function attach() {
   if (!browser || !context) {
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`)
+    browser = await (await chromiumApi()).connectOverCDP(`http://127.0.0.1:${CDP_PORT}`)
     context = browser.contexts()[0]
   }
   return context

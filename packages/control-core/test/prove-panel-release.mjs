@@ -27,7 +27,7 @@
 // untagged SendInput, not via a direct call. And that the operator stays safely PAUSED when it
 // fails, because failing closed is the whole point.
 
-import { op, sleep } from './operator.mjs'
+import { op, sleep } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
 
 let fails = 0

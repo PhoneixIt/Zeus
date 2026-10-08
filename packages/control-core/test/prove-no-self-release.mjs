@@ -12,7 +12,7 @@
 // The physical chord is NOT exercised here: it requires a real key event, which by
 // construction the operator cannot manufacture. That is the point being verified.
 
-import { op, sleep } from './operator.mjs'
+import { op, sleep } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
 
 let fails = 0

@@ -76,9 +76,15 @@ Totals: 21,283 TypeScript · 3,861 C# · 1,932 Python · 2,276 `.mjs` · 55 Powe
 (`PORTAI_OPERATOR_DIR`, `PortAiOperator.Program`). That is naming debt, recorded and not acted on:
 renaming the single most safety-critical component would be a large, risky refactor for cosmetics.
 
-It is kept because it is the **only** candidate with *proven* takeover, latched emergency stop,
-no-self-release and fail-closed hooks. Those are evidenced by five proof harnesses in
-`control-core/test/`. `PROVENANCE.json` records its origin.
+It is kept because it is the **only** candidate with takeover, latched emergency stop, no-self-release
+and fail-closed hooks. `PROVENANCE.json` records its origin.
+
+**The strength of that claim was overstated until M17.** Five proof harnesses in `control-core/test/`
+are cited as its evidence, and **none of them had ever executed**: they imported a module path that did
+not resolve, and that module imported an uninstalled package at the top level. With the import fixed,
+the measured baseline is: one PASS, two reporting failures, and two that crash. The *refusals* hold -
+`/release` and `/rearm` are refused and an injected click does not release the panel - but the
+*reporting* of why, and that a takeover is still pending, does not. See `safety/known-defects.md`.
 
 **The operator is not armed.** `mayInject=false`. No real injection can occur.
 

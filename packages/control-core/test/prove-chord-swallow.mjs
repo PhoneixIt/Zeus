@@ -38,7 +38,7 @@
 // handle that keypress is installed, alive, instrumented, and fails closed if it ever
 // is not.
 
-import { op, sleep } from './operator.mjs'
+import { op, sleep } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
 
 let fails = 0

@@ -24,7 +24,7 @@
 // "is that green" visually is exactly the instrument that lies when the question is
 // whether the panel is telling the truth.
 
-import { op, sleep } from './operator.mjs'
+import { op, sleep } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
 
 let fails = 0

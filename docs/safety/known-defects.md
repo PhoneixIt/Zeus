@@ -610,3 +610,80 @@ is a success and none is retryable.
 release-after-takeover NOT PROVEN (H1/H2) · P0 mouse sentinel (H4) · **three ungated window routes
 (H5, ADR 0003)** · browser reproducibility · the 1.5B model cannot plan and should not receive further
 investment unless evidence changes materially.
+
+
+---
+
+## M17 ATTEMPT (2026-10-08) - THE CONTROL-CORE PROOFS WERE NEVER RUNNING, AND TWO DO NOT PASS
+
+**This is the most important entry in this file.** It corrects a claim this project has been making
+since M1.
+
+### What was found
+
+Five harnesses in `packages/control-core/test/` are cited throughout this repository as the evidence
+that the control core's properties hold: `prove-chord-swallow`, `prove-no-self-release`,
+`prove-panel-release`, `prove-panel-colour`, `prove-status-truth`.
+
+**All five failed with `ERR_MODULE_NOT_FOUND`.** `test/prove-*.mjs` imported `./operator.mjs`, which
+lives one directory up; and `operator.mjs` itself imported `playwright` at the top level, a package
+that is neither installed nor declared in `package.json` (which has no dependencies at all).
+
+So the module could not be loaded, and **no proof had ever executed**. The properties were asserted by
+documentation, not demonstrated.
+
+### Fixed enough to run
+
+* the five imports corrected to `../operator.mjs`
+* `operator.mjs` now loads `playwright` LAZILY
+
+The lazy import is the load-bearing change. Those proofs are about windows and a panel; they never touch
+a browser. A missing browser library must not be able to stop the safety properties of the entire
+control core from being demonstrated. The Chromium **binary** is present; the npm package is not, so
+browser driving is genuinely unavailable and is now reported as a clear error at the point of use.
+
+### The measured baseline, and what it means
+
+| Proof | Result |
+|---|---|
+| `prove-chord-swallow` | **PASS** |
+| `prove-panel-release` | 2 failures |
+| `prove-no-self-release` | 3 named failures (5 reported) |
+| `prove-panel-colour` | crashes - `fetch failed`, socket closed |
+| `prove-status-truth` | crashes - same |
+
+**The dangerous claims mostly hold.** `/release` and `/rearm` are refused. An injected, untagged click
+is refused by the hook. Nothing was forged as a human event (`humanEvents 195496 -> 1954`, unchanged).
+
+**The observability claims fail.** The hook accepts a release and attributes it correctly
+(`release ACCEPTED: genuine hardware click`) but does not **tag** the click in its region
+(`tagged +0`), so the evidence chain is incomplete. And the takeover status is not reported properly:
+`takeoverPending is STILL set after every route above`, and the message does not name the action the
+human must take.
+
+**So: "takeover, latched stop and no-self-release are PROVEN" was overstated.** The refusals hold. The
+*reporting* of why, and that a takeover is still pending, does not. Two harnesses cannot run at all.
+
+### Consequence: H5 is NOT proceeding
+
+ADR 0003 proposes adding `MayInject()` to `/show`, `/restore` and `/focus` in `OperatorHost.cs`. That
+is safety-critical inherited code, and the whole reason for the "ADR plus human decision" rule is that
+its properties are proven.
+
+**They are not currently proven.** Two proofs crash and two report failures. Making that change now
+would mean editing the takeover code with an unreliable safety net, and a mistake would be invisible -
+which is precisely the scenario the rule exists to prevent.
+
+### Next milestone: M17 - MAKE THE PROOFS A RELIABLE GATE
+
+Not "fix the control core" - fix the **harnesses**, in `.mjs`, which are not the safety-critical C#:
+
+1. all five run and exit deterministically (the socket failures diagnosed first)
+2. each asserts the specific claim it exists to prove, with no ambiguity between a security failure
+   and an observability failure
+3. wired into `npm test` so the gate cannot rot again - **this is the part that matters**, because the
+   rot happened precisely because nothing ran them
+4. then re-baseline, and only then decide H5
+
+Until (3) exists, any claim in this repository that rests on these proofs is documentation, not
+evidence.

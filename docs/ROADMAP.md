@@ -659,3 +659,39 @@ execution foundation is trustworthy enough to put a window on.
 
 H1/H2 release-after-takeover · H4 mouse sentinel · **H5 window routes (ADR 0003)** · G6/G7 on the other
 repository.
+
+
+---
+
+## M17 - ATTEMPTED, AND THE EVIDENCE SAID STOP
+
+The plan was browser reproducibility, then process containment, then H5. Verification came first, as it
+should have.
+
+**Browser reproducibility turned out to be a precondition, not a chore.** Fixing its root cause
+(`playwright` undeclared and imported at the top level of `operator.mjs`) revealed that **the five
+control-core proof harnesses had never run.**
+
+Baseline, measured: `prove-chord-swallow` **PASS** · `prove-panel-release` 2 failures ·
+`prove-no-self-release` 3 named failures · `prove-panel-colour` and `prove-status-truth` **crash**.
+
+**The refusals hold.** `/release` and `/rearm` are refused; an injected untagged click does not release
+the panel; nothing was forged as a human event. **The reporting does not.** And two harnesses cannot
+run at all.
+
+### H5 is NOT proceeding
+
+I was ready to add `MayInject()` to three routes in `OperatorHost.cs`. I am not, because the properties
+that change is meant to preserve are not currently demonstrated, and two of the proofs crash. Editing
+takeover code behind an unreliable safety net is the exact scenario the "ADR plus human decision" rule
+exists to prevent.
+
+### Next milestone: M17 - MAKE THE PROOFS A RELIABLE GATE
+
+Fix the **harnesses** (`.mjs`, not the safety-critical C#): make all five run deterministically,
+separate security failures from observability failures, and **wire them into `npm test`**. That last
+part is the whole point - they rotted because nothing ran them. Re-baseline, and only then revisit H5.
+
+**Deferred behind it:** process containment (`reapTree` fires only on timeout, so a command that exits
+normally while leaving background children orphans them) and browser reproducibility proper (declare and
+pin `playwright`, resolve the binary).

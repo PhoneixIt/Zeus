@@ -9,7 +9,7 @@
 // matters. Safety behaviour must not change to make a label look right; the label has to
 // tell the truth about the behaviour.
 
-import { op, sleep, screen } from './operator.mjs'
+import { op, sleep, screen } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
 
 let fails = 0

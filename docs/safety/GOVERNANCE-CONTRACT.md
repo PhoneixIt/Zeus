@@ -103,6 +103,12 @@ refusal, not a server fault, and must never be laundered into a fallback.
 **Control:** the operator can take over at any time; the process cannot release itself.
 **Proof:** `prove-no-self-release.mjs`, `prove-panel-release.mjs`.
 
+> **As of M17 those two proofs had never executed** - a module import did not resolve, so the harness
+> failed before running a check. With that fixed, the refusals they assert **pass**, but the reporting
+> they assert **fails**: the hook does not tag the click it observed, and the pending takeover is not
+> reported in the payload. So I14's behaviour holds and I14's *evidence* is incomplete. Treat this
+> invariant as implemented-and-partly-demonstrated, not as proven.
+
 ## 3. Held by inherited code, and therefore under a stricter rule
 
 `control-core` is the previous project's code, kept because it is the only candidate with *proven*
