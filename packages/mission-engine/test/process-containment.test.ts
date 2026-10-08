@@ -227,7 +227,7 @@ function orphanNodeScript(pidFile: string): string {
     // tool cannot see. Waiting is what makes the scenario the realistic one: it is the process that
     // lingers AFTER its parent goes that is the actual case, and this reproduces it rather than an
     // unobservable race.
-    "setTimeout(() => process.exit(0), 1500)",
+    "setTimeout(() => process.exit(0), 3000)",
   ].join('\n'))
 }
 
