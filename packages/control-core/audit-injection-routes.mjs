@@ -119,9 +119,29 @@ const READ_ONLY = [
  * three acknowledged ungated routes produced the same result: green.
  */
 const KNOWN_GAPS = {
-  '/show': 'calls Win.ShowWindow with action=minimize|maximize|restore|show|hide; needs MayInject() at the dispatch head',
-  '/restore': 'calls Win.ShowWindow(SW_RESTORE); needs MayInject() at the dispatch head',
-  '/focus': 'calls Win.Focus/FocusChild (SetForegroundWindow + SetFocus). Verify() is an IDENTITY check - visible, not minimised, pid and title match - and never consults MayInject()',
+  // ---------------------------------------------------------------------------------------
+  // RESOLVED 2026-10-08 (M17). These three were real ungated breaches and are now GATED.
+  //
+  // They are kept here rather than deleted, because an entry naming a route that is now in
+  // `InjectionRoutes` is not stale - it records what the breach WAS and what closed it, which is the
+  // only thing that stops the same omission being reintroduced on a later edit.
+  //
+  // What was wrong: each verified only that the named hwnd belonged to the named pid. That is an
+  // IDENTITY check - it proves the caller aimed where it said, not that the caller was ALLOWED to act.
+  // So a window could be minimised, hidden or pulled to the foreground during a human takeover or an
+  // latched emergency stop. `Verify()` is the same distinction: identity, not permission.
+  //
+  // The fix: all three are declared in `InjectionRoutes`, which the dispatch-head gate consults BEFORE
+  // any route body runs. No per-route check was added - the central gate already runs first, and
+  // re-adding per-route calls would recreate the "enforced by remembering" failure mode it exists to
+  // remove.
+  //
+  // Proven live by test/prove-window-gate.mjs, which asserts the refusal cites the guard AND that the
+  // window's real state is unchanged when read back from /windows rather than from the reply.
+  // ---------------------------------------------------------------------------------------
+  '/show': 'RESOLVED: was ungated - Win.ShowWindow minimize|maximize|restore|show|hide behind an identity check only. Now declared in InjectionRoutes.',
+  '/restore': 'RESOLVED: was ungated - Win.ShowWindow(SW_RESTORE) behind an identity check only. Now declared in InjectionRoutes.',
+  '/focus': 'RESOLVED: was ungated - Win.Focus/FocusChild (SetForegroundWindow + SetFocus) behind an identity check only. Now declared in InjectionRoutes. /guifocus was correctly left ungated: it only READS focus.',
 }
 
 // EXIT CODES. Kept distinct on purpose.

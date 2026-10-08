@@ -599,6 +599,23 @@ namespace PortAiOperator
             "/uiainvoke",        // UI Automation InvokePattern - acts with no input event
             "/uiasetvalue",      // UI Automation ValuePattern - acts with no input event
             "/uiafocus",         // UI Automation focus change
+            "/show",             // Win.ShowWindow minimize|maximize|restore|show|hide - WAS UNGATED
+            "/restore",          // Win.ShowWindow(SW_RESTORE)                            - WAS UNGATED
+            "/focus",            // Win.Focus/FocusChild: SetForegroundWindow + SetFocus   - WAS UNGATED
+            //
+            // The three above changed real machine state behind nothing but an IDENTITY check - that
+            // the named hwnd belongs to the named pid. That proves the caller aimed where it said; it
+            // does not prove the caller was ALLOWED to act. A window can belong to exactly the right
+            // process and still be minimised, hidden or pulled to the foreground while a human has
+            // taken over, or while an emergency stop is latched.
+            //
+            // They are listed HERE rather than checked per-route because the gate at the dispatch
+            // head already runs before any route body, and its design rule is that an omission denies
+            // by default. The omission was the defect.
+            //
+            // `/guifocus` is deliberately NOT here. It reads focus (GetWindowThreadProcessId +
+            // GuiFocusOfThread) and never sets it. Gating an observation behind an authorisation it
+            // does not need would make observation unavailable exactly when acting is forbidden.
         };
 
         // Routes that GRANT injection authority without injecting anything themselves.

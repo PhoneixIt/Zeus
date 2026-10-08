@@ -109,3 +109,29 @@ exist so that the next person cannot widen the audit into something that cries w
 
 The audit keeps reporting exit 1 and names three routes. That is the correct steady state for a known
 gap: visible, counted, and unable to hide a fourth one.
+
+---
+
+## RESOLVED (2026-10-08, M17)
+
+The three routes this ADR was written about are now gated. The decision it proposed - put
+`MayInject()` at the dispatch head - was implemented as the EXISTING central gate rather than as
+per-route checks, because that gate already exists and already runs first:
+
+    if (RequiresPermission(path) && !Guard.MayInject())
+
+`/show`, `/restore` and `/focus` are declared in `InjectionRoutes`. `/guifocus` is deliberately not:
+it reads focus and never sets it, and gating an observation behind an authorisation it does not need
+would make observation unavailable exactly when acting is forbidden.
+
+INVARIANT ENFORCED: no route may change a window's real machine state - minimise, hide, restore, or
+take foreground focus - unless the guard permits injection, which itself fails closed on a latched
+emergency stop, a pending human takeover, and an unhealthy or absent hook.
+
+PROVEN BY: `test/prove-window-gate.mjs` (live, 22 assertions) and `control:audit-routes` exiting 0,
+with the audit's undocumented-breach alarm verified still to fire (exit 2) when a mutating route is
+ungated and undeclared.
+
+The one thing this ADR did not anticipate: `/click-absolute` and the hook's release-region test use
+different screen-coordinate conventions. That is unresolved and is described in
+`docs/safety/known-defects.md`.

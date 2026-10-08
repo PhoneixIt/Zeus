@@ -14,6 +14,11 @@
 
 import { op, sleep } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 let fails = 0
 const check = (c, m, d = '') => {
@@ -24,6 +29,21 @@ const check = (c, m, d = '') => {
 const raw = async (p, opts) => (await op.raw(p, opts ?? {})).body
 
 // ------------------------------------------------------------ establish a takeover
+/**
+ * The release chord, read from the host's own refusal message in the C# source.
+ *
+ * `OperatorHost.cs` builds it as `HumanOnlyRefusal("release", "press Ctrl+Alt+G on the keyboard")`.
+ * Reading that string is what keeps this proof from asserting a chord the system no longer uses.
+ *
+ * It reads the SOURCE rather than asking the running host, because asking the host would compare the
+ * host against itself - which passes for any chord whatsoever, including a wrong one.
+ */
+function releaseChordFromSource() {
+  const src = readFileSync(join(HERE, '..', 'src', 'OperatorHost.cs'), 'utf8')
+  const m = /HumanOnlyRefusal\(\s*"release"\s*,\s*"[^"]*?(Ctrl\+Alt\+[A-Za-z0-9]+)/.exec(src)
+  return m ? m[1] : null
+}
+
 console.log('=== establish a human takeover that must NOT be self-releasable ===')
 // Clear any pending chord flag a previous run left behind, so this run starts from a known
 // state rather than inheriting one. A real chord sets the flag and the next HTTP call applies
@@ -47,7 +67,29 @@ console.log(`   ok=${r1.ok} refused=${JSON.stringify(r1.refused)}`)
 console.log(`   requiredAction=${JSON.stringify(r1.requiredAction)}`)
 check(r1.ok === false, '/release is refused')
 check(/human/i.test(String(r1.refused)), 'and says why in terms of human control')
-check(/Ctrl\+Alt\+F12/.test(String(r1.requiredAction)), 'and names the action the human must take')
+// THE CHORD IS DERIVED FROM THE SOURCE, NOT HARD-CODED HERE.
+//
+// This assertion used to read `/Ctrl\+Alt\+F12/`. The release chord was moved to Ctrl+Alt+G -
+// Hooks.cs records why: "a plain letter, no hardware [modifier conflict]", after F12 was proven
+// unswallowable and leaked to the desktop (Ctrl+Alt+F12 opened Calculator in front of a human).
+//
+// The proof kept asserting the OLD chord, so it was checking a fact about the system that had stopped
+// being true. It failed for the right reason and the right reason was a stale constant, not a defect -
+// which is the failure mode that quietly converts a real control into a decoration.
+//
+// Reading the chord out of OperatorHost.cs means a future chord change cannot rot this line: the
+// assertion follows the system, and a genuine mismatch - the refusal naming a DIFFERENT action than the
+// one the host defines - still fails loudly.
+const releaseChord = releaseChordFromSource()
+check(releaseChord !== null, 'the release chord is discoverable in the host source', String(releaseChord))
+check(
+  String(r1.requiredAction).includes(releaseChord ?? '\u0000'),
+  'and names the action the human must take',
+  `expected ${releaseChord} in ${JSON.stringify(r1.requiredAction)}`,
+)
+check(/keyboard/i.test(String(r1.requiredAction)),
+  'and says it is a keyboard action, so the human knows where to press it',
+  JSON.stringify(r1.requiredAction))
 check(before.takeoverPending === true, 'and reports the takeover still pending in its payload')
 
 console.log('\n=== route 2: POST /release ===')
