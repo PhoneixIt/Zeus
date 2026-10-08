@@ -29,7 +29,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { Tool, ToolContext, ToolResult, Verifier } from '../executor.ts'
-import type { Evidence, Step } from './state.ts'
+import type { Evidence, Step } from '../state.ts'
 
 /**
  * The journal. Every consequential action appends here before it reports success.

@@ -37,10 +37,15 @@ import { compilePlan } from '../planner/compile.ts'
 import { ObjectiveReconciler, observeDirectories, type FreshObservation, type Substitution } from '../planner/reconcile.ts'
 // A structural type with no methods. The supervisor holds an observer in order to ASK it questions
 // about the world; the planner holds only what it was told, and so cannot ask anything itself.
-import type { ObservationProvider, WorldState } from '../observation/world-provider.ts'
-import type { PlanContext, PlanProvider, PlanProposal } from '../planner/plan.ts'
+import type { ObservationProvider } from '../observation/world-provider.ts'
+// WorldState comes from where it is DECLARED AND EXPORTED (observation/world.ts), not from
+// world-provider.ts or plan.ts, which only import it. Importing a type from a module that merely
+// uses it reads as correct and resolves to nothing.
+import type { WorldState } from '../observation/world.ts'
+import type { PlanContext, PlanProposal } from '../planner/plan.ts'
+import type { PlanProvider } from '../planner/provider.ts'
 import type { ExecutionEvent } from './events.ts'
-import type { ControlSurface } from '../../governance/contract.ts'
+import type { ControlSurface } from '../governance/contract.ts'
 import type { Mission } from './state.ts'
 
 /** One attempt at the objective, with everything needed to audit it. */

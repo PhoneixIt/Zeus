@@ -30,6 +30,11 @@
     "model:serve": "python packages/model/local/server.py --port 8792",
     "mission:local": "node --experimental-strip-types --no-warnings packages/mission-engine/live/with-local-model.mjs",
     "mission:local-adversarial": "node --experimental-strip-types --no-warnings packages/mission-engine/live/with-local-model.mjs --only adversarial",
-    "control:proofs": "node packages/control-core/test/run-proof-gate.mjs"
+    "control:proofs": "node packages/control-core/test/run-proof-gate.mjs",
+    "typecheck": "node typecheck-gate.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
   }
 }

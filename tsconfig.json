@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // noUncheckedIndexedAccess is OFF, and the reason matters.
+    //
+    // It is a genuinely good setting for this project and it is eventually the right one: half the
+    // findings here have been "I assumed an array access was defined". Turning it on across 18
+    // milestones of never-checked code produced ~126 additional errors overnight.
+    //
+    // It is off for now because it would conflate two very different things in the baseline - real
+    // defects, and an opt-in strictness improvement applied retroactively. A count that mixes them
+    // cannot be used to judge whether the code is getting safer, which is the only reason to keep a
+    // count at all. The setting is tracked in docs/safety/known-defects.md as accepted debt.
+    "noUncheckedIndexedAccess": false,
+
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "types": ["node"]
+  },
+  "include": ["packages/*/**/*.ts"],
+  "exclude": ["**/node_modules/**", "**/dist/**"]
+}

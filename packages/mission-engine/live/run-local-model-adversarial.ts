@@ -55,7 +55,7 @@ import {
   makeInspectTool, makeInspectVerifier, makeComposeTool, makeComposeVerifier,
   makeWriteTool, makeReadBackTool, makeReadBackVerifier,
 } from './summary-tools.ts'
-import type { Step } from '../../state.ts'
+import type { Step } from '../state.ts'
 
 const PORT = Number(process.env.AIOS_LOCAL_MODEL_PORT ?? 8792)
 const ENDPOINT: ModelEndpoint = { url: `http://127.0.0.1:${PORT}/v1/chat/completions`, model: 'local' }

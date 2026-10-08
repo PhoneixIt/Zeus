@@ -14,7 +14,7 @@
  * input path to reach - and INJECTION CALLS is asserted empty anyway.
  */
 
-import { execute } from '../executor.ts'
+import { execute, type Tool } from '../executor.ts'
 import { summarize } from '../events.ts'
 import {
   liveControl, livePermission, liveVerifier, observeDesktopTool,

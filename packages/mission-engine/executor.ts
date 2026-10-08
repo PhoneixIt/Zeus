@@ -24,14 +24,14 @@
  * The executor holds a `ControlSurface` and cannot do anything with it except call the
  * observation methods and route capability calls. It has no mouse, no keyboard, no
  * SendInput, and no HTTP route to the host. Every input decision belongs to the control core,
- * which refuses on its own evidence (§35: governance enforceable independently of the AI).
+ * which refuses on its own evidence (Â§35: governance enforceable independently of the AI).
  */
 
 import type {
   ControlSurface,
   Permission,
   Observation,
-} from '../../governance/contract.ts'
+} from '../governance/contract.ts'
 import {
   isComplete, tally, isRetryable,
   type Evidence,
@@ -45,7 +45,7 @@ import {
   type StepResult,
 } from './state.ts'
 import type { ExecutionEvent, ExecutionRecord } from './events.ts'
-import { keyFor, type ApprovalStore } from '../governance/approval.ts'
+import { keyFor, type ApprovalStore, type DeclaredEffect } from '../governance/approval.ts'
 
 // ---------------------------------------------------------------- tool contract
 
@@ -459,7 +459,7 @@ export async function execute(
 
   // ---- Observation.
   //
-  // The executor never assumes the world is still as it was; §16 requires re-observation
+  // The executor never assumes the world is still as it was; Â§16 requires re-observation
   // after any interruption. observe() may THROW when the control surface is unavailable, and
   // that must be a safe halt rather than an escaping exception: an executor that crashes when
   // the desktop layer fails has turned a recoverable condition into a mission-killing one,
@@ -843,7 +843,7 @@ export async function execute(
 
       // ---- terminal outcomes that are NOT retried. Retrying "needs human" would burn
       // attempts waiting for a person who is not coming, and retrying a stale plan is
-      // pointless (§16).
+      // pointless (Â§16).
       if (tr.kind === 'needs-human') {
         finalOutcome = { kind: 'needs-human', reason: tr.reason }
         emit({ type: 'human-required', stepId: step.id, reason: tr.reason } as never)
@@ -996,7 +996,7 @@ export async function execute(
   }
 
   // ---- SELF-CHECK. If the executor's own belief disagrees with the completion contract, say
-  // so loudly (§23, §24). Silently reconciling them would hide a defect in the thing that
+  // so loudly (Â§23, Â§24). Silently reconciling them would hide a defect in the thing that
   // decides whether work was done.
   const stepStates = plan.map((s) => ({ ...s, status: 'done' as const, result: results.get(s.id) }))
   if (complete && !isComplete({ ...mission, plan: stepStates })) {

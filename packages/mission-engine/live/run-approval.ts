@@ -34,7 +34,7 @@ import { createJournal, consequentialCapability, seedProbes } from './consequent
 import { fakeControl } from '../test/fakes.ts'
 import { tally } from '../state.ts'
 import type { ControlSurface } from '../../governance/contract.ts'
-import type { Mission, Step } from './state.ts'
+import type { Mission, Step } from '../state.ts'
 
 // ============================================================ the world
 
