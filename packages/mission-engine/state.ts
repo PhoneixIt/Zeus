@@ -59,6 +59,35 @@ export type StepOutcome =
    * state is the defect class this whole engine was built to eliminate.
    */
   | { kind: 'skipped'; reason: string; blockedBy?: string }
+  /**
+   * THE MACHINE MIGHT HAVE CHANGED AND WE CANNOT SAY WHETHER IT DID.
+   *
+   * Added by M16, and it is the most important variant in this union.
+   *
+   * It exists because of one specific sequence:
+   *
+   *     1. the executor records that it is about to act      (durable)
+   *     2. the tool acts                                     (REAL WORLD CHANGES)
+   *     3. the executor records what came back               (FAILS)
+   *
+   * At that point the honest state is "unknown", and the two available answers are both wrong.
+   * Calling it `failed` says the action did not take effect, which is exactly the "failed therefore
+   * safe to retry" assumption that turns a lost record into a duplicated action - a second email, a
+   * second purchase, a second delete. Calling it `verified` is worse: it invents a success.
+   *
+   * So it is neither. `isComplete` does not count it, no retry is permitted, and recovery treats it
+   * as a state requiring fresh observation before anything else happens.
+   */
+  | {
+      kind: 'outcome-unknown'
+      reason: string
+      /** The attempt number whose outcome was lost. */
+      attempt: number
+      /** What was durably known BEFORE the action: the tool, the intent, the operands. */
+      attempted: { tool?: string; intent: string; args?: Readonly<Record<string, unknown>> }
+      /** What could not be recorded, for the reconciliation note. */
+      persistenceError: string
+    }
 
 /**
  * Evidence that something actually happened.
@@ -239,7 +268,13 @@ readonly effect?: DeclaredEffect
    * that something ran. §31 requires the user to be able to see the active tool.
    */
   readonly tool?: string
-  readonly status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+  /**
+   * `uncertain` is NOT `failed`.
+   *
+   * A failed step is a step that is known not to have taken effect, so it may be retried. An uncertain
+   * step may have changed the machine, so it may not - not until somebody has looked.
+   */
+  readonly status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'uncertain'
   readonly result?: StepResult
   /** How many times this step has been attempted. Retries are bounded and counted. */
   readonly attempts?: number
@@ -333,8 +368,35 @@ export function isComplete(m: Mission): boolean {
   if (m.plan.length === 0) return false
   return m.plan.every((s) => {
     if (s.status === 'skipped') return false
+    // Explicit rather than incidental. `outcome-unknown` falls through to false here anyway, because
+    // it is neither `verified` nor `legitimately-empty` - but a completion rule that does not NAME its
+    // most dangerous case is a rule that will be quietly redefined the next time the union grows.
+    if (s.status === 'uncertain') return false
     return s.result?.outcome.kind === 'verified' || s.result?.outcome.kind === 'legitimately-empty'
   })
+}
+
+/**
+ * Whether a step's outcome is safe to RETRY.
+ *
+ * Split out because "is it complete" and "may I try again" are different questions and answering the
+ * second with the first is how a duplicated action happens. `uncertain` is the case that separates
+ * them: not complete, and not retryable either.
+ */
+export function isRetryable(outcome: StepOutcome | undefined): boolean {
+  if (!outcome) return true
+  switch (outcome.kind) {
+    case 'failed': return true
+    case 'outcome-unknown': return false   // the machine may already have changed
+    case 'needs-human': return false
+    case 'replan-required': return false
+    default: return false
+  }
+}
+
+/** Steps whose outcome is unknown, and which therefore require reconciliation before anything else. */
+export function uncertainSteps(m: Mission): readonly Step[] {
+  return m.plan.filter((s) => s.status === 'uncertain' || s.result?.outcome.kind === 'outcome-unknown')
 }
 
 /**

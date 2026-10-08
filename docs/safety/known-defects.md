@@ -533,8 +533,8 @@ is.
 | **Not proven** | that a **live mission** persists anything |
 
 `packages/persistence/` is complete and tested, including against a genuine second OS process.
-`executor.ts` contains no reference to it. So today a crash still loses the history - the store simply
-is not on the path yet.
+**SUPERSEDED by M16**: the executor now takes an optional `config.recorder` and every mission writes
+to the store on the real path. The store is no longer orphaned.
 
 **Why it was not wired in M15.** Doing it means deciding when the executor writes, and that interacts
 with the retry and recovery paths. Doing it hastily would put writes in the one component that must not
@@ -574,3 +574,39 @@ be able to fail quietly. The module is standalone and proven first, which is the
 **Standing, unchanged:** release-after-takeover NOT PROVEN (H1/H2) · P0 mouse sentinel (H4) · **three
 ungated window routes (H5, ADR 0003)** · the 1.5B model cannot plan · controlled decoding manufactures
 false refusals.
+
+
+---
+
+## M16 (2026-10-08) - the executor is durably instrumented; two limits stand
+
+### RESOLVED
+
+`executor.ts` had no reference to the store. It now records, on the real path: the mission header, every
+state transition, a write-ahead intent before each action, each action's outcome, verification evidence
+with provenance, the derived step result, and the mission's ending. 16 controls, **317 total, 0
+failures**.
+
+### Still true, and honestly so
+
+**1. There is no rollback of the machine.** An SQLite transaction makes row writes atomic. It cannot
+make a `ShowWindow`, a browser click, a file write or a process launch atomic. When a record is lost
+after an action, the step is marked `outcome-unknown` and a human - or a fresh observation - resolves
+it. **No code path claims otherwise.**
+
+**2. The recorder is OPTIONAL.** `config.recorder` may be omitted, and every existing caller and test
+does. That was deliberate - it kept 301 green tests untouched - but it means a caller can run a mission
+with no durable history at all. The live harnesses supply it; a future desktop shell must too, and
+there is no control forcing that yet. Recorded rather than papered over.
+
+### New states
+
+`StepOutcome` gains `outcome-unknown`; `Step['status']` gains `uncertain`. `isComplete` names the case
+and returns false. `isRetryable` returns false. `uncertainSteps()` finds them for reconciliation. None
+is a success and none is retryable.
+
+### Standing, unchanged
+
+release-after-takeover NOT PROVEN (H1/H2) · P0 mouse sentinel (H4) · **three ungated window routes
+(H5, ADR 0003)** · browser reproducibility · the 1.5B model cannot plan and should not receive further
+investment unless evidence changes materially.

@@ -235,7 +235,64 @@ read, and a test asserts those words are absent from the DDL.
   a machine that has never run.
 * A database **newer** than this build is detected (`isFutureSchema()`).
 
-### Not yet integrated
+### Integrated (M16)
 
-No live mission writes to the store. The module is proven against a real second OS process, but the
-executor does not call it. Recorded in `known-defects.md` and selected as the next milestone.
+The executor takes an OPTIONAL `config.recorder`. When supplied, every mission writes to the store on
+the real path.
+
+### The ordering, and why it is write-ahead
+
+```
+1. record "about to act"        <- BEFORE the tool runs      (recorder.attemptBegin)
+2. ACT                           <- the machine changes here
+3. record what came back                                  (recorder.attemptOutcome)
+4. verify (an independent read)                                     (executor)
+5. record the evidence + provenance                         (recorder.verified)
+6. record the derived step result                           (recorder.stepResult)
+7. derive mission completion from those durable facts      (isComplete, re-derived)
+```
+
+Step 1 before step 2 is what makes a crash *recoverable* rather than mysterious. A process that dies
+between them leaves a record saying an action was **attempted**, against which operands, by which tool
+— a safe state. Without the write-ahead it would leave a record saying the step never ran, and the only
+sensible response to that is to run it again.
+
+### The rule: a tool failure and a persistence failure are different things
+
+If step 3 fails, the machine may already have changed. The step becomes **`outcome-unknown`** — a new
+`StepOutcome` and a new `Step['status']` of `uncertain`:
+
+* **not** `failed`, because `failed` means "this did not take effect", and that reading is exactly what
+  turns a lost record into a **duplicated action**;
+* **not** `verified`, because that would invent a success;
+* **not retryable** — `isRetryable()` returns false for it, and both retry gates test that rather than
+  the attempt count;
+* carries what was durably known *before* the action (tool, intent, operands) so a person can look at
+  the machine and decide;
+* `isComplete()` names it explicitly and returns false.
+
+A real tool failure — a tool that returned `failed` before acting — is still retried. The two are never
+conflated, and there is a control for each.
+
+### Consistency limits, stated honestly
+
+* An SQLite transaction makes **row writes** atomic. It cannot make a `ShowWindow`, a browser click, a
+  file write or a process launch atomic, and no nesting will change that. There is no shared journal
+  between the database and the machine, so **there is no rollback of the machine** and none is claimed.
+* If `attemptBegin` fails, nothing is attempted — the action is refused. The step is `failed`, and the
+  reason says "no action was taken" so it cannot be misread as a tool failure.
+* If `verified` fails, verification has already happened but cannot be shown later, so the step becomes
+  `outcome-unknown` rather than `verified`. No evidence is invented to fill the gap.
+* If `stepResult` fails, the step becomes `outcome-unknown`. A step the store cannot account for is not
+  a step quietly reported as done.
+* If `missionStarted` fails, **the mission does not start**. Work whose provenance cannot be established
+  is not begun.
+* If `missionTransition` fails, the mission CONTINUES and the gap is reported as a `note`. A transition
+  is an interpretation rather than an action; refusing to stop because the log is unwritable would be a
+  worse failure than the one being logged. The durable record lags, which is what a recovery read is for.
+
+### Still ephemeral, unchanged
+
+Authority to inject · approval validity · the latched emergency stop · the operator's armed state ·
+observation freshness. `missionEnded` records that a mission stopped; **no column exists that could be
+read as "the stop may now be lifted"**.

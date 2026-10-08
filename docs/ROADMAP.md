@@ -615,3 +615,47 @@ to continue as though it were recorded. There is a control for that in M16's sco
 
 H1/H2 release-after-takeover · H4 mouse sentinel · **H5 window routes (ADR 0003)** · G6/G7 on the other
 repository.
+
+
+---
+
+## M16 - EXECUTOR PERSISTENCE: COMPLETE
+
+| # | Capability | Status | Evidence |
+|---|---|---|---|
+| 31a | Mission header, transitions, ending durably recorded | **PROVEN** | 16 controls, real store |
+| 31b | Write-ahead BEFORE the action | **PROVEN** | order asserted: write-ahead precedes outcome |
+| 31c | Lost record after a real action → `outcome-unknown`, never `failed` | **PROVEN** | action happened once, 5 attempts allowed |
+| 31d | An uncertain step is never retried | **PROVEN** | `isRetryable` + both retry gates |
+| 31e | Lost evidence → not a verified step | **PROVEN** | no evidence invented |
+| 31f | Unrecordable mission does not start | **PROVEN** | store stays empty |
+| 31g | Recovery obligations are not consumed by reads | **PROVEN** | identical across three reads |
+| 31h | Machine rollback after a lost record | **NOT PROVEN — IMPOSSIBLE** | no shared journal; documented, not claimed |
+
+### Next milestone: M17 — BROWSER REPRODUCIBILITY
+
+Selected from the evidence, and it is the highest-value gap that is neither blocked on a human decision
+nor already proven.
+
+`operator.mjs` imports `playwright` while `package.json` declares **no dependencies at all**, and the
+Chromium path is hardcoded to `ms-playwright/chromium-1243`. The browser path therefore works on this
+machine by accident of layout: a different build, a different machine, or a fresh clone breaks it.
+
+Scope: declare and pin the dependency; resolve the browser binary rather than hardcoding it; add a
+harness that fails loudly when the browser is unavailable instead of skipping; keep the hierarchy
+Playwright → DOM/accessibility → deterministic actions, with any AI browser adapter strictly optional
+above it.
+
+**Explicitly not in scope:** no AI browser agent as a foundation, no model work. Per instruction, the
+1.5B model receives no further investment unless evidence changes materially — and M13 measured two
+cheap interventions failing, so the evidence has not changed.
+
+### After that
+
+Windows desktop application shell (WinUI 3, chosen in the ecosystem audit) — but only once the
+execution foundation is trustworthy enough to put a window on.
+
+### Still human-blocked
+
+H1/H2 release-after-takeover · H4 mouse sentinel · **H5 window routes (ADR 0003)** · G6/G7 on the other
+repository.

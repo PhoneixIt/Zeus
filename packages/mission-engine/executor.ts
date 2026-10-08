@@ -33,7 +33,7 @@ import type {
   Observation,
 } from '../../governance/contract.ts'
 import {
-  isComplete, tally,
+  isComplete, tally, isRetryable,
   type Evidence,
   type ExecutionMode,
   type HistoryEntry,
@@ -153,6 +153,75 @@ export interface ExecutorConfig {
   readonly emergencyStop: () => Promise<boolean>
   /** Injectable so execution is deterministic in tests. Never a wall-clock read internally. */
   readonly now: () => number
+
+  /**
+   * DURABLE RECORDING (M16). Optional, so every existing caller and test is untouched.
+   *
+   * When supplied, the executor records a write-ahead intent BEFORE each tool call, the tool's
+   * outcome after it, and verification evidence after that. If any of those throws, the executor does
+   * NOT continue as though the event were recorded - see the attemptOutcome call below for the case
+   * that matters, where the machine has already changed.
+   *
+   * Optional rather than required because a recorder that can be forgotten is still better than none,
+   * and because making it mandatory would mean every hand-built Mission in the test suite had to grow
+   * one. The live harnesses supply it.
+   */
+  readonly recorder?: MissionRecorder
+}
+
+/**
+ * The subset of the durable recorder the executor needs.
+ *
+ * Declared here rather than imported so `mission-engine` does not depend on `persistence`. The
+ * dependency runs one way: persistence knows about missions; the mission engine does not know about
+ * storage. The implementation lives in `persistence/recorder.ts`.
+ */
+export interface MissionRecorder {
+  missionStarted(mission: Mission): void
+  missionTransition(missionId: string, from: MissionState, to: MissionState, why: string, at: number): void
+  attemptBegin(e: {
+    missionId: string; stepId: string; attempt: number; tool?: string; intent: string
+    mode: string; args?: Readonly<Record<string, unknown>>; at: number
+  }): void
+  attemptOutcome(e: {
+    missionId: string; stepId: string; attempt: number; ok: boolean
+    summary?: string; reason?: string; durationMs: number; at: number; data?: unknown
+  }): void
+  verified(e: {
+    missionId: string; stepId: string; attempt: number; evidence: Evidence; verifier: string; at: number
+  }): void
+  stepResult(missionId: string, stepId: string, result: StepResult, at: number): void
+  missionEnded(missionId: string, state: MissionState, complete: boolean, at: number): void
+  note(missionId: string, kind: 'recovery' | 'invalidation' | 'note', summary: string, detail?: unknown, at?: number): void
+}
+
+/** A readable name for whichever verifier will judge this step, for provenance. */
+function verifierNameFor(step: Step): string {
+  return `verifier(${step.mode})`
+}
+
+/**
+ * The durable step status implied by an outcome.
+ *
+ * `outcome-unknown` maps to `uncertain`, which is NOT `failed`. This mapping is the second place the
+ * distinction is enforced (the first is the retry gate), and it exists as a named function because a
+ * ternary one line long is exactly the sort of thing that gets "simplified" into dropping the branch.
+ */
+function statusForOutcome(o: StepOutcome): Step['status'] {
+  switch (o.kind) {
+    case 'verified': return 'done'
+    case 'legitimately-empty': return 'done'
+    case 'skipped': return 'skipped'
+    case 'outcome-unknown': return 'uncertain'
+    default: return 'failed'
+  }
+}
+
+/** A short message for any thrown value. Persistence failures arrive as objects, not Errors. */
+function msgOf(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
+  return String(e)
 }
 
 const DEFAULTS: Required<Pick<ExecutorConfig, 'maxAttempts' | 'permission' | 'emergencyStop' | 'now'>> = {
@@ -344,6 +413,48 @@ export async function execute(
   const transition = (from: MissionState, to: MissionState, reason: string, stepId: string | null = null) => {
     emit({ type: 'state-transition', stepId, from, to, reason } as never)
     missionState = to
+    // A transition that could not be recorded is reported, not hidden.
+    //
+    // It does NOT abort the mission: a transition is an INTERPRETATION of what happened, not an action
+    // on the machine, and refusing to stop because the log is unwritable would be a worse failure than
+    // the one being logged. The consequence is that the durable record lags - which is exactly what a
+    // recovery read is for.
+    if (cfg.recorder) {
+      try {
+        cfg.recorder.missionTransition(mission.id, from, to, reason, cfg.now())
+      } catch (e) {
+        emit({
+          type: 'note', stepId: stepId ?? '(mission)',
+          text: `a state transition could not be recorded durably (${msgOf(e)})`,
+        } as never)
+      }
+    }
+  }
+
+  // ---- The mission header, recorded before anything else.
+  //
+  // If THIS fails the mission does not start. A mission whose objective and proposal identity are not
+  // on disk cannot be recovered, audited or explained, and starting it anyway would produce work whose
+  // provenance nobody could establish.
+  //
+  // Placed here, after the digest check, because a mission that is not the reviewed plan has no business
+  // writing a durable record of itself.
+  if (cfg.recorder) {
+    try {
+      cfg.recorder.missionStarted(mission)
+    } catch (e) {
+      const reason =
+        `the mission was not started: it could not be recorded durably (${msgOf(e)}). No action was taken.`
+      emit({ type: 'step-refused', seq: 0, at: 0, missionId: mission.id, stepId: '(mission)', reason } as never)
+      return {
+        mission,
+        record: {
+          missionId: mission.id, events, startedAt: t0, finishedAt: cfg.now(),
+          finalState: 'failed', complete: false, verified: {},
+        } as never,
+        events,
+      }
+    }
   }
 
   // ---- Observation.
@@ -608,6 +719,9 @@ export async function execute(
     // see it at the record site.
     let toolData: unknown
 
+    // Hoisted OUT of the retry loop, because the durable result written after the loop needs it and
+    // an earlier version referenced the loop-local `startedAt`, which was not in scope there.
+    const stepStartedAt = cfg.now()
     while (attempt < maxAttempts) {
       attempt++
       if (signal?.aborted || (await cfg.emergencyStop())) { halted = { cause: signal?.aborted ? 'cancelled' : 'emergency-stop', reason: 'halted mid-step', stepId: step.id }; break }
@@ -646,6 +760,33 @@ export async function execute(
         dependenciesSatisfied: depsOf,
       } as never)
 
+      // ---- WRITE-AHEAD (M16). Recorded BEFORE the tool runs.
+      //
+      // If the process dies between here and the outcome, the durable record says an action was
+      // ATTEMPTED, against which operands, by which tool - which is a recoverable state. Without it a
+      // crash during the tool call leaves a record saying the step never ran, and the only sensible
+      // response to that is to run it again.
+      //
+      // If this write fails, nothing has happened yet, so `failed` is honest - but it is a failure of
+      // the RECORD, not of the tool, and the reason says so. Nothing is retried blindly.
+      const rec = cfg.recorder
+      if (rec) {
+        try {
+          rec.attemptBegin({
+            missionId: mission.id, stepId: step.id, attempt,
+            tool: resolution.tool.name, intent: step.intent, mode: step.mode,
+            args: step.args, at: cfg.now(),
+          })
+        } catch (e) {
+          finalOutcome = {
+            kind: 'failed',
+            reason: `refused to act: the attempt could not be durably recorded first (${msgOf(e)}). No action was taken.`,
+          }
+          emit({ type: 'step-refused', stepId: step.id, reason: finalOutcome.reason } as never)
+          break
+        }
+      }
+
       let tr: ToolResult
       try {
         // The step's own operands, not a hardcoded empty object. See Step.args: without this a
@@ -653,6 +794,37 @@ export async function execute(
         tr = await resolution.tool.run(ctx, step.args ?? {})
       } catch (e) {
         tr = { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
+      }
+
+      // ---- THE MACHINE HAS NOW BEEN ACTED ON. Recording the outcome is therefore different in kind
+      // from every other durable write in this function.
+      //
+      // If THIS throws, we do not know whether the tool changed anything. `failed` would assert that
+      // it did not, and the retry loop would then repeat a real-world action - a second email, a
+      // second purchase, a second delete. So the step becomes `outcome-unknown`: not complete, not
+      // retryable, and requiring fresh observation before anything else happens.
+      if (rec) {
+        try {
+          rec.attemptOutcome({
+            missionId: mission.id, stepId: step.id, attempt,
+            ok: tr.kind === 'data',
+            summary: tr.kind === 'data' ? tr.summary : undefined,
+            reason: tr.kind === 'data' ? undefined : tr.reason,
+            durationMs: cfg.now() - startedAt, at: cfg.now(), data: toolData,
+          })
+        } catch (e) {
+          finalOutcome = {
+            kind: 'outcome-unknown',
+            reason:
+              'the tool acted and the record of what it returned could not be written. The machine may ' +
+              'have changed; this is NOT a failure and must NOT be retried until it has been looked at.',
+            attempt,
+            attempted: { tool: resolution.tool.name, intent: step.intent, args: step.args },
+            persistenceError: msgOf(e),
+          }
+          emit({ type: 'step-refused', stepId: step.id, reason: finalOutcome.reason } as never)
+          break
+        }
       }
 
       // Retained so later steps can consume it through `ctx.prior`, and so the audit keeps what
@@ -694,7 +866,10 @@ export async function execute(
       if (tr.kind === 'failed') {
         lastFailure = tr.reason
         finalOutcome = { kind: 'failed', reason: tr.reason }
-        if (attempt < maxAttempts) continue
+        // `isRetryable` rather than `attempt < maxAttempts`. A tool that returned `failed` did not
+        // change the machine, so retrying is sound. An `outcome-unknown` step MAY have changed it, and
+        // the loop must never reach that case.
+        if (attempt < maxAttempts && isRetryable(finalOutcome)) continue
         emit({ type: 'retry-exhausted', stepId: step.id, attempts: attempt, lastOutcome: finalOutcome } as never)
         break
       }
@@ -718,6 +893,33 @@ export async function execute(
       }
 
       const accepted = 'evidence' in verdict
+      // ---- DURABLE EVIDENCE, with its provenance.
+      //
+      // The verification has already HAPPENED - it is a read, not an action - so losing the record of
+      // it does not put the machine in an unknown state. But it does mean nobody can later show that
+      // this step was verified, so the step cannot be claimed complete: it becomes `outcome-unknown`
+      // rather than `verified`. An unverifiable-in-retrospect step is not a verified step.
+      if (rec) {
+        try {
+          rec.verified({
+            missionId: mission.id, stepId: step.id, attempt,
+            evidence: verdict.evidence, verifier: verifierNameFor(step), at: cfg.now(),
+          })
+        } catch (e) {
+          finalOutcome = {
+            kind: 'outcome-unknown',
+            reason:
+              'the action was performed and independently verified, but the evidence could not be ' +
+              'recorded. It cannot be claimed complete, because nobody can show it later.',
+            attempt,
+            attempted: { tool: resolution.tool.name, intent: step.intent, args: step.args },
+            persistenceError: msgOf(e),
+          }
+          emit({ type: 'step-refused', stepId: step.id, reason: finalOutcome.reason } as never)
+          break
+        }
+      }
+
       emit({
         type: 'evidence-verified',
         stepId: step.id,
@@ -735,12 +937,40 @@ export async function execute(
       // A tool that claims success and cannot show it is a FAILURE, not a near miss.
       lastFailure = `tool reported data but verification rejected it: ${verdict.rejected}`
       finalOutcome = { kind: 'failed', reason: lastFailure }
-      if (attempt < maxAttempts) continue
+      if (attempt < maxAttempts && isRetryable(finalOutcome)) continue
       emit({ type: 'retry-exhausted', stepId: step.id, attempts: attempt, lastOutcome: finalOutcome } as never)
     }
 
     if (halted) break
     if (finalOutcome) {
+      // ---- THE DERIVED RESULT, made durable.
+      //
+      // Derived AFTER the fact from facts already recorded, in the order the brief specifies. If this
+      // write fails, the step becomes `outcome-unknown`: a step whose result the store does not hold
+      // is a step nobody can account for, and accounting for every step is the store's whole purpose.
+      // It is emphatically NOT `failed` - the work may have been done perfectly.
+      // `cfg.recorder` rather than the loop-local `rec`, which is not in scope out here.
+      if (cfg.recorder) {
+        const rec = cfg.recorder
+        const dur: StepResult = { id: step.id, outcome: finalOutcome, durationMs: cfg.now() - stepStartedAt, output: toolData }
+        try {
+          rec.stepResult(mission.id, step.id, dur, cfg.now())
+        } catch (e) {
+          finalOutcome = {
+            kind: 'outcome-unknown',
+            reason: 'the step finished but its result could not be recorded, so it cannot be accounted for and must not be retried.',
+            attempt,
+            attempted: { tool: step.tool, intent: step.intent, args: step.args },
+            persistenceError: msgOf(e),
+          }
+          // The note is best-effort BY DESIGN and this is the one place a failure is swallowed: the
+          // store has just refused a write, so a second write is very likely to fail too. The
+          // uncertainty is already in the returned outcome, which is where a caller will look.
+          try {
+            rec.note(mission.id, 'recovery', `step ${step.id}: result could not be recorded (${msgOf(e)})`)
+          } catch { /* the store is already refusing writes; the outcome above carries it */ }
+        }
+      }
       recordResult(step.id, finalOutcome, cfg.now(), { output: toolData })
     }
   }
@@ -756,6 +986,10 @@ export async function execute(
     emit({ type: 'execution-halted', reason: halted.reason, cause: halted.cause, stepId: halted.stepId } as never)
     const st: MissionState = halted.cause === 'emergency-stop' ? 'abandoned' : halted.cause === 'cancelled' ? 'abandoned' : 'failed'
     transition(missionState, st, halted.reason, halted.stepId)
+    // A latched emergency stop is EPHEMERAL and stays authoritative. Recording that the mission
+    // stopped is fine; recording anything readable as "the stop may now be lifted" would not be,
+    // and no such column exists in the schema.
+    try { cfg.recorder?.missionEnded(mission.id, st, false, cfg.now()) } catch { /* the record lags; the stop is what matters */ }
     emit({ type: 'mission-finished', state: st, complete: false, ...c, durationMs: cfg.now() - t0 } as never)
     const m = finalMission(st, plan, results, history, mission)
     return { mission: m, record: recordOf(m, events, verifiedEvidence, t0, cfg.now()), events }
@@ -783,6 +1017,16 @@ export async function execute(
   transition(missionState, st, why)
   emit({ type: 'mission-finished', state: st, complete, ...c, durationMs: cfg.now() - t0 } as never)
 
+  // The terminal state, durably. Reported rather than swallowed when it fails, because a mission that
+  // cannot record its own ending is the case where a reader is most likely to be misled.
+  if (cfg.recorder) {
+    try {
+      cfg.recorder.missionEnded(mission.id, st, complete, cfg.now())
+    } catch (e) {
+      emit({ type: 'note', stepId: '(mission)', text: `the mission's ending could not be recorded (${msgOf(e)})` } as never)
+    }
+  }
+
   const m = finalMission(st, plan, results, history, mission)
   return { mission: m, record: recordOf(m, events, verifiedEvidence, t0, cfg.now()), events }
 }
@@ -801,7 +1045,7 @@ function finalMission(
       const r = results.get(s.id)
       return {
         ...s,
-        status: !r ? 'pending' : r.outcome.kind === 'verified' || r.outcome.kind === 'legitimately-empty' ? 'done' : r.outcome.kind === 'skipped' ? 'skipped' : r.outcome.kind === 'failed' ? 'failed' : 'pending',
+        status: !r ? 'pending' : statusForOutcome(r.outcome),
         result: r,
         attempts: r ? 1 : 0,
       } as Step

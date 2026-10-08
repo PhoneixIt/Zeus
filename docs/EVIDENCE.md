@@ -1210,3 +1210,66 @@ pushed, no remote, no paid service.
 
 **No live mission writes to the store.** `executor.ts` has no reference to it. The store is proven in
 isolation; it is not yet on the mission path. Recorded as a known defect and selected as M16.
+
+
+---
+
+## M16 - THE EXECUTOR, INSTRUMENTED (2026-10-08)
+
+M15 proved a store nothing wrote to. M16 puts it on the real path: the real `execute()`, the real
+`DurableStore` on a real file, a real `StoreRecorder`. Only the tool (a fake world with a recorded
+`acted` list), the verifier, and the transition at which the store is told to refuse are injected.
+
+### The central rule, and its control
+
+> A TOOL FAILURE AND A PERSISTENCE FAILURE ARE DIFFERENT THINGS.
+
+| Injected failure | What the machine did | What the step became | Action repeated? |
+|---|---|---|---|
+| `attemptBegin` | **nothing** | `failed`, reason says "no action was taken" | no |
+| `attemptOutcome` | **changed** | **`outcome-unknown`** | **no**, with 5 attempts allowed |
+| `verified` | changed | `outcome-unknown` ("cannot be claimed complete") | no |
+| `stepResult` | changed | `outcome-unknown` | no |
+| `missionStarted` | **nothing** | mission does not start | no |
+| tool returns `failed` before acting | nothing | `failed` | **yes, 3 times** - correctly |
+
+The `attemptOutcome` row is the one the milestone exists for: with five attempts permitted the action
+happens **once**. A control asserts `world.acted.length === 1`, because "failed, therefore safe to
+retry" is the exact bug that turns a lost record into a second email, a second purchase or a second
+delete.
+
+### Restart, at each point
+
+* **during a step** - the write-ahead landed, so the record says an action was ATTEMPTED and the step is
+  `uncertain` (not `pending`, which would claim nothing was tried)
+* **after execution, before the result** - obligations demand re-observation; the permit carries no
+  permission member
+* **after the result, before verification** - no evidence recorded, so nothing claims verification, and
+  the step is `uncertain` rather than `failed` because the action may have succeeded
+* **repeated recovery reads** - obligations are IDENTICAL across three reads. A permit that consumed
+  its obligations would let a caller loop until it received an empty one, and an empty permit is a
+  permission.
+
+### Defects found in M16, all in my own code
+
+1. **A patch aborted on a failed assertion AFTER mutating in memory but BEFORE writing** - so the
+   `transition` recorder hook and the `missionStarted` call were silently lost. Nothing complained; 12
+   tests failed with an empty store and a world nothing had touched. Caught by grepping for the call
+   after the suite was green-ish, not by the tests.
+2. **`finalMission` had no mapping for `outcome-unknown`**, so every uncertain step was reported
+   `pending` - losing the distinction at exactly the point it was introduced. Extracted as
+   `statusForOutcome()` so a long ternary could not quietly drop the branch.
+3. **`startedAt` was loop-scoped** but needed by the post-loop durable write.
+4. A test read history from a store it had just closed - the control died with "database is not open"
+   instead of testing anything.
+5. The test harness passed a flat `{ router, permission, emergencyStop }` instead of the real
+   `{ tools, verifier, control, config }`, reported as `Cannot read properties of undefined (reading
+   'preflight')`.
+6. A control asserted `pending` where the honest state was `uncertain`, because the write-ahead had
+   succeeded. **The control was wrong, not the code.**
+
+### Safety evidence preserved
+
+317 unit tests, 0 failures (301 + 16) · 90 grammar controls · route audit exits 1 with the three
+documented window gaps (H5/ADR 0003), unchanged · `control-core/src/*.cs` byte-identical, 0 changed ·
+nothing pushed, no remote, no paid service, no model or runtime change.
