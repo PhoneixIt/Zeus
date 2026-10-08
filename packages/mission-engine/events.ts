@@ -295,9 +295,19 @@ export function summarize(r: ExecutionRecord): ExecutionSummary {
     .concat(pick((e) => e.type === 'retry-exhausted'))
     .map((e) => {
       if (e.type === 'retry-exhausted') {
-        return { stepId: e.stepId, reason: `retries exhausted after ${e.attempts}: ${e.lastOutcome.reason ?? e.lastOutcome.kind}` }
+        // `lastOutcome` is a `StepOutcome`; `reason` exists only on SOME arms. `verified` carries
+        // evidence instead, and printing `undefined` there reads as a blank rather than a gap.
+        // Narrowing is the fix - not a fallback string, which would hide the shape difference.
+        const o = e.lastOutcome
+        const why = 'reason' in o ? o.reason : `outcome was ${o.kind}`
+        return { stepId: e.stepId, reason: `retries exhausted after ${e.attempts}: ${why}` }
       }
-      return { stepId: (e as { stepId: string }).stepId, reason: e.summary }
+      // `pick` returns a broad union of events, so `summary` is not present on all of them.
+      // This branch is reached only for `tool-returned`, which does carry it.
+      // Reached only for `tool-returned`, which does carry `stepId` and `summary`. The cast says so
+      // explicitly rather than letting the compiler read `stepId` off a union it does not have it on.
+      const t = e as { stepId: string; summary?: string }
+      return { stepId: t.stepId, reason: t.summary ?? '(no summary recorded)' }
     })
 
   return {

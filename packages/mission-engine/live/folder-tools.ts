@@ -123,8 +123,11 @@ export const inspectFolderTool: Tool = {
         kind: 'replan-required',
         reason: `the folder this step was told to list is gone: ${observed}`,
         invalidation: { reason: 'environment-changed', detail: observed },
+        // No `summary` here. The `replan-required` variant carries `observed`, and the two said the
+        // same thing - which is why the duplicate was never noticed: nothing read `summary` here.
+        // A second field restating the first is two places to update and one more way for a record
+        // to disagree with itself.
         observed,
-        summary: observed,
       }
     }
 

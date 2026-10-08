@@ -27,6 +27,8 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { ToolContext } from '../executor.ts'
+import type { Evidence } from '../state.ts'
 import { execute } from '../executor.ts'
 import { ApprovalStore, keyFor, type DeclaredEffect } from '../../governance/approval.ts'
 import { ToolRegistry } from '../../tool-router/router.ts'
@@ -120,7 +122,7 @@ const confirmVerifier = {
 }
 const composed = {
   verifies: (s: Step) => s.id === 'confirm-target' ? confirmVerifier.verifies(s) : deleteVerifier.verifies(s),
-  async verify(s: Step, c: unknown, d: unknown) {
+  async verify(s: Step, c: ToolContext, d: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
     return s.id === 'confirm-target' ? confirmVerifier.verify(s, c, d) : deleteVerifier.verify(s, c, d)
   },
 }
@@ -140,7 +142,7 @@ const fullRegistry = new ToolRegistry({ registrations: [{ tool: confirmTool }, {
 function verifierSuppressing(stepId: string) {
   return {
     verifies: (s: Step) => s.id !== stepId && composed.verifies(s),
-    async verify(s: Step, c: unknown, d: unknown) {
+    async verify(s: Step, c: ToolContext, d: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
       if (s.id === stepId) return { rejected: `verification suppressed for "${stepId}" by this control` }
       return composed.verify(s, c, d)
     },

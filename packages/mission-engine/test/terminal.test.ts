@@ -4,21 +4,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { makeTerminalTool, makeTerminalVerifier, registerTerminal, type ProcessRecord } from '../live/terminal-mode.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { buildAllowlist, classify, insideWorkspace, buildEnv, ENV_ALLOWLIST, REFUSED_PROGRAMS } from '../live/terminal-policy.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry } from '../../tool-router/router.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { execute } from '../executor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ApprovalStore, keyFor, type DeclaredEffect } from '../../governance/approval.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { fakeControl } from './fakes.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { Mission, Step } from '../state.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { ControlSurface } from '../../governance/contract.ts'
 
 /**

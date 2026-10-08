@@ -441,7 +441,7 @@ export async function runMission(objective: string, planCtx: PlanContext, deps: 
   }
 
   return {
-    ok: false, attempts, substitutions, freshObservation,
+    ok: false, attempts, substitutions, freshObservation, stepOutcomes,
     stopReason: `recovery did not converge within ${maxAttempts} attempts; refusing to keep trying`,
   }
 }

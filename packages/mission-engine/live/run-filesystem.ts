@@ -14,6 +14,7 @@
  * input path to reach - and INJECTION CALLS is asserted empty anyway.
  */
 
+import type { Evidence } from '../state.ts'
 import { execute, type Tool } from '../executor.ts'
 import { summarize } from '../events.ts'
 import {
@@ -96,8 +97,8 @@ const fsVerifier = filesystemVerifier()
 
 /** Routes by mode, so the filesystem step is checked by the filesystem verifier. */
 const routed = {
-  verifies: (s: { mode?: string }) => (s.mode === 'filesystem' ? fsVerifier.verifies(s as never) : cliVerifier.verifies(s as never)),
-  async verify(step: { mode?: string }, ctx: Parameters<typeof cliVerifier.verify>[1], data: unknown) {
+  verifies: (s: { mode?: string }) => (s.mode === 'filesystem' ? fsVerifier.verifies(s as never) : cliVerifier.verifies()),
+  async verify(step: { mode?: string }, ctx: Parameters<typeof cliVerifier.verify>[1], data: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
     return step.mode === 'filesystem' ? fsVerifier.verify(step as never, ctx, data) : cliVerifier.verify(step as never, ctx, data)
   },
 }

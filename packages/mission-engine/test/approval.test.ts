@@ -3,19 +3,12 @@ import test from 'node:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ApprovalStore, effectKey, keyFor, type DeclaredEffect } from '../../governance/approval.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { execute } from '../executor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry } from '../../tool-router/router.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { createJournal, consequentialCapability, seedProbes } from '../live/consequential-tools.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { fakeControl } from './fakes.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { Mission, Step } from '../state.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { ControlSurface } from '../../governance/contract.ts'
 
 /**

@@ -4,35 +4,20 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync,
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { digestOf, samePlan, canonicalise, unrecognisedFields, authorityLookingFields } from '../../review/digest.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { amend, amendAll, describe as describeAmendment, type Amendment } from '../../review/amend.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { diffPlans, summarise, consequentialChanges } from '../../review/diff.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { dryRun } from '../../review/dry-run.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { beginReview, applyAmendment, preview, commit, isAmended, changesFromOriginal, materialChanges } from '../../review/session.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { renderProposal, renderChanges, renderDryRun, renderHeader } from '../../review/render.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { execute } from '../executor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry, EmptyRegistry } from '../../tool-router/router.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { LocalObservationProvider } from '../../observation/local.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicWorldAwarePlanProvider } from '../../planner/world-aware.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ApprovalStore } from '../../governance/approval.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { fakeControl } from './fakes.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { ControlSurface } from '../../governance/contract.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { PlanContext, PlanProposal, PlanStep } from '../../planner/plan.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { Mission } from '../state.ts'
 
 /**

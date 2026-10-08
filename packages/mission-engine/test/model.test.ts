@@ -28,7 +28,11 @@ import { fileURLToPath } from 'node:url'
 import { parseModelPlan, toProposal, TRANSPORT_NORMALISATIONS } from '../../model/parse.ts'
 import { ModelPlanProvider, buildRequest, observedFacts } from '../../model/provider.ts'
 import { SYSTEM_INSTRUCTIONS, buildExample } from '../../model/protocol.ts'
-import { CAPABILITIES, type PlanContext, type WorldState } from '../../planner/plan.ts'
+import { CAPABILITIES, type PlanContext } from '../../planner/plan.ts'
+// WorldState is declared and exported by observation/world.ts. plan.ts imports it and does not
+// re-export it, so importing it from there resolves to nothing - the same mistake made twice now,
+// in product code and then in a test.
+import type { WorldState } from '../../observation/world.ts'
 import { compilePlan } from '../../planner/compile.ts'
 import { digestOf, authorityLookingFields } from '../../review/digest.ts'
 import { beginReview, commit } from '../../review/session.ts'
@@ -673,7 +677,7 @@ test('the provider\'s CODE - not its prose - references no approval, control sur
 test('the router refuses an unknown capability, and an unknown tool, independently of the parser', async () => {
   // A tool that is registered but serves nothing is enough: an empty registry refuses everything,
   // which is the discriminating case.
-  const noop: Tool = { name: 'noop', mode: 'filesystem', async run() { return { kind: 'data', data: {} } } }
+  const noop: Tool = { name: 'noop', mode: 'filesystem', async run() { return { kind: 'data', data: {}, summary: 'nothing; this tool does nothing' } } }
   const reg = new ToolRegistry({ registrations: [{ tool: noop, capabilities: ['filesystem.inspect'] }] })
 
   assert.ok('unavailable' in reg.resolveCapability('filesystem.telepathy'))
@@ -690,7 +694,8 @@ test('a model naming a registered tool with the WRONG capability is a plan defec
   // The peer could satisfy the parser by naming any string as a tool. The router is what notices the
   // step asks for one thing and names another.
   const readOnly: Tool = {
-    name: 'read-only', mode: 'filesystem', async run() { return { kind: 'data', data: {} } },
+    name: 'read-only', mode: 'filesystem',
+    async run() { return { kind: 'data', data: {}, summary: 'nothing; this tool does nothing' } },
   }
   const reg = new ToolRegistry({ registrations: [{ tool: readOnly, capabilities: ['filesystem.read'] }] })
   const byCap = reg.resolveCapability('filesystem.read')

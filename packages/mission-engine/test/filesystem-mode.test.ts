@@ -3,11 +3,8 @@ import test from 'node:test'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { tmpdir } from 'node:os'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { execute, type Tool, type Verifier } from '../executor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { Mission, Step } from '../state.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { fakeControl } from './fakes.ts'
 
 /** Defined locally rather than imported: executor.test.ts keeps its builders private. */

@@ -103,7 +103,20 @@ export interface ControlSurface {
   type(t: TargetIdentity, text: string): Promise<InputResult>
   pressKey(t: TargetIdentity, vk: string, modifiers?: string[]): Promise<InputResult>
 
-  permission(): Promise<Permission>
+  // NOT HERE, DELIBERATELY.
+  //
+  // This interface used to require `permission(): Promise<Permission>`. Nothing ever called it - the
+  // executor reads permission from its own configuration (`cfg.permission()`), never from the surface
+  // it is about to drive - so it was pure cost: every implementer had to supply a method the design
+  // forbids.
+  //
+  // And it was not merely dead. A permission query ON THE CONTROL SURFACE is precisely the wrong
+  // shape: it invites a caller to ask a surface whether input is safe, which makes the surface both
+  // the thing being governed and the thing vouching for the governance. The comment above
+  // `livePermission` says so in as many words - "asking the CONTROL SURFACE for permission would let
+  // a caller ask a surface to bless itself" - and the interface contradicted it.
+  //
+  // Removing it takes an unsafe affordance away. It grants nothing.
 }
 
 export interface Point { x: number; y: number }

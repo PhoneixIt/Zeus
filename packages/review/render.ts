@@ -81,7 +81,7 @@ export function renderProposal(p: PlanProposal, digest: string): string {
     L.push(`         touches     ${describeTouches(s)}`)
     if (s.effect) {
       L.push(`         EFFECT      ${s.effect.kind} on ${s.effect.target}`)
-      L.push(`                    ${s.effect.reversible === false || s.effect.irreversible ? 'IRREVERSIBLE - needs authorisation' : 'needs authorisation'}`)
+      L.push(`                    ${s.effect.irreversible ? 'IRREVERSIBLE - needs authorisation' : 'needs authorisation'}`)
     } else {
       L.push(`         EFFECT      none declared`)
     }
@@ -181,7 +181,10 @@ export function renderDryRun(r: DryRunReport): string {
 
 /** The one-line header a caller prints before the detail. */
 export function renderHeader(p: PlanProposal, digest: string, isAmended: boolean): string {
-  const consequence = p.steps.filter((s: Step) => (s as { effect?: unknown }).effect).length
+  // `PlanStep.effect` is declared now, so the cast is not needed. It also was not doing what it
+  // looked like: it narrowed the array element to `Step`, which is a DIFFERENT and larger type, so
+  // the predicate was being checked against a shape the array never contained.
+  const consequence = p.steps.filter((s) => s.effect !== undefined).length
   return [
     `  proposal ${digest}${isAmended ? '  (AMENDED)' : ''}`,
     `  objective   ${p.objective}`,

@@ -13,8 +13,8 @@ import type {
   ControlSurface, Observation, Permission, Point,
   ScreenRegion, TargetIdentity, TargetVerification, InputResult, WindowInfo,
 } from '../../governance/contract.ts'
-import type { Evidence, Step } from './state.ts'
-import type { Tool, ToolContext, ToolResult, ToolRouter, Verifier } from './executor.ts'
+import type { Evidence, Step } from '../state.ts'
+import type { Tool, ToolContext, ToolResult, ToolRouter, Verifier } from '../executor.ts'
 
 // ---------------------------------------------------------------- fake control
 
@@ -69,7 +69,6 @@ export function fakeControl(opts: FakeControlOptions = {}): ControlSurface & { c
     scroll: async () => refuse('scroll'),
     type: async () => refuse('type'),
     pressKey: async () => refuse('pressKey'),
-    permission: async () => { calls.push('permission'); return permission },
   }
 }
 

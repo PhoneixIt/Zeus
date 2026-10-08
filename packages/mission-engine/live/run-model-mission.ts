@@ -186,7 +186,11 @@ function makeTallyVerifier(workspace: string) {
       const rec = toolData as { exitCode: number | null } | undefined
       if (!rec) return { rejected: 'no process record, so nothing to verify' }
       if (rec.exitCode !== 0) return { rejected: `the process exited with ${rec.exitCode}` }
-      const argv = ((s.args as { argv?: unknown } | undefined)?.argv ?? []).map(String)
+      // `argv` arrives as `unknown`, so `?? []` is not enough: the empty array only covers a nullish
+      // value, and a NON-array would still reach `.map`. An array check is the honest narrowing - a
+      // step whose argv is not a list has no argv, and saying so beats coercing it.
+      const rawArgv = (s.args as { argv?: unknown } | undefined)?.argv
+      const argv = Array.isArray(rawArgv) ? rawArgv.map(String) : []
       const reportPath = argv[1] ?? ''
       if (!reportPath) return { rejected: 'the step names no report path to check' }
       if (!existsSync(reportPath)) {
@@ -330,8 +334,7 @@ const run = await execute(committed.mission, {
   verifier: verifierFor(world, OUT) as never,
   control: fakeControl() as ControlSurface,
   config: CONFIG,
-  reviewedProposalDigest: committed.reviewedDigest,
-})
+ }, { reviewedProposalDigest: committed.reviewedDigest })
 const t = tally(run.mission)
 
 console.log('')
@@ -450,8 +453,7 @@ async function runScenario(scenario: string) {
     verifier: verifierFor(world, out) as never,
     control: fakeControl() as ControlSurface,
     config: CONFIG,
-    reviewedProposalDigest: c.reviewedDigest,
-  })
+   }, { reviewedProposalDigest: c.reviewedDigest })
   const refused = r.events.filter((e) => e.type === 'step-refused').length
   const approval = r.events.filter((e) => e.type === 'approval-required').length
   const satisfied = r.events.filter((e) => e.type === 'approval-satisfied').length
@@ -688,8 +690,7 @@ const got = (name: string) => verdicts.find((v) => v.scenario === name)
         } as never,
         control: fakeControl() as ControlSurface,
         config: CONFIG,
-        reviewedProposalDigest: c2.reviewedDigest,
-      })
+       }, { reviewedProposalDigest: c2.reviewedDigest })
       console.log(`         verifiers suppressed      complete=${suppressed.record.complete}  <- must be false`)
       const suppressedOutcomes = suppressed.mission.plan.map((s) => `${s.id}=${s.result?.outcome.kind ?? 'did-not-run'}`)
       console.log(`         outcomes                   ${suppressedOutcomes.join(' ')}`)
@@ -729,8 +730,7 @@ const got = (name: string) => verdicts.find((v) => v.scenario === name)
             verifier: verifierFor(world, reverifyOut) as never,
             control: fakeControl() as ControlSurface,
             config: CONFIG,
-            reviewedProposalDigest: c3.reviewedDigest,
-          })
+           }, { reviewedProposalDigest: c3.reviewedDigest })
           console.log(`         same plan, real verifiers  complete=${reverified.record.complete}  <- must be true`)
           check(reverified.record.complete === true,
             'CONTROL 9: and the SAME plan completes when the verifiers are real - so suppression is what changed the answer')

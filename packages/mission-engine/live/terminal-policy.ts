@@ -148,7 +148,8 @@ function rejectTraversal(arg: string): string | undefined {
  * must not be able to decide what is permitted. So the data sits in a module with no behaviour, the
  * policy imports it, and the observer imports only that.
  */
-import { REFUSED_PROGRAMS } from '../../observation/allowlist-view.ts'
+import { REFUSED_PROGRAMS, REFUSED_BY_NAME } from '../../observation/allowlist-view.ts'
+
 
 /**
  * The same table, re-exported for callers that already import this module.
@@ -322,7 +323,7 @@ export function buildAllowlist(systemRoot: string, programFiles: string): readon
     { abs: `${programFiles}\\Git\\cmd\\git.exe`, name: 'git.exe', classify: classifyGit },
     // Present only to be explained. Listed so the refusal has a reason to give, and so the
     // ordering test can prove REFUSED_PROGRAMS is consulted BEFORE this list.
-    { abs: `${systemRoot}\\System32\\cmd.exe`, name: 'cmd.exe', classify: () => block(REFUSED_PROGRAMS['cmd.exe']) },
+    { abs: `${systemRoot}\\System32\\cmd.exe`, name: 'cmd.exe', classify: () => block(REFUSED_BY_NAME['cmd.exe']) },
   ]
 }
 
@@ -339,7 +340,7 @@ export function classify(
   ctx: PolicyContext,
 ): Verdict {
   const base = absExe.split(/[\\/]/).pop() ?? absExe
-  const refusal = REFUSED_PROGRAMS[base.toLowerCase()]
+  const refusal = REFUSED_BY_NAME[base.toLowerCase()]
   if (refusal) {
     return block(`refused: "${base}" is not permitted - ${refusal}`)
   }

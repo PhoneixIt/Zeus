@@ -30,6 +30,7 @@
  */
 
 import { connect } from '../../control-core/operator-client.mjs'
+import type { Evidence } from '../state.ts'
 import { execute } from '../executor.ts'
 import { summarize } from '../events.ts'
 import { liveControl, livePermission, liveVerifier, observeDesktopTool } from './live-control.ts'
@@ -111,8 +112,8 @@ const cliVerifier = liveVerifier()
 function routed(expectInjection: boolean, baselineOperatorEvents: number, claimedActor?: string) {
   const gui = guiVerifier(client, { expectInjection, claimedActor, baselineOperatorEvents })
   return {
-    verifies: (s: { mode?: string }) => (s.mode === 'gui' ? gui.verifies(s as never) : cliVerifier.verifies(s as never)),
-    async verify(step: { mode?: string }, ctx: Parameters<typeof cliVerifier.verify>[1], data: unknown) {
+    verifies: (s: { mode?: string }) => (s.mode === 'gui' ? gui.verifies(s as never) : cliVerifier.verifies()),
+    async verify(step: { mode?: string }, ctx: Parameters<typeof cliVerifier.verify>[1], data: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
       return step.mode === 'gui'
         ? gui.verify(step as never, ctx, data)
         : cliVerifier.verify(step as never, ctx, data)

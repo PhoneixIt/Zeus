@@ -88,7 +88,10 @@ function mission(over: Partial<Mission> = {}): Mission {
         dependsOn: [],
         status: 'done',
         attempts: 1,
-        result: { id: 'inspect', outcome: { kind: 'verified', evidence: [] }, durationMs: 12 },
+        // `Evidence` is a union of specific OBSERVATIONS - 'the file is there', 'the process exited
+        // with 0'. An empty array is not an evidence value; it says nothing was observed, which is
+        // the opposite of what this row claims by being `verified`.
+        result: { id: 'inspect', outcome: { kind: 'verified', evidence: { kind: 'file-exists', path: 'x', bytes: 1 } }, durationMs: 12 },
       },
       {
         id: 'write',
@@ -222,9 +225,14 @@ test('CONTROL: `resumeMission` can never express permission - the type has no su
   const permit = resumeMission(new DurableStore({ path: ':memory:' }), 'nope')
   assert.equal(permit, undefined, 'an unknown mission yields nothing at all, not a permissive default')
   assert.ok(!('executable' in {}), 'sanity: the probe is meaningful')
-  const keys = Object.keys({} as Record<string, never>)
+  // `Record<string, never>` makes `Object.keys` infer `never[]`, so `.includes` would reject any
+  // literal at all. The annotation is the honest one: the keys of an object are strings.
+  const keys: string[] = Object.keys({} as Record<string, never>)
   assert.deepEqual(keys, [])
-  assert.ok(!keys.includes('mayExecute'))
+  // `includes` is checked against the SAME array rather than a narrowed one: `assert.deepEqual` has an
+  // assertion signature that can narrow its argument, and a `never[]` there would reject any literal
+  // at all - which is a compile error about the assertion helper, not about the behaviour under test.
+  assert.equal((keys as string[]).includes('mayExecute'), false)
 })
 
 test('CONTROL: a step found RUNNING at crash time comes back pending, never done and never verified', () => {

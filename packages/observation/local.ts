@@ -25,12 +25,12 @@
  * a world state that grows to describe everything stops being evidence of anything.
  */
 
-import { readdirSync, statSync, realpathSync, lstatSync } from 'node:fs'
+import { readdirSync, statSync, realpathSync, lstatSync, type Stats } from 'node:fs'
 import { join, resolve, extname, relative, isAbsolute } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 // Two data tables with no behaviour. See the note in `capabilities()` for why this is a static
 // import rather than a lazy `require`.
-import { buildAllowlist, REFUSED_PROGRAMS } from './allowlist-view.ts'
+import { buildAllowlist, REFUSED_BY_NAME } from './allowlist-view.ts'
 import type {
   WorldState, WorldEntry, EntryKind, ObservedCapability, ObservationError, ObservationScope,
 } from './world.ts'
@@ -56,7 +56,14 @@ export interface ObservationProvider {
 /** How many entries to walk before stopping and saying so. */
 const DEFAULT_ENTRY_CAP = 2000
 
-function kindOf(lstat: ReturnType<typeof lstatSync>): EntryKind {
+// `Stats`, not `ReturnType<typeof lstatSync>`.
+//
+// `lstatSync` is overloaded, and `ReturnType` resolves to the LAST overload - the
+// `throwIfNoEntry: false` form, which returns `Stats | undefined`. Every call site here uses the
+// throwing overload and therefore has a `Stats`. The inferred type said so much and it was wrong,
+// so the three `isSymbolicLink()`/`isDirectory()`/`isFile()` calls were all reading a possibly-absent
+// value.
+function kindOf(lstat: Stats): EntryKind {
   if (lstat.isSymbolicLink()) return 'symlink'
   if (lstat.isDirectory()) return 'directory'
   if (lstat.isFile()) return 'file'
@@ -122,7 +129,7 @@ export class LocalObservationProvider implements ObservationProvider {
       for (const name of children.sort()) {
         if (entries.length >= DEFAULT_ENTRY_CAP) { truncated = true; return }
         const full = join(dir, name)
-        let lst: ReturnType<typeof lstatSync>
+        let lst: Stats
         try {
           lst = lstatSync(full)
         } catch (e) {
@@ -198,7 +205,7 @@ export class LocalObservationProvider implements ObservationProvider {
       let exists = false
       try { exists = statSync(p).isFile() } catch { exists = false }
       const name = (p.split(/[\\/]/).pop() ?? p).toLowerCase()
-      const refusal = REFUSED_PROGRAMS[name]
+      const refusal = REFUSED_BY_NAME[name]
       return {
         path: p,
         name,

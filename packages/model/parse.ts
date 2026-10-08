@@ -278,10 +278,14 @@ export function parseModelPlan(raw: string): ParseResult {
     }
 
     steps.push({
-      id: step.id,
-      capability: step.capability,
+      // `id`, `capability` and `mode` were assigned straight from the parsed object, which is
+      // `unknown`. Every sibling line narrows with a typeof test first; these three did not, so they
+      // either needed the same narrowing or were relying on the caller having checked. Narrowed here
+      // so a plan can never carry an `unknown` into a step that the router will resolve by tool name.
+      id: typeof step.id === 'string' ? step.id : '',
+      capability: typeof step.capability === 'string' ? step.capability : '',
       intent: typeof step.intent === 'string' ? step.intent : '',
-      mode: step.mode,
+      mode: typeof step.mode === 'string' ? step.mode : 'cli',
       tool: step.tool,
       args: step.args,
       dependsOn: deps,

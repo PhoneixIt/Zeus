@@ -5,22 +5,15 @@ import { join, dirname, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { LocalObservationProvider, NoObservationProvider, fingerprintOf } from '../../observation/local.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import {
   filesIn, directoriesIn, deepestLevel, extensionsIn, observes, find, checkFreshness,
   type WorldState,
 } from '../../observation/world.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicWorldAwarePlanProvider } from '../../planner/world-aware.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { compilePlan } from '../../planner/compile.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { PlanContext, PlanProposal } from '../../planner/plan.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry, EmptyRegistry } from '../../tool-router/router.ts'
 
 /**
@@ -613,7 +606,7 @@ test('the world-aware plan REFLECTS THE FOLDER, and the phrase plan does not', a
     const resB = phraseB.ok ? phraseB.proposal.expectedResult : ''
     assert.equal(resA.replace(a.src, '<X>'), resB.replace(b.src, '<X>'),
       'the phrase planner describes both folders identically apart from the path')
-  } finally { cleanup(a); cleanup(b) }
+  } finally { rmSync(a.root, { recursive: true, force: true }); rmSync(b.root, { recursive: true, force: true }) }
 })
 
 // ==================================================== capabilities

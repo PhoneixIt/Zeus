@@ -1,7 +1,0 @@
-{
-  "_comment": "Committed by hand. Lowering it is progress; raising it is a decision with a diff.",
-  "productErrors": 79,
-  "testErrors": 107,
-  "productFiles": 27,
-  "testFiles": 16
-}

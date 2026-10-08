@@ -185,9 +185,49 @@ function orphanNodeScript(pidFile: string): string {
   return writeFixture([
     "const { spawn } = require('child_process')",
     "const fs = require('fs')",
-    "const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' })",
+    "const path = require('path')",
+    // PING, NOT `node -e setInterval(...)`.
+    //
+    // Measured: a `node -e` grandchild does NOT outlive its parent here - it is gone within 100ms of
+    // the parent exiting, with no terminal tool involved at all, so it is not containment or the drain
+    // grace killing it. A child that cannot outlive its parent cannot demonstrate a child that does,
+    // and the NEGATIVE control below then fails for a reason that has nothing to do with the mechanism
+    // under test: it would be reporting a missing survivor while asserting the survivor was there.
+    //
+    // `ping -t` is used instead because it is measured to survive its parent - the containment-only
+    // controls above already rely on exactly that, over `Start-Process`, and they hold.
+    //
+    // `stdio: 'inherit'` is still the point. The grandchild is handed the parent's stdout, which is
+    // the pipe to the terminal tool, and it keeps writing to it - so the pipe outlives the process that
+    // opened it, which is the defect the settlement logic exists to survive.
+    "const ping = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'ping.exe')",
+    //
+    // `detached: true` IS LOAD-BEARING, and it took four measured trials to find. On Windows a
+    // non-detached grandchild does NOT outlive its parent - measured, all four combinations:
+    //
+    //     inherit + parent hidden      -> died with its parent
+    //     inherit + parent visible     -> died with its parent
+    //     detached + inherit + hidden  -> SURVIVED
+    //     detached + inherit + visible -> SURVIVED
+    //
+    // So the orphan case only arises for a DETACHED child - or one created without the parent's job,
+    // which is what `Start-Process -WindowStyle Hidden` does, and why the PowerShell fixture above has
+    // always produced real survivors while this one did not.
+    //
+    // `stdio: 'inherit'` is still doing its job: the grandchild keeps the parent's stdout, which is the
+    // pipe to the terminal tool, so the pipe outlives the process that opened it. Detaching does not
+    // release the handle - which is exactly why the settlement bug is real and not theoretical.
+    "const c = spawn(ping, ['-t', '127.0.0.1'], { stdio: 'inherit', detached: true })",
     `fs.writeFileSync(${JSON.stringify(pidFile)}, String(c.pid))`,
-    'process.exit(0)',
+    // LIVE LONG ENOUGH TO BE SAMPLED, then exit immediately.
+    //
+    // The first version called `process.exit(0)` at once, and containment observed nothing: a parent
+    // that lives 50ms is gone before the first sample completes, and its descendant is then unreachable
+    // by parentage - which is exactly the orphan the mechanism exists to catch, and exactly what the
+    // tool cannot see. Waiting is what makes the scenario the realistic one: it is the process that
+    // lingers AFTER its parent goes that is the actual case, and this reproduces it rather than an
+    // unobservable race.
+    "setTimeout(() => process.exit(0), 1500)",
   ].join('\n'))
 }
 
@@ -227,8 +267,8 @@ test('NEGATIVE CONTROL: the fixture really does leave a running child behind', a
   const r = await runOrphanMaker()
 
   assert.notEqual(r.exitCode, null, 'the parent must have exited, not been killed')
-  assert.equal(r.exitCode, 0, `the parent must exit CLEANLY - that is the shape of the gap. Got ${r.exitCode}: ${r.stdout}`)
-  assert.ok(r.childPid, `the fixture must report a child pid. stdout was: ${r.stdout}`)
+  assert.equal(r.exitCode, 0, `the parent must exit CLEANLY - that is the shape of the gap. Got ${r.exitCode}`)
+  assert.ok(r.childPid, 'the fixture must have written a child pid file - without one this file proves nothing')
 
   assert.equal(await isAlive(r.childPid), true,
     'the child must still be running after its parent exited - otherwise this whole file tests nothing')
@@ -283,7 +323,8 @@ test('NEGATIVE CONTROL: descendantsOf finds a live child tree', async () => {
   // control passed or failed depending on unrelated activity on the machine.
   const { spawn } = await import('node:child_process')
   const child = spawn(nodeExe(), ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
-  await sleep(400)
+  // Long enough for the parent to be gone AND the survivor to still be running.
+  await sleep(700)
   try {
     // Spawn a REAL child and require the sampler to find it BY PARENTAGE.
   //
@@ -395,18 +436,18 @@ test('the terminal tool records its containment outcome in the step result', asy
     containment,
   })
 
+  const pidFile = freshPidFile()
   const result = await tool.run(
     CTX,
     {
-      capability: 'terminal',
-      args: {
-        executable: nodeExe(),
-        argv: argvFor(orphanNodeScript(freshPidFile())),
-      },
+      executable: nodeExe(),
+      argv: argvFor(orphanNodeScript(pidFile)),
     },
   ) as { kind: string; data?: { containment?: { clean: boolean; observed: number[]; survivors: number[] }; exitCode: number | null }; summary?: string }
 
-  assert.equal(result.kind, 'data', `the command must succeed - the gap is about a CLEAN exit. Got: ${result.kind} ${result.summary ?? ''}`)
+  const why = (result as { reason?: string }).reason ?? '(no reason given)'
+  assert.equal(result.kind, 'data',
+    `the command must succeed - the gap is about a CLEAN exit. Got ${result.kind}: ${why}`)
   assert.equal(result.data!.exitCode, 0, 'the parent must have exited 0')
 
   // THE CLAIM: containment ran, and what it did is in the durable record.
@@ -444,22 +485,21 @@ test('NEGATIVE CONTROL: without containment the child SURVIVES - so the previous
   const result = await tool.run(
     CTX,
     {
-      capability: 'terminal',
-      args: {
-        executable: nodeExe(),
-        argv: argvFor(orphanNodeScript(freshPidFile())),
-      },
+      executable: nodeExe(),
+      argv: argvFor(orphanNodeScript(pidFile)),
     },
   ) as { kind: string; data?: { containment?: unknown }; summary?: string }
 
-  assert.equal(result.kind, 'data', `the command must still succeed: ${result.kind} ${result.summary ?? ''}`)
+  const why2 = (result as { reason?: string }).reason ?? '(no reason given)'
+  assert.equal(result.kind, 'data', `the command must still succeed. Got ${result.kind}: ${why2}`)
   assert.equal(result.data!.containment, undefined, 'with no containment supplied, the record must NOT claim any containment happened')
 
   // The child must have leaked. Proving the leak is what makes the other test meaningful.
   const leaked = readPid(pidFile)
   assert.ok(leaked, `the fixture must have reported a child pid in ${pidFile}`)
 
-  await sleep(400)
+  // Long enough for the parent to be gone AND the survivor to still be running.
+  await sleep(700)
   assert.equal(await isAlive(leaked), true,
     'THE GAP ITSELF: with containment absent, a child of a cleanly-exited command survives. If this starts failing, containment is leaking into the no-containment path.')
 
@@ -505,11 +545,8 @@ test('a command that backgrounds a child and exits 0 is recorded as COMPLETED, n
   const result = await tool.run(
     CTX,
     {
-      capability: 'terminal',
-      args: {
-        executable: nodeExe(),
-        argv: argvFor(orphanNodeScript(freshPidFile())),
-      },
+      executable: nodeExe(),
+      argv: argvFor(orphanNodeScript(pidFile)),
     },
   ) as { kind: string; data?: { state: string; timedOut: boolean; exitCode: number | null; stdout: string; stdoutTruncated: boolean; containment?: { clean: boolean; observed: number[]; survivors: number[] } }; summary?: string }
   const elapsed = Date.now() - started
@@ -555,16 +592,14 @@ test('NEGATIVE CONTROL: a plain command still settles AND still captures all its
   const result = await tool.run(
     CTX,
     {
-      capability: 'terminal',
-      args: {
-        executable: nodeExe(),
-        argv: argvFor(writeFixture(
+      executable: nodeExe(),
+      argv: argvFor(writeFixture(
           `for (let i = 1; i <= ${lines}; i++) console.log('LINE-' + i)`)),
-      },
     },
   ) as { kind: string; data?: { state: string; exitCode: number | null; stdout: string; stdoutTruncated: boolean; stderrTruncated: boolean } }
 
-  assert.equal(result.kind, 'data', 'a plain command must succeed')
+  const why3 = (result as { reason?: string }).reason ?? '(no reason given)'
+  assert.equal(result.kind, 'data', `a plain command must succeed. Got ${result.kind}: ${why3}`)
   assert.equal(result.data!.state, 'completed', `must be completed, got ${result.data!.state}`)
   assert.equal(result.data!.exitCode, 0, 'exit 0')
   assert.equal(result.data!.stdoutTruncated, false, 'output must NOT be truncated - the drain grace must actually wait for it')
@@ -599,15 +634,13 @@ test('NEGATIVE CONTROL: output written just before exit is still captured', asyn
   const result = await tool.run(
     CTX,
     {
-      capability: 'terminal',
-      args: {
-        executable: nodeExe(),
-        argv: argvFor(writeFixture(
+      executable: nodeExe(),
+      argv: argvFor(writeFixture(
           'const s = "X".repeat(4000); for (let i = 1; i <= 20; i++) console.log(s + "-" + i)')),
-      },
     },
   ) as { kind: string; data?: { stdout: string; stdoutTruncated: boolean; exitCode: number | null } }
 
+  assert.ok(result.data, `the burst probe produced no data: ${(result as { reason?: string }).reason ?? '(no reason)'}`)
   assert.equal(result.data!.exitCode, 0, 'exit 0')
   assert.equal(result.data!.stdoutTruncated, false, 'a burst written immediately before exit must not be truncated')
   const got = result.data!.stdout.split(/\r?\n/).filter((l) => l.startsWith('XXXX'))

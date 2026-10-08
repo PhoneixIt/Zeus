@@ -19,6 +19,7 @@ import type {
   TargetIdentity, TargetVerification, InputResult,
 } from '../../governance/contract.ts'
 import type { Tool, ToolContext, ToolResult } from '../executor.ts'
+import type { Evidence } from '../state.ts'
 
 const HOST = 'C:/Users/Samer/Projects/AIOS/packages/control-core/host.json'
 
@@ -264,7 +265,7 @@ export const surveyAccessibilityTool: Tool = {
 export function liveVerifier() {
   return {
     verifies: () => true,
-    async verify(_step: unknown, _ctx: ToolContext, toolData: unknown) {
+    async verify(_step: unknown, _ctx: ToolContext, toolData: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
       const g = await (await c()).guard()
       const claimed = toolData as { windowCount?: number; state?: string } | undefined
       const live = (await liveControl.observe()).windows.length
@@ -307,7 +308,7 @@ export function liveVerifier() {
 export function liveUiaVerifier() {
   return {
     verifies: (step: { mode?: string }) => step.mode === 'uia',
-    async verify(_step: unknown, _ctx: ToolContext, toolData: unknown) {
+    async verify(_step: unknown, _ctx: ToolContext, toolData: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
       const claimed = toolData as {
         hwnd?: number; elementCount?: number; windowTitle?: string; controlTypes?: string[]
       } | undefined

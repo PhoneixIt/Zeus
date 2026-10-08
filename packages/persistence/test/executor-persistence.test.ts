@@ -62,6 +62,9 @@ function makeWorld(): World {
 function actingTool(world: World, name: string, opts: { failBefore?: boolean } = {}): Tool {
   return {
     name,
+    // A tool must declare the mode it belongs to; the router uses it to refuse substitution across
+    // modes, so a tool without one is a tool that could be silently swapped.
+    mode: 'filesystem',
     async run(_ctx: ToolContext, args: Record<string, unknown>) {
       const label = `${name}:${String(args.path ?? args.target ?? 'x')}`
       world.attempted.push(label)
@@ -267,8 +270,14 @@ test('CONTROL: isRetryable separates "complete?" from "may I try again?"', () =>
   assert.equal(isRetryable(undefined), true, 'an un-attempted step is retryable')
 
   const m = missionOf()
-  m.plan[0].status = 'uncertain'
-  m.plan[0].result = { id: 'write', outcome: unknown, durationMs: 1 }
+  // A DELIBERATE mutation, to construct the uncertain state this control is about. `status` and
+  // `result` are `readonly` because production code must not rewrite a step's history, and the
+  // compiler is right to refuse. A test that needs to place the machine in a specific state is
+  // exactly the case where saying "I am doing this on purpose" matters more than the guard - so
+  // it is cast through a mutable view rather than by loosening the type every caller relies on.
+  const mutablePlan = m.plan as unknown as Array<{ status: string; result?: unknown }>
+  mutablePlan[0].status = 'uncertain'
+  mutablePlan[0].result = { id: 'write', outcome: unknown, durationMs: 1 }
   assert.equal(isComplete(m), false, 'an uncertain step is never complete')
   assert.equal(uncertainSteps(m).length, 1, 'and it must be findable for reconciliation')
 })

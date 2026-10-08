@@ -233,7 +233,16 @@ function analyseStep(s: PlanStep, ctx: DryRunContext, planNotes: string[]): Step
   }
 
   // 3. Would the policy refuse this outright? Asked, before any question of authorisation.
-  const pre = ctx.router.preflight?.(s)
+  //
+  // `preflight`/`effectOf` are declared over `Step`, and this runs over a `PlanStep` - a proposal
+  // that has not been compiled, so it has no `status` yet. That is not an accident to be hidden: it
+  // is the whole point of a DRY RUN, which asks "what would happen" before anything is committed.
+  //
+  // Both read only `tool` and `args`, so the stand-in carries exactly those. Line 245 below was
+  // already casting for `effect`; this makes the same narrowing explicit once, in one place, with
+  // the reason, instead of leaving two different casts in the same function.
+  const asPrecheck = s as unknown as Parameters<NonNullable<typeof ctx.router.preflight>>[0]
+  const pre = ctx.router.preflight?.(asPrecheck)
   if (pre) {
     blockers.push(pre.blocked)
     if (pre.needsHuman) notes.push('the policy says this needs a human even before it is considered for authorisation')
@@ -241,8 +250,8 @@ function analyseStep(s: PlanStep, ctx: DryRunContext, planNotes: string[]): Step
 
   // 4. What consequence does it have, and where does that answer come from?
   //    The TOOL is the authority on what it will do; the plan's declaration is the weaker source.
-  const toolEffect = ctx.router.effectOf?.(s)
-  const declared = (s as { effect?: { kind: string; target: string; irreversible?: boolean } }).effect
+  const toolEffect = ctx.router.effectOf?.(asPrecheck)
+  const declared = s.effect
   let effect = toolEffect
   let effectSource: StepReport['effectSource'] = 'none'
   if (toolEffect && declared) {

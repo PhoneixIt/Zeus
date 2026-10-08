@@ -710,8 +710,13 @@ console.log('=== THE INDEPENDENT EVIDENCE, ONE PER VERIFIED STEP ===')
 for (const e of ev) {
   const d = e as unknown as Record<string, unknown>
   if (d.kind === 'command-verified') {
-    console.log(`  command-verified  ${d.executable.split('\\').pop()} exit=${d.exitCode} ${d.durationMs}ms env=${d.envVarCount} vars`)
-    console.log(`                    ${d.path}`)
+    // `d` is a broad `Record<string, unknown>`, so `.split()` on `executable` has to be earned.
+    // The old form called `.split` straight on `unknown` and would have thrown at runtime on a
+    // payload that did not carry a string here.
+    const exe = typeof d.executable === 'string' ? d.executable : '(not recorded)'
+    const path = typeof d.path === 'string' ? d.path : '(not recorded)'
+    console.log(`  command-verified  ${exe.split('\\').pop()} exit=${d.exitCode} ${d.durationMs}ms env=${d.envVarCount} vars`)
+    console.log(`                    ${path}`)
     console.log(`                    ${d.bytes} bytes, corroborated by: ${d.corroboratedBy}`)
   } else {
     console.log(`  ${d.kind}  ${JSON.stringify(d).slice(0, 150)}`)

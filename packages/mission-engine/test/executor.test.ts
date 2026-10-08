@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { execute } from '../executor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { isComplete, type Mission, type Step } from '../state.ts'
 import {
   dataTool, emptyTool, existenceVerifier, failingTool, fakeControl, liarTool,
@@ -52,7 +50,10 @@ test('NEGATIVE: a tool that claims success but is caught by the verifier does NO
     { tools: router({ a: liarTool() }), verifier: strictVerifier('went and looked; nothing there'), control: fakeControl(), config: ok },
   )
   assert.equal(r.record.complete, false)
-  assert.match(r.mission.plan[0].result!.outcome.reason, /verification rejected/i)
+  // `reason` is not on every arm of `StepOutcome`, so it is narrowed rather than asserted.
+  const o = r.mission.plan[0].result!.outcome
+  assert.ok('reason' in o, `expected a reasoned outcome, got ${o.kind}`)
+  assert.match(o.reason, /verification rejected/i)
 })
 
 test('NEGATIVE: empty output does NOT become success', async () => {
@@ -212,7 +213,9 @@ test('an unknown dependency is detected BEFORE anything runs', async () => {
   assert.equal(r.record.complete, false)
   assert.equal(r.mission.state, 'failed')
   const started = r.events.find((e) => e.type === 'mission-started')!
-  assert.deepEqual((started as { unsatisfiable: string[] }).unsatisfiable.length, 1)
+  // `find` returns the full union; the cast is through `unknown` because the event type is a large
+  // discriminated union and no single arm is every arm.
+  assert.deepEqual((started as unknown as { unsatisfiable: string[] }).unsatisfiable.length, 1)
 })
 
 test('dependencies on satisfied steps do not block', async () => {
@@ -336,7 +339,10 @@ test('an unavailable tool fails the step and does NOT silently fall through', as
     { tools: router({}), verifier: existenceVerifier(['a']), control: fakeControl(), config: ok },
   )
   assert.equal(r.record.complete, false)
-  assert.match(r.mission.plan[0].result!.outcome.reason, /no tool/i)
+  // `reason` is not on every arm of `StepOutcome`, so it is narrowed rather than asserted.
+  const oc = r.mission.plan[0].result!.outcome
+  assert.ok('reason' in oc, `expected a reasoned outcome, got ${oc.kind}`)
+  assert.match(oc.reason, /no tool/i)
   // And nothing ran, so nothing was verified.
   assert.deepEqual(r.record.verified, {}, 'no evidence exists for a step that never ran')
 })

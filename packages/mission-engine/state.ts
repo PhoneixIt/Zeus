@@ -1,6 +1,19 @@
 import type { DeclaredEffect } from '../governance/approval.ts'
 
 /**
+ * Re-exported so that `Step.effect` can be consumed without reaching into governance.
+ *
+ * `Step` has carried `effect?: DeclaredEffect` since M3, but the type was imported and not re-exported,
+ * so anything that needed it had to import `governance/approval.ts` directly - which `planner/plan.ts`
+ * did, and which broke Control E ("no planner module can import anything that could execute").
+ *
+ * That control is right and the import was wrong. This is the seam that lets the planner DECLARE an
+ * effect without being able to REACH the approval store that judges it: one source of truth, and the
+ * boundary intact. `governance/approval.ts` still imports nothing, so this cannot become a cycle.
+ */
+export type { DeclaredEffect }
+
+/**
  * Mission state.
  *
  * Section 4's central requirement, and the thing that separates an operator from a script
@@ -43,7 +56,7 @@ export type StepOutcome =
    * Distinct from `failed` because the remedy differs. A failure says "this approach did
    * not work"; replan-required says "this approach is no longer VALID" - the target closed,
    * the focus moved, a precondition vanished. Retrying such a step would be retrying a plan
-   * for a world that no longer exists (§16).
+   * for a world that no longer exists (Â§16).
    */
   | { kind: 'replan-required'; reason: string; invalidation: PlanInvalidation }
   /**
@@ -214,7 +227,7 @@ export interface Step {
   /**
    * HOW it should be done: gui | uia | browser | cli | filesystem | api.
    *
-   * Recorded per step rather than globally because §8 requires the system to choose per
+   * Recorded per step rather than globally because Â§8 requires the system to choose per
    * task, and recording it makes that choice auditable after the fact. A GUI step where a
    * filesystem step would do is a finding, not a style preference.
    */
@@ -265,7 +278,7 @@ readonly effect?: DeclaredEffect
    * The tool this step calls, resolved through the tool router.
    *
    * Named here rather than inlined so the audit layer can record WHICH tool ran, not merely
-   * that something ran. §31 requires the user to be able to see the active tool.
+   * that something ran. Â§31 requires the user to be able to see the active tool.
    */
   readonly tool?: string
   /**
@@ -336,7 +349,7 @@ export interface HistoryEntry {
 /**
  * A consequential action awaiting authorisation.
  *
- * §20: the AI may PREPARE such an action; the human authorises it; then it executes. So this
+ * Â§20: the AI may PREPARE such an action; the human authorises it; then it executes. So this
  * holds a prepared action, never a partially-executed one.
  */
 export interface PendingApproval {

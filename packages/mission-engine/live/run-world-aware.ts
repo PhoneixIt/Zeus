@@ -467,7 +467,11 @@ let runC: { record: { complete: boolean } } | null = null
 if (planC && planC.ok) {
   const outC = join(world, 'outC')
   runC = await runMission('C', planC.proposal, A, outC)
-  console.log(`  C completed: ${runC.record.complete}`)
+  // `runMission` can legitimately return null, so the read below is guarded rather than asserted.
+  // Reporting `C completed: null` because a null was dereferenced would be a worse record than
+  // saying C did not run.
+  if (!runC) { console.log('  C produced no record, so nothing to report') }
+  else console.log(`  C completed: ${runC.record.complete}`)
   console.log(`  C produced: ${readdirSync(outC).join(', ')}`)
 }
 
@@ -570,8 +574,16 @@ console.log('=== NEGATIVE CONTROLS ===')
   const before = readdirSync(A).sort()
   const w = observer.observe({ root: A, maxDepth: 4 })
   // Everything a caller could do to the returned value: mutate it, attach to it, re-observe.
-  w.entries.length = 0
-  w.fingerprint = 'tampered'
+  // A DELIBERATE attempt to corrupt the observation, which is the entire point of this control:
+  // `WorldState` is a plain value, and mutating it must not touch the machine.
+  //
+  // The cast is required rather than a loophole. `entries` and `fingerprint` are `readonly` because
+  // the contract says a caller must not edit them, and the compiler is right to refuse. The test is
+  // deliberately doing the forbidden thing to PROVE the machine is unaffected, and it has to say so
+  // in the type system rather than quietly removing the `readonly` that protects every other caller.
+  const mutable = w as unknown as { entries: unknown[]; fingerprint: string }
+  mutable.entries.length = 0
+  mutable.fingerprint = 'tampered'
   ;(w as unknown as { write: () => void }).write = () => { writeFileSync(join(A, 'observer-wrote-this.md'), 'x') }
   const after = readdirSync(A).sort()
   console.log(`  entries before tampering: the WorldState is a plain object`)

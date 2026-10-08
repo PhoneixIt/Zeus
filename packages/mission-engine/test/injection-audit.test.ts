@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { attribute, auditAction, isProofOfAction, readHookDiagnostics, readRecord, type ControlRecord, type RecordSource } from '../live/injection-audit.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { falsifyingRecordGuiTool, guiTool, guiVerifier, lyingGuiTool } from '../live/gui-mode.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { ToolContext } from '../executor.ts'
 
 /**

@@ -31,7 +31,6 @@ import { tmpdir } from 'node:os'
 import { execute } from '../executor.ts'
 import { summarize } from '../events.ts'
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { LocalObservationProvider } from '../../observation/local.ts'
 import { compilePlan } from '../../planner/compile.ts'
 import { renderPlan } from '../../planner/inspect-plan.ts'

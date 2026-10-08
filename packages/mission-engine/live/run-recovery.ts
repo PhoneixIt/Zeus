@@ -31,7 +31,6 @@ import { join, basename, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { runMission } from '../supervisor.ts'
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { LocalObservationProvider } from '../../observation/local.ts'
 import { ObjectiveReconciler, observeDirectories } from '../../planner/reconcile.ts'
 import { renderPlan } from '../../planner/inspect-plan.ts'

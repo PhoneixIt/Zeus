@@ -68,15 +68,32 @@ export interface ModelPlan {
  * model answer a question is a prompt problem; making a bad plan acceptable would be a safety change,
  * and that remains off the table regardless of how the validity rate looks.
  */
+/**
+ * The whole payload, under ONE top-level key.
+ *
+ * This interface used to describe the v2 shape - a FLAT request with `task`, `mayUse`, `mayWriteHere`
+ * and `observed` side by side - while the code had already been rewritten to v3, which nests all of it
+ * under `input`. The interface was never updated, so it described a protocol that no longer existed and
+ * could not describe the one that did.
+ *
+ * It survived because nothing typechecked the project. The measured symptom of that is the reason the
+ * nesting exists at all - see the v3 note in `provider.ts`: with a flat request, the four top-level keys
+ * looked like "the four keys an answer has", and the model filled one of them in. Nesting removes the
+ * resemblance structurally, so the request's shape cannot be mistaken for a response's shape. A type that
+ * does not match the protocol cannot enforce that, and does not.
+ *
+ * ONE KEY, so whatever container the model picks for its own answer, it cannot be one it was given.
+ */
 export interface ModelRequest {
-  /** The user's objective. Named `task` so it cannot be echoed back as a response key. */
-  readonly task: string
-  /** Capabilities the router can serve. The model may only choose from these. */
-  readonly mayUse: readonly string[]
-  /** The output root. Named explicitly so a model does not invent one. */
-  readonly mayWriteHere: string
-  /** A compact, factual rendering of the observation. NOT prose, NOT interpretation. */
-  readonly observed: {
+  readonly input: {
+    /** The user's objective. Named `task` so it cannot be echoed back as a response key. */
+    readonly task: string
+    /** Capabilities the router can serve. The model may only choose from these. */
+    readonly mayUse: readonly string[]
+    /** The output root. Named explicitly so a model does not invent one. */
+    readonly mayWriteHere: string
+    /** A compact, factual rendering of the observation. NOT prose, NOT interpretation. */
+    readonly observed: {
     readonly root: string
     readonly observationId: string
     readonly observedAt: number
@@ -95,6 +112,7 @@ export interface ModelRequest {
      * is still not permission, because the policy re-derives every decision from its own allowlist.
      */
     readonly programs: readonly { readonly name: string; readonly path: string; readonly exists: boolean; readonly permitted: boolean }[]
+    }
   }
 }
 

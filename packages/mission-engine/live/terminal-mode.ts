@@ -30,7 +30,7 @@ import type { Tool, ToolContext, ToolResult, Verifier } from '../executor.ts'
 import type { Evidence, Step } from '../state.ts'
 import { buildEnv, classify, buildAllowlist, looksLikeCredentialPrompt, type Verdict, type PolicyContext } from './terminal-policy.ts'
 import type { DeclaredEffect } from '../../governance/approval.ts'
-import { ProcessContainment, type ReapResult } from '../process-containment.ts'
+import { ProcessContainment, reapObserved, type ReapResult } from '../process-containment.ts'
 
 /** Everything that happened to one process. The audit trail reads this, not the tool's summary. */
 export interface ProcessRecord {
@@ -167,7 +167,11 @@ export function makeTerminalTool(cfg: TerminalConfig): Tool & { preview: (step: 
       // 1. The policy, consulted again here. The executor already consulted it to decide about
       //    authorisation; re-checking means a tool call that arrives without having gone through
       //    the gate is still refused. Two checks, because the tool is the thing being governed.
-      const verdict = preview({ id: 'x', tool: 'run-process', args: { executable: abs, argv } } as Step)
+      // `preview` takes a Step. Constructing one from scratch here needs `status`, `intent` and
+      // `rationale`, none of which matter to the policy - it reads `tool` and `args` only. Going
+      // through `unknown` is honest about that: it is a deliberate, narrow stand-in, and the values
+      // present are exactly the ones the policy consumes.
+      const verdict = preview({ id: 'x', tool: 'run-process', args: { executable: abs, argv } } as unknown as Step)
       if (verdict.kind === 'blocked') {
         // A blocked command is not a failure of the mission, it is a refusal by policy. The
         // distinction matters: `needs-human` invites a person, `failed` invites a retry that
@@ -332,7 +336,7 @@ export function makeTerminalTool(cfg: TerminalConfig): Tool & { preview: (step: 
           if (cfg.containment && rootPid) {
             try {
               const observed = cfg.containment.observedFor(rootPid)
-              if (observed.length) containment = await cfg.containment.reapObserved(rootPid, observed)
+              if (observed.length) containment = await reapObserved(rootPid, observed)
             } catch (e) {
               containment = {
                 rootPid,

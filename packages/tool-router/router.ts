@@ -209,7 +209,10 @@ export class ToolRegistry implements ToolRouter {
   refusalsFor(step: Step): string[] {
     return this.names()
       .map((n) => this.byName.get(n)!.preflight?.({ ...step, tool: n }))
-      .filter((x): x is { blocked: string } => x !== undefined)
+      // The predicate must name the FULL type, not a narrower one: the values here are
+      // `{ blocked: string; needsHuman: boolean } | undefined`, and asserting a shape with fewer
+      // properties is not a valid refinement of it.
+      .filter((x): x is { blocked: string; needsHuman: boolean } => x !== undefined)
       .map((x) => x.blocked)
   }
 

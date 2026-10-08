@@ -174,7 +174,11 @@ function makeTallyVerifier(workspace: string) {
       const rec = toolData as { exitCode: number | null } | undefined
       if (!rec) return { rejected: 'no process record, so nothing to verify' }
       if (rec.exitCode !== 0) return { rejected: `the process exited with ${rec.exitCode}` }
-      const argv = ((s.args as { argv?: unknown } | undefined)?.argv ?? []).map(String)
+      // `argv` arrives as `unknown`, so `?? []` is not enough: the empty array only covers a nullish
+      // value, and a NON-array would still reach `.map`. An array check is the honest narrowing - a
+      // step whose argv is not a list has no argv, and saying so beats coercing it.
+      const rawArgv = (s.args as { argv?: unknown } | undefined)?.argv
+      const argv = Array.isArray(rawArgv) ? rawArgv.map(String) : []
       const reportPath = argv[1] ?? ''
       if (!reportPath) return { rejected: 'the step names no report path' }
       if (!existsSync(reportPath)) return { rejected: `exited 0 but "${reportPath}" does not exist` }
@@ -447,8 +451,7 @@ const run = await execute(committed.mission, {
   verifier: verifierFor(world, firstOut) as never,
   control: fakeControl() as ControlSurface,
   config: CONFIG,
-  reviewedProposalDigest: committed.reviewedDigest,
-})
+ }, { reviewedProposalDigest: committed.reviewedDigest })
 const t = tally(run.mission)
 
 console.log('')
@@ -486,6 +489,19 @@ function indent(text: string, pad: string): string {
 /** One raw HTTP round trip, bypassing this system's parser entirely so the true text is visible. */
 async function rawCompletion(p: ModelPlanProvider, ctx: PlanContext, obj: string): Promise<{
   text: string; completionTokens: number; promptTokens: number; elapsedMs: number; stoppedOnEos: boolean
+  /**
+   * Whether the server grammar-masked this generation.
+   *
+   * ALWAYS FALSE TODAY, and declared rather than inferred. `server.py` builds `local_inference`
+   * from elapsed_s, tokens_per_s, prefilled, repetition_penalty, stopped_on_eos and the two ceiling
+   * flags - there is no `constrained` key among them. So this is `undefined === true`, always false,
+   * and the harness prints "unconstrained" regardless of what the server did.
+   *
+   * That matters because the line reads as a MEASURED fact about generation mode. It is not one.
+   * Making the server report whether it applied the grammar is model work and is deliberately not
+   * done in this pass; until it is, this field must not be cited as evidence either way.
+   */
+  constrained: boolean
 }> {
   const body = {
     model: 'raw-probe',
@@ -512,7 +528,8 @@ async function rawCompletion(p: ModelPlanProvider, ctx: PlanContext, obj: string
   const json = await res.json() as {
     choices?: Array<{ message?: { content?: string } }>
     usage?: { prompt_tokens?: number; completion_tokens?: number }
-    local_inference?: { elapsed_s?: number; prefilled?: boolean }
+    // `constrained` is DECLARED but NOT YET SENT by the server - see the note at the use site.
+    local_inference?: { elapsed_s?: number; prefilled?: boolean; constrained?: boolean }
     error?: string
   }
   if (!res.ok) throw new Error(`raw probe: ${res.status} ${JSON.stringify(json.error ?? json)}`)
@@ -522,6 +539,7 @@ async function rawCompletion(p: ModelPlanProvider, ctx: PlanContext, obj: string
     promptTokens: json.usage?.prompt_tokens ?? 0,
     elapsedMs: Date.now() - t0,
     stoppedOnEos: true,
+    // `=== true` on a key the server does not send: always false. See the field's doc comment.
     constrained: json.local_inference?.constrained === true,
   }
 }

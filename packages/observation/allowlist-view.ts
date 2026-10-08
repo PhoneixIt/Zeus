@@ -84,3 +84,20 @@ export function buildAllowlist(systemRoot: string, programFiles: string): readon
     { abs: `${systemRoot}\\System32\\cmd.exe`, name: 'cmd.exe' },
   ]
 }
+
+/**
+ * The same refusal table, viewed as a lookup by runtime program name.
+ *
+ * `REFUSED_PROGRAMS` is `as const`, so its type is a fixed set of literal keys. That is deliberate -
+ * it is what lets a compiler catch a misspelled program name - but it also means the table cannot be
+ * indexed by a plain `string`, which is the only way either consumer actually uses it: given a path
+ * off a live command line, look up the base name.
+ *
+ * Both `terminal-policy.ts` and `observation/local.ts` index this table with a runtime name, and both
+ * were failing to typecheck for exactly this reason. Each was about to grow its own private view; this
+ * is the single definition instead, so the two consumers cannot disagree about what is refused.
+ *
+ * It is the SAME OBJECT with a widened type - not a copy - so a name refused in one place is refused in
+ * the other by construction rather than by two edits kept in step.
+ */
+export const REFUSED_BY_NAME: Readonly<Record<string, string>> = REFUSED_PROGRAMS

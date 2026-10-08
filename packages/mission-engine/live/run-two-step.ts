@@ -24,6 +24,7 @@
  * OBSERVATION ONLY. Neither step can inject. `INJECTION CALLS` is asserted empty.
  */
 
+import type { Evidence } from '../state.ts'
 import { execute } from '../executor.ts'
 import { summarize } from '../events.ts'
 import {
@@ -81,8 +82,11 @@ function routedVerifier() {
   const cli = liveVerifier()
   const uia = liveUiaVerifier()
   return {
-    verifies: (s: { mode?: string }) => (s.mode === 'uia' ? uia.verifies(s) : cli.verifies(s)),
-    async verify(step: { mode?: string }, ctx: Parameters<typeof cli.verify>[1], data: unknown) {
+    // The two verifiers have DIFFERENT arities, and that asymmetry is the finding: `liveUiaVerifier`'s
+    // `verifies` takes the step, `liveVerifier`'s takes none. Calling either one with the step was a
+    // type error - in both directions - so each is now called as it is actually declared.
+    verifies: (s: { mode?: string }) => (s.mode === 'uia' ? uia.verifies(s as never) : cli.verifies()),
+    async verify(step: { mode?: string }, ctx: Parameters<typeof cli.verify>[1], data: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
       return step.mode === 'uia' ? uia.verify(step, ctx, data) : cli.verify(step, ctx, data)
     },
   }
@@ -212,7 +216,10 @@ const checks: Array<[boolean, string]> = [
   [nS2?.outcome.kind === 'skipped',
     'NEGATIVE step 2 was never executed and is recorded as SKIPPED, not failed',
   ],
-  [nS2?.outcome.blockedBy === 'observe-desktop',
+  // `blockedBy` is on the `skipped` arm of `StepOutcome` only. Reading it through `?.` on the
+  //  // union is a shape error, and would report `undefined` for every other outcome - which reads as
+  //  // "the dependency name was wrong" rather than "this outcome does not name one".
+  [nS2?.outcome.kind === 'skipped' && nS2.outcome.blockedBy === 'observe-desktop',
     'NEGATIVE the skip names the dependency that blocked it',
   ],
   [n.record.complete === false, 'NEGATIVE mission did NOT complete'],

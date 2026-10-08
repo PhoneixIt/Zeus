@@ -3,27 +3,18 @@ import test from 'node:test'
 import { mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { runMission, checkToolAvailability } from '../supervisor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ObjectiveReconciler, observeDirectories } from '../../planner/reconcile.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { LocalObservationProvider } from '../../observation/local.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
-import type { PlanContext, PlanProvider } from '../../planner/plan.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
+import type { Capability, PlanContext, PlanResult } from '../../planner/plan.ts'
+// `PlanProvider` is declared in planner/provider.ts. plan.ts does not re-export it.
+import type { PlanProvider } from '../../planner/provider.ts'
 import { compilePlan } from '../../planner/compile.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry } from '../../tool-router/router.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { FOLDER_TOOLS, folderVerifiers } from '../live/folder-tools.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { fakeControl } from './fakes.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { Tool } from '../executor.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { ControlSurface } from '../../governance/contract.ts'
 
 /**
@@ -124,7 +115,11 @@ function folderRegistry(exclude: readonly string[] = [], replace: Record<string,
 }
 
 const deps = (tools: ToolRegistry, outputRoot: string, over: Record<string, unknown> = {}) => ({
-  provider: new DeterministicPlanProvider(),
+  // ONE provider, and it is the grounded wrapper below. This literal used to set `provider` TWICE -
+  // first to the plain `DeterministicPlanProvider`, then to that wrapper - and the second silently won
+  // at runtime. That is legal JavaScript and an error in a TypeScript object type, so the first line
+  // was dead from the moment it was written while reading as though two planners were in play.
+  //
   // These tests are about the RECOVERY LOOP, not the planner, so the phrase-matching provider stays
   // - swapping it would change what is under test.
   //
@@ -154,7 +149,7 @@ const deps = (tools: ToolRegistry, outputRoot: string, over: Record<string, unkn
     // context. The compiler enforces the grounding; the supervisor's guard is a convenience for
     // callers who forget to configure an observer.
     capabilities: () => ['grounded folder summary, for the recovery loop tests'],
-    async plan(objective: string, ctx: PlanContext) {
+    async plan(objective: string, ctx: PlanContext): Promise<PlanResult> {
       // Uses the observation the SUPERVISOR supplied, and observes again itself if it did not.
       //
       // The supervisor's guard fires before `plan()` whenever a provider declares
@@ -183,7 +178,7 @@ const deps = (tools: ToolRegistry, outputRoot: string, over: Record<string, unkn
       // `read-folder` and `inspect-folder` are both present because the tests inject the world change
       // inside the second one. Collapsing them would remove the event the loop is tested against.
       const spec: ReadonlyArray<{
-        id: string; tool: string; capability: string; dependsOn: string[]; from?: string
+        id: string; tool: string; capability: Capability; dependsOn: string[]; from?: string
       }> = [
         { id: 'read-folder', tool: 'read-folder', capability: 'filesystem.inspect', dependsOn: [] },
         {
@@ -353,6 +348,10 @@ test('an observation taken before the move does not contain the moved folder', (
     assert.ok(fresh.existingDirectories.some((d) => d === w.after), 'and must contain the new one')
     // Reconciling against the STALE one leaves the objective pointing at a dead path.
     const out = new ObjectiveReconciler().reconcile(`Summarise "${w.before}"`, stale)
+    // `objective` exists only on the `ok: true` arm. If reconciliation refused outright there is no
+    // amended objective to inspect, and asserting against `undefined` would read as a mismatch
+    // rather than as a refusal - so the refusal is surfaced as itself.
+    assert.ok(out.ok, `reconciliation refused: ${out.ok ? '' : out.reason}`)
     assert.equal(out.objective.includes(w.before), true, 'a stale observation yields a stale objective')
   } finally {
     rmSync(w.root, { recursive: true, force: true })
@@ -366,7 +365,10 @@ test('a genuine mid-mission change is recovered from', async () => {
   try {
     const tools = movingTools(w.after)
     const out = await runMission(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 }, deps(tools, w.outputRoot, { maxAttempts: 3 }))
-    assert.equal(out.ok, true, out.stopReason)
+    // `stopReason` is optional on the outcome union, so the message must cope with its absence rather
+    // than assume a string. An assertion message that is itself `undefined` prints nothing, which
+    // would hide the very failure it exists to explain.
+    assert.equal(out.ok, true, out.ok ? '' : (out.stopReason ?? 'no reason was recorded'))
     assert.equal(out.attempts.length, 2)
     assert.equal(out.attempts[0].state, 'recovering', 'the first attempt must end in recovering')
     assert.equal(out.attempts[0].complete, false)
@@ -434,7 +436,10 @@ test('a NORMAL mission with no environmental change completes on the first attem
   try {
     const tools = folderRegistry()
     const out = await runMission(`Summarise the folder "${w.before}"`, { outputRoot: w.outputRoot, now: () => 1 }, deps(tools, w.outputRoot, { maxAttempts: 3 }))
-    assert.equal(out.ok, true, out.stopReason)
+    // `stopReason` is optional on the outcome union, so the message must cope with its absence rather
+    // than assume a string. An assertion message that is itself `undefined` prints nothing, which
+    // would hide the very failure it exists to explain.
+    assert.equal(out.ok, true, out.ok ? '' : (out.stopReason ?? 'no reason was recorded'))
     assert.equal(out.attempts.length, 1, 'an unchanged world must not trigger a replan')
     assert.deepEqual([...out.substitutions], [])
   } finally {
@@ -548,7 +553,10 @@ test('two successive moves are recovered from, which requires a FRESH observatio
     const tools = folderRegistry([], { 'inspect-folder': stepwise })
     const out = await runMission(`Summarise the folder "${start}"`, { outputRoot: w.outputRoot, now: () => 1 },
       deps(tools, w.outputRoot, { maxAttempts: 4, observationDepth: 3 }))
-    assert.equal(out.ok, true, out.stopReason)
+    // `stopReason` is optional on the outcome union, so the message must cope with its absence rather
+    // than assume a string. An assertion message that is itself `undefined` prints nothing, which
+    // would hide the very failure it exists to explain.
+    assert.equal(out.ok, true, out.ok ? '' : (out.stopReason ?? 'no reason was recorded'))
     assert.equal(out.attempts.length, 3, 'invalidated, invalidated, recovered')
     assert.equal(out.substitutions.length, 2, 'each move must be recorded separately')
     assert.equal(out.attempts[2].objective.includes(end), true, 'the last objective must name the final location')

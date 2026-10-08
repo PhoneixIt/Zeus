@@ -37,6 +37,31 @@ import type { ExecutionMode } from '../mission-engine/state.ts'
 // A structural type with no methods. Importing the world's SHAPE is not importing a way to reach the
 // world: there is no provider here, no observer, and no function that could re-read the machine.
 import type { WorldState } from '../observation/world.ts'
+// The DECLARATION of a consequential effect. Imported as a type only, and `governance/approval.ts`
+// imports nothing at all, so this cannot become a cycle - and it must stay that way. If approval ever
+// needed a planner, that would be the moment this design is wrong: the planner would be able to name
+// an effect that the governance layer must then judge, which is a direction of dependence that makes
+// "a plan can require approval but never grant it" unenforceable.
+// The DECLARATION of a consequential effect.
+//
+// ROUTED THROUGH `mission-engine/state.ts`, NOT `governance/approval.ts` DIRECTLY, and that indirection
+// is required rather than incidental.
+//
+// Control E (`observation.test.ts`, "no planner module can import anything that could execute") forbids
+// every planner module from importing `governance/contract` or `governance/approval`. The point is
+// directional: the planner may DECLARE an effect, and the governance layer judges it. A planner that can
+// reach into governance can also reach the approval store, and a plan that could grant its own approval
+// would make "a plan may require authorisation but never confer it" unenforceable rather than merely
+// untested.
+//
+// `state.ts` is where `Step.effect` already lives, it already imports `DeclaredEffect` from
+// governance, and it is NOT on Control E's list. So this reaches the type through a module that is
+// already downstream of governance, without the planner importing governance itself - one source of
+// truth, and the boundary intact.
+//
+// The first version of this imported `DeclaredEffect` straight from `governance/approval.ts`, which
+// broke Control E. The control was right and the import was wrong; the test was not weakened.
+import type { DeclaredEffect } from '../mission-engine/state.ts'
 
 /**
  * What must be independently established before a step may count as done.
@@ -91,6 +116,27 @@ export interface PlanStep {
   readonly rationale: string
   readonly verification: VerificationRequirement
   readonly onFailure: FailureBehaviour
+  /**
+   * The CONSEQUENTIAL EFFECT this step declares, if any.
+   *
+   * A DECLARATION, not a permission. It obliges the step to obtain human authorisation before the tool
+   * runs, and there is deliberately no field anywhere on a plan meaning "approved" - so a plan can
+   * REQUIRE an approval but can never GRANT one. The executor is the authority.
+   *
+   * This field was MISSING from `PlanStep` while the compiler copied it, the reviewer rendered it and
+   * the model parser validated it - all of which read `s.effect` off a type that never declared it.
+   * `Step` in the execution state has carried it since M3.
+   *
+   * That is not a cosmetic gap. `compile.ts` documents the consequence in its own comment: when the
+   * declared effect was not copied, a plan declaring a consequential effect had it silently dropped,
+   * the executor's approval gate never saw it, and the action ran UNAPPROVED. The controls missed it
+   * because every test hand-built a `Mission` with `effect` already on the step, bypassing the
+   * compiler - so the only path turning a DECLARATION into a mission was untested.
+   *
+   * A missing field in a type is precisely how that hole reopens. The type now states it, so the next
+   * attempt to drop it is a compile error rather than a governance failure.
+   */
+  readonly effect?: DeclaredEffect
 }
 
 /**

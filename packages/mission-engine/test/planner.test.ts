@@ -3,24 +3,16 @@ import test from 'node:test'
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { DeterministicWorldAwarePlanProvider } from "../../planner/world-aware.ts"
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { LocalObservationProvider } from '../../observation/local.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { compilePlan } from '../../planner/compile.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { renderPlan } from '../../planner/inspect-plan.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { checkNewOutputFile, checkReadableFolder, isInside, expandPath } from '../../planner/paths.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { StructuredSummarizer } from '../../planner/summarizer.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import { ToolRegistry, EmptyRegistry } from '../../tool-router/router.ts'
-// @ts-expect-error Node test runner loads the TypeScript source directly.
 import type { PlanContext, PlanProposal } from '../../planner/plan.ts'
+import type { Step } from '../../mission-engine/state.ts'
 
 /**
  * The planner boundary, the compiler's validation, operand safety, and the router's refusal to
@@ -399,7 +391,13 @@ test('the router does not substitute across execution modes', () => {
   const reg = new ToolRegistry({
     registrations: [{ tool: stubTool('read-folder', 'filesystem'), substituteFor: ['do-anything'] }],
   })
-  const r = reg.resolve({ id: 's', tool: 'do-anything', mode: 'gui' }, { allowFallback: true })
+  // `resolve` takes a full `Step`. Only `tool` and `mode` are read by the fallback path, so the
+  // stand-in carries those two and is cast explicitly rather than padded with fields that would
+  // suggest the router consults them.
+  const r = reg.resolve(
+    { id: 's', tool: 'do-anything', mode: 'gui' } as unknown as Step,
+    { allowFallback: true },
+  )
   assert.ok('unavailable' in r, 'a mode mismatch must not be substituted across')
 })
 

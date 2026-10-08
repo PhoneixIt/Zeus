@@ -136,6 +136,20 @@ export interface ToolRouter {
    * what runs.
    */
   resolveCapability?(capability: string): { tool: Tool } | { unavailable: string; candidates: readonly string[] }
+  /**
+   * Optional: whether the router considers this step consequential, INDEPENDENT of the tool's answer.
+   *
+   * `ToolRouter` in `tool-router/router.ts` has implemented this since M3, but the interface here
+   * never declared it - so `deps.tools.isConsequential?.(step)` in the approval gate compiled only
+   * because of the optional call, and a caller passing an object literal that satisfied this interface
+   * was under no obligation to provide it.
+   *
+   * That matters more than a missing declaration usually would, because this sits directly on the
+   * approval path. `effectOf` is the stronger, preferred signal - it reads the step's actual arguments
+   * - and `isConsequential` is the coarser fallback. A router implementing the coarse one but omitting
+   * the fine one would have been *silently less governed* than intended, with nothing to catch it.
+   */
+  isConsequential?(step: Step): boolean | undefined
 }
 
 // ---------------------------------------------------------------- executor config
@@ -319,35 +333,19 @@ export async function execute(
   if (opts.reviewedProposalDigest !== undefined) {
     const stamped = mission.proposalDigest
     if (!stamped) {
-      return {
+      return refusal(
         mission,
-        record: {
-          missionId: mission.id, startedAt: 0, finishedAt: 0, state: mission.state,
-          complete: false, verified: 0, failed: 0, needsHuman: 0, skipped: mission.plan.length,
-        },
-        events: [{
-          type: 'step-refused', seq: 0, at: 0, missionId: mission.id, stepId: '(mission)',
-          reason:
-            `a reviewed proposal digest was supplied but this mission records none, so it cannot be ` +
-            `shown to be the plan that was reviewed. Refusing rather than assuming.`,
-        }] as never,
-      }
+        `a reviewed proposal digest was supplied but this mission records none, so it cannot be ` +
+        `shown to be the plan that was reviewed. Refusing rather than assuming.`,
+      )
     }
     if (stamped !== opts.reviewedProposalDigest) {
-      return {
+      return refusal(
         mission,
-        record: {
-          missionId: mission.id, startedAt: 0, finishedAt: 0, state: mission.state,
-          complete: false, verified: 0, failed: 0, needsHuman: 0, skipped: mission.plan.length,
-        },
-        events: [{
-          type: 'step-refused', seq: 0, at: 0, missionId: mission.id, stepId: '(mission)',
-          reason:
-            `this mission was compiled from proposal ${stamped}, but the proposal that was reviewed is ` +
-            `${opts.reviewedProposalDigest}. The plan was amended after compilation, so this mission is ` +
-            `not the reviewed plan. Compile the amended proposal and run that instead.`,
-        }] as never,
-      }
+        `this mission was compiled from proposal ${stamped}, but the proposal that was reviewed is ` +
+        `${opts.reviewedProposalDigest}. The plan was amended after compilation, so this mission is ` +
+        `not the reviewed plan. Compile the amended proposal and run that instead.`,
+      )
     }
   }
   const t0 = cfg.now()
@@ -859,7 +857,14 @@ export async function execute(
           stepId: step.id,
           reason: tr.reason,
           invalidation: tr.invalidation,
-          observed: String((tr.data as { observed?: unknown } | undefined)?.observed ?? tr.summary ?? tr.reason),
+          // `observed` is a field ON the replan-required variant. This used to dig through
+          // `tr.data?.observed ?? tr.summary`, neither of which exists on that arm of the union - so it
+          // fell back to `tr.reason` and recorded the reason twice, carrying no observation at all.
+          //
+          // The reason it does not have a `data` field is the point: a step that requires replanning
+          // has not produced a result, so there is nothing to put in one. Inventing a field for it
+          // would give the impression that a replan requirement carries step output.
+          observed: tr.observed ?? tr.reason,
         } as never)
         break
       }
@@ -892,47 +897,73 @@ export async function execute(
         }
       }
 
-      const accepted = 'evidence' in verdict
-      // ---- DURABLE EVIDENCE, with its provenance.
+      // ---- DISCRIMINATE THE VERDICT FIRST.
       //
-      // The verification has already HAPPENED - it is a read, not an action - so losing the record of
-      // it does not put the machine in an unknown state. But it does mean nobody can later show that
-      // this step was verified, so the step cannot be claimed complete: it becomes `outcome-unknown`
-      // rather than `verified`. An unverifiable-in-retrospect step is not a verified step.
-      if (rec) {
-        try {
-          rec.verified({
-            missionId: mission.id, stepId: step.id, attempt,
-            evidence: verdict.evidence, verifier: verifierNameFor(step), at: cfg.now(),
-          })
-        } catch (e) {
-          finalOutcome = {
-            kind: 'outcome-unknown',
-            reason:
-              'the action was performed and independently verified, but the evidence could not be ' +
-              'recorded. It cannot be claimed complete, because nobody can show it later.',
-            attempt,
-            attempted: { tool: resolution.tool.name, intent: step.intent, args: step.args },
-            persistenceError: msgOf(e),
+      // Both arms are handled in their own branches rather than through a boolean, because that is the
+      // only way the compiler can prove which field exists. Reading `verdict.evidence` and
+      // `verdict.rejected` behind an `accepted` boolean does not narrow the union, and the code
+      // depended on a shape the type did not guarantee.
+      //
+      // THIS ORDERING IS A FIX, NOT A STYLE CHOICE.
+      //
+      // `rec.verified(...)` used to sit ABOVE the accepted/rejected test, so the durable store was
+      // told a step had been verified on EVERY verdict - including one that had just been REJECTED,
+      // where `evidence` is `undefined`. The audit trail recorded verified work that no verifier had
+      // accepted, with no evidence attached.
+      //
+      // Nothing caught it because nothing typechecked the project. TypeScript flagged
+      // `verdict.evidence` as not existing on the `{ rejected }` arm, which is the same defect seen
+      // from the other side: the behaviour was wrong before the type was, and the type was never read.
+      if ('evidence' in verdict) {
+        // ---- DURABLE EVIDENCE, with its provenance.
+        //
+        // The verification has already HAPPENED - it is a read, not an action - so losing the record
+        // of it does not put the machine in an unknown state. But it does mean nobody can later show
+        // that this step was verified, so the step cannot be claimed complete: it becomes
+        // `outcome-unknown` rather than `verified`. An unverifiable-in-retrospect step is not a
+        // verified step.
+        if (rec) {
+          try {
+            rec.verified({
+              missionId: mission.id, stepId: step.id, attempt,
+              evidence: verdict.evidence, verifier: verifierNameFor(step), at: cfg.now(),
+            })
+          } catch (e) {
+            finalOutcome = {
+              kind: 'outcome-unknown',
+              reason:
+                'the action was performed and independently verified, but the evidence could not be ' +
+                'recorded. It cannot be claimed complete, because nobody can show it later.',
+              attempt,
+              attempted: { tool: resolution.tool.name, intent: step.intent, args: step.args },
+              persistenceError: msgOf(e),
+            }
+            emit({ type: 'step-refused', stepId: step.id, reason: finalOutcome.reason } as never)
+            break
           }
-          emit({ type: 'step-refused', stepId: step.id, reason: finalOutcome.reason } as never)
-          break
         }
+
+        emit({
+          type: 'evidence-verified',
+          stepId: step.id,
+          attempt,
+          accepted: true,
+          evidence: verdict.evidence,
+          reason: 'independent check satisfied the step',
+        } as never)
+
+        finalOutcome = { kind: 'verified', evidence: verdict.evidence }
+        break
       }
 
       emit({
         type: 'evidence-verified',
         stepId: step.id,
         attempt,
-        accepted,
-        evidence: accepted ? verdict.evidence : null,
-        reason: accepted ? 'independent check satisfied the step' : verdict.rejected,
+        accepted: false,
+        evidence: null,
+        reason: verdict.rejected,
       } as never)
-
-      if (accepted) {
-        finalOutcome = { kind: 'verified', evidence: verdict.evidence }
-        break
-      }
 
       // A tool that claims success and cannot show it is a FAILURE, not a near miss.
       lastFailure = `tool reported data but verification rejected it: ${verdict.rejected}`
@@ -1054,6 +1085,46 @@ function finalMission(
       ...history,
       { at: 0, kind: 'note', summary: `mission reached ${state}` },
     ],
+  }
+}
+
+/**
+ * A mission that refuses to start, as a REAL `ExecuteResult`.
+ *
+ * Both of these refusals used to hand-build a record of the wrong shape:
+ *
+ *   { missionId, startedAt, finishedAt, state, complete, verified: 0, failed, needsHuman, skipped }
+ *
+ * against a declared `ExecutionRecord` of
+ *
+ *   { missionId, startedAt, finishedAt, events, finalState, complete, verified }
+ *
+ * So the field was `state` where the type says `finalState`, `events` was missing entirely, and
+ * `verified` was the NUMBER 0 where the type says `Record<string, Evidence>` - a map of stepId to the
+ * evidence that verified it. The extra count-shaped fields do not exist on the record at all.
+ *
+ * Nothing caught it: the two call sites were the only places in the file that built a record without
+ * going through `recordOf`, and `verified: 0` happened to be assignable nowhere but the compiler was
+ * never asked. The practical effect was that the "this plan was amended after you reviewed it"
+ * refusal - one of the most important refusals in the system - returned a record whose `events` was
+ * `undefined` and whose `verified` was not a map.
+ *
+ * It is built through `recordOf` now, and takes only a reason, so there is no second way to construct
+ * one and nothing here can drift from the type again.
+ */
+function refusal(mission: Mission, reason: string): ExecuteResult {
+  const events: ExecutionEvent[] = [{
+    type: 'step-refused',
+    seq: 0,
+    at: 0,
+    missionId: mission.id,
+    stepId: '(mission)',
+    reason,
+  } as unknown as ExecutionEvent]
+  return {
+    mission,
+    record: recordOf(mission, events, {}, 0, 0),
+    events,
   }
 }
 

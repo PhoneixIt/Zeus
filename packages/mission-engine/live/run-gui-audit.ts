@@ -22,6 +22,7 @@
  */
 
 import { connect } from '../../control-core/operator-client.mjs'
+import type { Evidence } from '../state.ts'
 import { execute } from '../executor.ts'
 import { summarize } from '../events.ts'
 import {
@@ -93,11 +94,13 @@ function mission() {
 const cliVerifier = liveVerifier()
 
 /** Routes by mode, and passes the gui verifier the expectation for THIS mission. */
-function routed(expectInjection: boolean, claimedActor?: string) {
-  const gui = guiVerifier(client, { expectInjection, claimedActor })
+function routed(expectInjection: boolean, baselineOperatorEvents: number, claimedActor?: string) {
+  // `baselineOperatorEvents` was MISSING here while every other caller passed it, so this harness was
+  // the single place the control layer's own event count was not baselined before the step ran.
+  const gui = guiVerifier(client, { expectInjection, claimedActor, baselineOperatorEvents })
   return {
-    verifies: (s: { mode?: string }) => (s.mode === 'gui' ? gui.verifies(s as never) : cliVerifier.verifies(s as never)),
-    async verify(step: { mode?: string }, ctx: Parameters<typeof cliVerifier.verify>[1], data: unknown) {
+    verifies: (s: { mode?: string }) => (s.mode === 'gui' ? gui.verifies(s as never) : cliVerifier.verifies()),
+    async verify(step: { mode?: string }, ctx: Parameters<typeof cliVerifier.verify>[1], data: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
       return step.mode === 'gui'
         ? gui.verify(step as never, ctx, data)
         : cliVerifier.verify(step as never, ctx, data)
@@ -112,6 +115,14 @@ async function run(label: string, opts: {
 }) {
   calls.length = 0
   const tool = opts.gui ?? guiTool(client)
+  // The baseline is read HERE, immediately before the step, from the control layer itself.
+  //
+  // This had to be added rather than threaded in. `guiVerifier` requires
+  // `baselineOperatorEvents`, every other caller supplied it, and this harness was the one that did
+  // not - so the audit was the single place the verifier's central claim (the tool cannot influence
+  // the baseline) was not actually wired up. Reading it here is what makes the comparison mean
+  // something: a baseline taken after the step would confirm anything.
+  const baseline = await readRecord(client)
   const result = await execute(mission(), {
     tools: {
       resolve: (s: { tool?: string }) => {
@@ -120,7 +131,7 @@ async function run(label: string, opts: {
         return { unavailable: `no tool for "${s.tool}"`, candidates: [] }
       },
     },
-    verifier: routed(opts.expectInjection ?? false, opts.claimedActor),
+    verifier: routed(opts.expectInjection ?? false, baseline.operatorEvents, opts.claimedActor),
     control: wrapped,
     config: CONFIG,
   })
