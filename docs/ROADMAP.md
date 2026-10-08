@@ -505,3 +505,64 @@ detection and is not itself a regression, so it is separable and is the recommen
 durable state (SQLite) - evidence currently dies with the process · browser reproducibility -
 `playwright` undeclared and the Chromium path hardcoded · M15 model escalation, only if a
 model-agnostic route is found that does not depend on this hardware.
+
+
+---
+
+## M14 - INJECTION AUDIT WIDENED: COMPLETE
+
+Authorised 2026-10-08. The first half - widen the audit, do not touch the core - is done.
+
+### What changed
+
+The audit now asks whether a route can change the machine, not whether it injects input. It resolves
+mutating **helpers** as well as primitives, carries a `READ_ONLY` set so it does not flag everything, and
+returns three exit codes that distinguish *known gap* from *undocumented breach*.
+
+### The answer
+
+**The stronger invariant is FALSE**, and it was previously untestable. Three routes change real machine
+state without a gate: `/show`, `/restore`, `/focus`. A fourth, `/guifocus`, was wrongly listed in this
+project's own records as ungated - it performs pure reads.
+
+`/focus` is the substantive one: `Verify()` checks the window is the right window, not that the caller is
+permitted. A caller with no injection permission can still take the foreground from the person at the
+keyboard.
+
+### Ledger
+
+| # | Capability | Status | Evidence |
+|---|---|---|---|
+| 29a | Audit detects machine mutation without input injection | **PROVEN** | 7 window primitives + 2 helpers |
+| 29b | Mutating helpers resolved, not just primitives | **PROVEN** | `/focus` via `Win.Focus` |
+| 29c | Read-only routes not flagged | **PROVEN** | `/guifocus` asserted a read |
+| 29d | New ungated route raises exit 2 | **PROVEN** | injected `BringWindowToTop` route, CLI-verified |
+| 29e | `KNOWN_GAPS` cannot silence the alarm | **PROVEN** | control fails if used that way |
+| 29f | Stale entries detected | **PROVEN** | check fires on an invented entry |
+| 29g | All machine-state routes gated | **NOT PROVEN** | 3 gaps; needs control-core (ADR 0003) |
+
+### Blocked: H5
+
+Three `MayInject()` calls and three `InjectionRoutes` entries in `OperatorHost.cs`. Full code and the
+three things to weigh are in [`decisions/0003-gate-window-management-routes.md`](decisions/0003-gate-window-management-routes.md).
+`control-core` is not modified without a human decision.
+
+### Recommended next milestone: M15 - DURABLE STATE
+
+Selected because it is the highest-value item that is **not** blocked and **not** safety-critical.
+
+Evidence for it, from the M12 audit: there is **no SQLite, no database, no file-backed event log**.
+Mission state, evidence and history are **in-memory**. A crash loses all of it. For a product whose
+selling point is an auditable history, "the history dies with the process" is a structural defect, and it
+also blocks long-running missions outright.
+
+Scope: durable event/evidence store, schema, migration story, and the read path that renders it. **No
+safety invariant changes** - the store records what verifiers already observed; it grants nothing.
+
+After that: browser reproducibility (`playwright` undeclared, Chromium path hardcoded), then model
+escalation only if a model-agnostic route exists that does not depend on this hardware.
+
+### Still human-blocked
+
+H1/H2 release-after-takeover (I will not ask you to press anything) · H4 mouse sentinel · **H5 window
+routes (ADR 0003)** · G6/G7 on the other repository.

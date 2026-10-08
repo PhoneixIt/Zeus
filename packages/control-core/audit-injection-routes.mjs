@@ -45,15 +45,94 @@ import { dirname, join } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
-/** Every call that can change the machine's state. */
+/**
+ * Every call that can change the machine's state.
+ *
+ * THE COMMENT USED TO BE A CLAIM THAT WAS FALSE. It said "every call that can change the machine's
+ * state" above a list containing only INPUT-INJECTION primitives. Window management was not in it,
+ * and that omission is why `/show`, `/restore` and `/focus` were reported as governed for years:
+ * they reach no injection primitive, so this audit had nothing to say about them, and a passing audit
+ * was read as "everything is gated" when what it actually meant was "everything that injects is gated".
+ *
+ * A human watching the screen lose focus is affected by machine state exactly as much as one watching
+ * a keystroke arrive. Both belong here.
+ */
 const PRIMITIVES = [
+  // ---- input into the machine
   { re: /\bWin\.SendInput\s*\(/g, kind: 'SendInput', acts: 'hardware input' },
   { re: /\bHooks\.SendProbe\s*\(/g, kind: 'SendProbe', acts: 'instrument self-test' },
   { re: /\bWin\.PostMessage\s*\(/g, kind: 'PostMessage', acts: 'direct window message' },
   { re: /\bUia\.Invoke\s*\(/g, kind: 'Uia.Invoke', acts: 'UI Automation invoke (no input event)' },
   { re: /\bUia\.SetValue\s*\(/g, kind: 'Uia.SetValue', acts: 'UI Automation value write' },
   { re: /\bUia\.Focus\s*\(/g, kind: 'Uia.Focus', acts: 'UI Automation focus change' },
+  // ---- WINDOW AND DESKTOP STATE (added M14). No input is emitted; the machine still changes.
+  { re: /\bWin\.ShowWindow\s*\(/g, kind: 'ShowWindow', acts: 'window show/hide/minimise/maximise/restore' },
+  { re: /\bWin\.SetForegroundWindow\s*\(/g, kind: 'SetForegroundWindow', acts: 'steal the foreground window' },
+  { re: /\bWin\.BringWindowToTop\s*\(/g, kind: 'BringWindowToTop', acts: 'raise a window in the Z order' },
+  { re: /\bWin\.SetActiveWindow\s*\(/g, kind: 'SetActiveWindow', acts: 'change the active window' },
+  { re: /\bWin\.SetFocus\s*\(/g, kind: 'SetFocus', acts: 'move keyboard focus within a window' },
+  { re: /\bWin\.SwitchToThisWindow\s*\(/g, kind: 'SwitchToThisWindow', acts: 'force the foreground window' },
+  { re: /\bWin\.SetWindowPos\s*\(/g, kind: 'SetWindowPos', acts: 'move, resize or restack a window' },
+
+  // ---- MUTATING HELPERS. These are the ones that hid `/focus`.
+  //
+  // `/focus` calls `Win.Focus(...)`, not `SetForegroundWindow(...)`, and `Win.Focus` is a wrapper that
+  // does ShowWindow(SW_RESTORE) + BringWindowToTop + SetForegroundWindow + SetActiveWindow in a retry
+  // loop. A route audit that only matches the leaf P/Invoke declarations therefore sees a route that
+  // steals the foreground window as reaching nothing at all.
+  //
+  // The original audit solved exactly this for `Uia.*` by resolving helper bodies; this is the same
+  // problem one layer over, and it was found by the audit's own stale-gap check rather than by reading.
+  { re: /\bWin\.Focus\s*\(/g, kind: 'Win.Focus', acts: 'raise, restore and steal the foreground window' },
+  { re: /\bWin\.FocusChild\s*\(/g, kind: 'Win.FocusChild', acts: 'focus a specific child control' },
 ]
+
+/**
+ * Calls that LOOK like machine mutation but are not, and must never be reported as such.
+ *
+ * This is the other half of widening the audit. A check that flags everything is as useless as one
+ * that flags nothing, and `/guifocus` is the proof: it takes an `hwnd` and is filed next to `/focus`,
+ * and it calls `GetWindowThreadProcessId`, `GuiFocusOfThread`, `Title` and `Cls` - all pure reads. An
+ * earlier defect note listed `/guifocus` as ungated. That note was WRONG, and it was wrong because
+ * nobody checked what the route did.
+ *
+ * `FocusChild` is here for the same reason and is a genuinely useful contrast: it is named "Focus",
+ * looks mutating, and IS mutating - so it is deliberately absent from this list.
+ */
+const READ_ONLY = [
+  { re: /\bWin\.GetWindowThreadProcessId\s*\(/g, kind: 'GetWindowThreadProcessId', acts: 'read: window to process' },
+  { re: /\bWin\.GuiFocusOfThread\s*\(/g, kind: 'GuiFocusOfThread', acts: 'read: focus state of a thread' },
+  { re: /\bWin\.GetForegroundWindow\s*\(/g, kind: 'GetForegroundWindow', acts: 'read: current foreground window' },
+  { re: /\bWin\.IsWindowVisible\s*\(/g, kind: 'IsWindowVisible', acts: 'read: visibility' },
+  { re: /\bWin\.IsIconic\s*\(/g, kind: 'IsIconic', acts: 'read: minimised state' },
+  { re: /\bWin\.GetWindowRect\s*\(/g, kind: 'GetWindowRect', acts: 'read: window rectangle' },
+]
+
+/**
+ * DOCUMENTED GAPS: routes that change machine state and are NOT gated, each with the exact fix.
+ *
+ * This registry grants NOTHING. It does not add a route to `InjectionRoutes`, does not make any check
+ * pass, and cannot cause the audit to exit 0. Its only job is to make a known, accepted defect
+ * distinguishable from a NEW breach - see the exit-code contract below.
+ *
+ * The distinction is the whole point of the audit. Before it existed, a genuinely ungated route and
+ * three acknowledged ungated routes produced the same result: green.
+ */
+const KNOWN_GAPS = {
+  '/show': 'calls Win.ShowWindow with action=minimize|maximize|restore|show|hide; needs MayInject() at the dispatch head',
+  '/restore': 'calls Win.ShowWindow(SW_RESTORE); needs MayInject() at the dispatch head',
+  '/focus': 'calls Win.Focus/FocusChild (SetForegroundWindow + SetFocus). Verify() is an IDENTITY check - visible, not minimised, pid and title match - and never consults MayInject()',
+}
+
+// EXIT CODES. Kept distinct on purpose.
+//   0 - the invariant holds
+//   1 - the invariant does NOT hold, and every known cause is documented above
+//   2 - the audit found an UNDOCUMENTED gap, or its own tables rotted. This is the alarm that matters:
+//       it means something changed that nobody declared, and it is what stops the next route from
+//       arriving ungated the way these three did.
+const EXIT_INVARIANT_HOLDS = 0
+const EXIT_DOCUMENTED_GAP = 1
+const EXIT_UNDOCUMENTED_BREACH = 2
 
 /** Emission into the input stream is not the same as acting on the human's world. */
 const EMITTING = new Set(['SendProbe'])
@@ -397,13 +476,74 @@ for (const kind of allKinds.sort()) {
   }
 }
 
+const WINDOW_KINDS = new Set([
+  'ShowWindow', 'SetForegroundWindow', 'BringWindowToTop', 'SetActiveWindow',
+  'SetFocus', 'SwitchToThisWindow', 'SetWindowPos', 'Win.Focus', 'Win.FocusChild',
+])
+
 console.log('  --- every primitive, and every route that reaches it ---')
 for (const r of rows) {
   const via = r.route ?? (r.routes.join(', ') || '(none found)')
   const tag = r.status === 'governed' ? 'governed'
     : r.status === 'UNGOVERNED' ? '*** UNGOVERNED ***'
       : r.status
-  console.log(`  ${r.kind.padEnd(14)} ${via.padEnd(34)} ${tag}`)
+  console.log(`  ${r.kind.padEnd(20)} ${via.padEnd(30)} ${tag}`)
+}
+console.log('')
+
+// ---------------------------------------------------------------- the widened section
+//
+// A separate section, because the distinction that was missing is not "gated or not" but
+// "changes the machine" versus "injects input". Conflating them is what hid these routes: they are
+// ungated, and for years the audit said nothing at all, which reads the same as "fine".
+const windowRows = rows.filter((r) => WINDOW_KINDS.has(r.kind))
+
+// Dedupe BY ROUTE. `/focus` reaches both Win.Focus and Win.FocusChild, and without this it was listed
+// twice - which overstates the count of defects and, worse, makes a single route look like two
+// unrelated problems. The count a reader trusts has to count routes, not call sites.
+const ungovernedByRoute = new Map()
+for (const r of windowRows) {
+  if (r.status !== 'UNGOVERNED') continue
+  if (!ungovernedByRoute.has(r.route)) ungovernedByRoute.set(r.route, [])
+  ungovernedByRoute.get(r.route).push(r.kind)
+}
+const windowUngoverned = [...ungovernedByRoute.entries()].map(([route, kinds]) => ({ route, kinds }))
+const readRows = (() => {
+  const out = []
+  for (const ro of READ_ONLY) {
+    const lines = HOST.map((l, i) => (ro.re.test(l) ? i : -1)).filter((i) => i >= 0)
+    if (!lines.length) continue
+    const routes = new Set()
+    for (const i of lines) for (const g of groups) {
+      if (i >= g.start && i <= g.end) for (const r of g.routes) routes.add(r)
+    }
+    out.push({ kind: ro.kind, routes: [...routes].sort() })
+  }
+  return out
+})()
+
+console.log('  --- machine state changed WITHOUT input injection (the M14 widening) ---')
+if (!windowRows.length) console.log('  (none found - if this is wrong, the audit is not seeing the source)')
+for (const r of windowRows) {
+  const via = r.route ?? (r.routes.join(', ') || '(none found)')
+  const known = KNOWN_GAPS[r.route]
+  const tag = r.status === 'governed' ? 'governed'
+    : known ? '*** UNGOVERNED - DOCUMENTED GAP ***'
+      : '*** UNGOVERNED - UNDOCUMENTED BREACH ***'
+  console.log(`  ${r.kind.padEnd(20)} ${via.padEnd(30)} ${tag}`)
+}
+console.log('')
+for (const [route, kinds] of ungovernedByRoute) {
+  const known = KNOWN_GAPS[route]
+  console.log(`  ${route.padEnd(20)} via ${kinds.join(', ')}`)
+  if (known) console.log(`  ${''.padEnd(20)}      fix: ${known}`)
+}
+console.log('')
+
+console.log('  --- reads that must NOT be reported as mutation (discrimination control) ---')
+for (const r of readRows) {
+  const via = r.routes.join(', ') || '(none found)'
+  console.log(`  ${r.kind.padEnd(20)} ${via.padEnd(30)} read-only, correctly NOT gated`)
 }
 console.log('')
 
@@ -444,8 +584,9 @@ console.log('')
 
 const problems = []
 const ungoverned = rows.filter((r) => r.status === 'UNGOVERNED')
-if (ungoverned.length) {
-  problems.push(`${ungoverned.length} route(s) can change this machine but are NOT in InjectionRoutes: ${ungoverned.map((r) => r.route).join(', ')}`)
+const ungovernedRoutes = [...new Set(ungoverned.map((r) => r.route))].sort()
+if (ungovernedRoutes.length) {
+  problems.push(`${ungovernedRoutes.length} route(s) can change this machine but are NOT in InjectionRoutes: ${ungovernedRoutes.join(', ')}`)
 }
 if (declaredAbsent.length) problems.push(`InjectionRoutes names routes that do not exist: ${declaredAbsent.join(', ')}`)
 if (declaredUnreached.length) problems.push(`InjectionRoutes claims routes that reach no injection primitive: ${declaredUnreached.join(', ')}`)
@@ -456,8 +597,48 @@ for (const k of actionKinds) {
   if (!(reach.get(k)?.size)) problems.push(`primitive ${k} is called but no route reaches it - the audit cannot see it`)
 }
 
-console.log(problems.length === 0
-  ? '=== PASS: every action that can change this machine passes through the declared gate ==='
-  : `=== FAIL ===\n${problems.map((p) => '  - ' + p).join('\n')}`)
+// Every ungated machine-mutating route, split by whether anyone has written down why.
+const undocumentedBreaches = windowUngoverned.filter((r) => !KNOWN_GAPS[r.route])
+const documentedGaps = windowUngoverned.filter((r) => KNOWN_GAPS[r.route])
 
-process.exit(problems.length ? 1 : 0)
+// A stale entry in KNOWN_GAPS is itself a defect: it would let a route be fixed, or deleted, and keep
+// reporting a gap that no longer exists - training the reader to ignore the section.
+const staleGaps = Object.keys(KNOWN_GAPS).filter(
+  (r) => !windowUngoverned.some((u) => u.route === r) && !injectionRoutes.has(r),
+)
+
+for (const p of problems) console.log('  - ' + p)
+for (const d of documentedGaps) console.log(`  - DOCUMENTED GAP: ${d.route} changes machine state without a gate (via ${d.kinds.join(', ')}). ${KNOWN_GAPS[d.route]}`)
+
+if (staleGaps.length) {
+  console.log(`  - KNOWN_GAPS lists routes that are no longer ungated: ${staleGaps.join(', ')}`)
+}
+
+if (problems.length === 0 && undocumentedBreaches.length === 0 && documentedGaps.length === 0) {
+  console.log('=== PASS: every action that can change the real machine state passes through the declared gate ===')
+  process.exit(EXIT_INVARIANT_HOLDS)
+}
+
+if (undocumentedBreaches.length) {
+  console.log('')
+  console.log('=== ALARM: UNDOCUMENTED MACHINE-STATE BREACH ===')
+  console.log('  A route changes the machine and is neither gated nor recorded as a known gap.')
+  console.log('  This is the case the previous audit could not express at all. Declaring the route in')
+  console.log('  InjectionRoutes (with MayInject() at the dispatch head) fixes it; recording it in')
+  console.log('  KNOWN_GAPS records the defect honestly. Silently doing nothing is what let /show,')
+  console.log('  /restore and /focus arrive ungated.')
+  process.exit(EXIT_UNDOCUMENTED_BREACH)
+}
+
+console.log('')
+console.log('=== INVARIANT DOES NOT YET HOLD - and the audit can now prove it ===')
+console.log(`  ${documentedGaps.length} route(s) change real machine state without passing a gate:`)
+for (const d of documentedGaps) console.log(`    ${d.route.padEnd(12)} ${KNOWN_GAPS[d.route]}`)
+console.log('')
+console.log('  The stronger invariant - every action capable of changing the real machine state passes')
+console.log('  through the applicable declared gate - is FALSE today. It was previously untestable,')
+console.log('  because the audit only asked whether a route reached an injection primitive.')
+console.log('')
+console.log('  Fixing this requires changing packages/control-core/src/OperatorHost.cs, which this')
+console.log('  project does not modify without an ADR and a human decision. See docs/decisions/0003.')
+process.exit(EXIT_DOCUMENTED_GAP)

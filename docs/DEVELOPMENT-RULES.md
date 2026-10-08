@@ -95,10 +95,20 @@ Verified on this machine. Assume them until disproved.
 
 ```
 npm test                                        # must be 0 failures
-npm run control:audit-routes                    # must PASS
+npm run control:audit-routes                    # must not exit 2. Exit 1 is a DOCUMENTED gap
+                                                # (currently ADR 0003) and is the honest state.
 python packages/model/local/test-grammar.py     # must be 90/90
 git status --porcelain                          # must be clean
 ```
+
+### About the route audit exit code
+
+`0` the invariant holds. `1` it does **not** hold and every known cause is written down. `2` an
+**undocumented breach** - a route changes the machine and nobody recorded why.
+
+Exit 1 is currently correct and must not be "fixed" by touching `control-core` without a human
+decision. Exit 2 is the alarm and must never be tolerated. Never silence either by adding a route to
+`KNOWN_GAPS` - there is a control that fails if you try, because that is how a breach becomes permanent.
 
 If `docs/` was not updated to match reality, the commit is incomplete. The repository, not the
 conversation, is the source of truth.

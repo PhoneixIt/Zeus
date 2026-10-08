@@ -1047,3 +1047,110 @@ no validator.
 2. **The probe printed the wrong mode.** It reported `unconstrained` while `npm run` output claimed
    `ON`, because one had lost the header and the other had not. The probe's mode line is what caught
    it - which is the argument for a harness printing its own configuration rather than trusting it.
+
+
+---
+
+## M14 - THE INJECTION AUDIT, WIDENED (2026-10-08)
+
+Question: is the stronger invariant - *every action capable of changing the real machine state passes
+through the applicable declared gate* - true, and can it be tested?
+
+### The question was previously untestable
+
+The audit asked whether a route reached an input-**injection** primitive. Its own comment claimed the
+list was "every call that can change the machine's state". That claim was false: it contained only
+injection primitives. Window management was absent, so `/show`, `/restore` and `/focus` were never
+examined - and a green audit read as "everything is gated" when it meant "everything that injects is
+gated".
+
+### What each of the four routes actually does - read, not inferred
+
+| Route | Machine state it changes | Gate present | Gate required |
+|---|---|---|---|
+| `/show` | `Win.ShowWindow(hw, cmd)`, `action=minimize\|maximize\|restore\|show\|hide` | pid match only | `MayInject()` |
+| `/restore` | `Win.ShowWindow(hw, 9)` = `SW_RESTORE` | pid match only | `MayInject()` |
+| `/focus` | `Win.Focus` = `ShowWindow`+`BringWindowToTop`+`SetForegroundWindow`+`SetActiveWindow`; `FocusChild` adds `SetFocus` | `Verify()` | `MayInject()` |
+| `/guifocus` | **nothing** - `GetWindowThreadProcessId`, `GuiFocusOfThread`, `Title`, `Cls` are all reads | n/a | n/a |
+
+**`/guifocus` is a correction to this project's own records.** Two earlier `known-defects.md` entries
+listed it as ungated. It mutates nothing, and it was listed because nobody read the route.
+
+**`Verify()` is not a permission check.** It verifies the window is visible, is not minimised, and that
+pid and title match. It never calls `MayInject()`. So a caller with no injection permission can still
+take the foreground window from the person at the keyboard.
+
+### The verdict: the invariant is FALSE, and now provable
+
+`npm run control:audit-routes` exits **1** and prints:
+
+```
+=== INVARIANT DOES NOT YET HOLD - and the audit can now prove it ===
+  3 route(s) change real machine state without passing a gate:
+    /restore     calls Win.ShowWindow(SW_RESTORE); needs MayInject() at the dispatch head
+    /show        calls Win.ShowWindow with action=minimize|maximize|restore|show|hide; ...
+    /focus       calls Win.Focus/FocusChild (...). Verify() is an IDENTITY check ... never consults MayInject()
+```
+
+### Why the alarm is the deliverable, not the exit code
+
+Three exit codes, because the difference between *known* and *new* is the whole value:
+
+| Code | Meaning |
+|---|---|
+| 0 | invariant holds |
+| 1 | invariant does **not** hold, every cause documented |
+| 2 | **UNDOCUMENTED BREACH** - a route mutates the machine and nobody recorded why |
+
+Proven at the CLI, not just asserted: injecting a `/bringtofront` route calling `Win.BringWindowToTop`
+into a **copy** of control-core yields
+
+```
+BringWindowToTop     /bringtofront     *** UNGOVERNED - UNDOCUMENTED BREACH ***
+=== ALARM: UNDOCUMENTED MACHINE-STATE BREACH ===
+EXIT CODE: 2
+```
+
+`KNOWN_GAPS` cannot silence it. It adds no route to `InjectionRoutes`, makes no check pass, and cannot
+produce exit 0 - and a control asserts that adding a route to it does not convert a breach into a pass,
+because "just document it" is how a breach becomes invisible.
+
+### Two defects found in the widening itself
+
+1. **`/focus` was initially missed.** It calls the helper `Win.Focus(...)`, never naming a P/Invoke, and
+   `Win.Focus` is a wrapper doing four mutating calls. An audit matching only leaf declarations sees
+   nothing. **Found by the audit's own stale-entry check** (`KNOWN_GAPS lists routes that are no longer
+   ungated: /focus`), not by reading.
+2. **`/focus` was reported twice**, once per helper, inflating the defect count. Deduplicated by route -
+   the count a reader trusts must count routes, not call sites.
+
+### Discrimination controls - so the widening cannot become noise
+
+An audit that flags everything protects nothing. Two controls exist to stop that:
+
+- `/guifocus` must appear in the **read-only** section and must NOT appear in the mutation section.
+- `/type`, which reaches `Win.SetFocus` and **is** declared, must still be reported **governed** - so the
+  widening did not stop the audit reading `InjectionRoutes`.
+
+### Controls added (8, in `packages/mission-engine/test/audit-widening.test.ts`)
+
+Baseline truthfully reports exit 1 · three gaps named with their fix · **injected undeclared route raises
+exit 2** · `KNOWN_GAPS` cannot silence the alarm · read-only route not flagged as mutation · declared
+mutating route still governed · mutating **helper** detected · stale-entry check can fire.
+
+These run in `npm test` by copying `control-core` to a temp directory and mutating the copy, so
+`control-core` itself is never modified to make an audit pass.
+
+### Is control-core change required? YES
+
+Three `MayInject()` calls and three names in `InjectionRoutes`. Recorded in full, with the exact C# and
+three things a human should weigh first, in
+[`decisions/0003-gate-window-management-routes.md`](decisions/0003-gate-window-management-routes.md).
+
+**Not done autonomously.** `control-core` is proven inherited code holding takeover, the latched stop and
+no-self-release.
+
+### Preserved
+
+282 unit tests, 0 failures (274 + 8 new) · 90 grammar controls · audit exits 1, not 0, and not silently
+green · no existing evidence removed · `control-core/src/*.cs` byte-identical · nothing pushed.

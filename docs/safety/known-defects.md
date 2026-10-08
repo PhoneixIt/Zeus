@@ -452,3 +452,68 @@ whose text is a truncated fragment is still indistinguishable from a considered 
 rate and must never be done: declining is a *good* behaviour, and a system that cannot decline is a
 system that acts when it should not. The grammar stays permissive. The honest position is that this
 model cannot plan, and it now says so in a way that is easy to misread.
+
+
+---
+
+## M14 (2026-10-08) - RESOLVED AS A QUESTION, STILL OPEN AS A DEFECT
+
+The entry below ("the injection audit has a BLIND SPOT") is **superseded** by measurement. The blind
+spot is closed; what it was hiding is now a proven, counted defect.
+
+### What the audit now does
+
+`packages/control-core/audit-injection-routes.mjs` asks whether a route can change the machine, rather
+than whether it injects input. It covers seven window-mutating primitives (`ShowWindow`,
+`SetForegroundWindow`, `BringWindowToTop`, `SetActiveWindow`, `SetFocus`, `SwitchToThisWindow`,
+`SetWindowPos`) **plus the two mutating helpers** `Win.Focus` and `Win.FocusChild`.
+
+The helpers are the part that mattered. `/focus` calls `Win.Focus(...)`, never naming a P/Invoke, and
+`Win.Focus` is a wrapper doing `ShowWindow(SW_RESTORE)` + `BringWindowToTop` + `SetForegroundWindow` +
+`SetActiveWindow`. An audit matching only leaf declarations saw a route that steals the foreground as
+reaching nothing at all. **This was found by the audit's own stale-entry check, not by reading.**
+
+### The invariant, stated and answered
+
+> Every action capable of changing the real machine state passes through the applicable declared gate.
+
+**FALSE.** Three routes change machine state without a gate:
+
+| Route | Changes | Has | Needs |
+|---|---|---|---|
+| `/show` | `ShowWindow` minimize/maximize/restore/show/hide | pid check | `MayInject()` |
+| `/restore` | `ShowWindow(SW_RESTORE)` | pid check | `MayInject()` |
+| `/focus` | `ShowWindow`+`BringWindowToTop`+`SetForegroundWindow`+`SetActiveWindow`, optionally `SetFocus` | `Verify()` | `MayInject()` |
+
+**`Verify()` is an identity check, not a permission check.** It verifies the window is visible, not
+minimised, and that pid and title match. It never calls `MayInject()`. A caller with no injection
+permission can still take the foreground window from the person at the keyboard.
+
+**`/guifocus` was REMOVED from this list as a correction.** Earlier entries here listed it as ungated.
+It calls only `GetWindowThreadProcessId`, `GuiFocusOfThread`, `Title` and `Cls` - pure reads. It was
+listed because nobody read what the route did. Two controls now assert it stays classified as a read.
+
+### Severity: not a safety regression, but a real gap
+
+The operator is **not armed** (`mayInject=false`) and no injection can occur, so nothing is being
+exploited today. But the guarantee this project makes in writing was **narrower than believed**: "every
+action that can change this machine passes through the declared gate" was asserted by a check that could
+only see input injection.
+
+### Blocked
+
+The fix is three `MayInject()` calls and three names in `InjectionRoutes`, in `OperatorHost.cs` -
+`control-core`, which this project does not modify without a human decision. Recorded in full, with the
+exact code and three things to weigh, in [`../decisions/0003-gate-window-management-routes.md`](../decisions/0003-gate-window-management-routes.md).
+
+### The audit can no longer go quiet
+
+Three exit codes, and the distinction is the point:
+
+- `0` invariant holds
+- `1` invariant does NOT hold, every known cause documented
+- `2` **UNDOCUMENTED BREACH** - a route mutates the machine and nobody wrote down why
+
+`KNOWN_GAPS` grants nothing: it adds no route to `InjectionRoutes`, makes no check pass, and cannot
+produce exit 0. Adding a route to it does **not** silence the alarm - there is a control for that,
+because "just document it" is how a breach becomes permanent and invisible.

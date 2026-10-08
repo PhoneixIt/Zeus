@@ -89,6 +89,11 @@ no-self-release and fail-closed hooks. Those are evidenced by five proof harness
 `audit-injection-routes.mjs` proves that every action able to change the machine passes through the
 declared gate, and that omission denies. Run it: `npm run control:audit-routes`.
 
+Since **M14** it asks whether a route can change the machine, not merely whether it injects input, and it
+resolves mutating **helpers** as well as primitives. It currently exits **1**: the gate holds for
+everything that injects, and fails for three window-management routes (ADR 0003). It is deliberately not
+green, and it cannot be made green without a change to `control-core`.
+
 ## 4. The model boundary
 
 `PlanProvider` is model-agnostic by construction, and that was demonstrated rather than asserted:
@@ -141,8 +146,11 @@ Stated plainly, because a reader finding these later should not have to infer th
 - **No desktop shell.** No UI at all.
 - **No signed build, installer, updater, SBOM or licence.**
 - **No MCP.** Correctly so — see the governance contract.
-- **Window management is not permission-gated.** `/show`, `/restore`, `/focus`, `/guifocus` require
-  `Verify()` but do not consult `MayInject()`. **Unfixed and recorded.**
+- **Window management is not permission-gated.** `/show`, `/restore` and `/focus` change real window
+  state - show, un-minimise, hide, maximise, and steal the foreground window - and do not consult
+  `MayInject()`. `Verify()` is an *identity* check (visible, not minimised, pid and title match), not a
+  permission check. `/guifocus` is a **pure read** and correctly needs no gate; earlier records listed it
+  wrongly. **Unfixed: the fix is in `control-core`, blocked on human decision (ADR 0003).**
 - **No release-after-takeover.** Not proven; blocked on human decisions H1/H2.
 
 ## 7. Two defects worth naming
@@ -158,6 +166,8 @@ Stated plainly, because a reader finding these later should not have to infer th
 ```
 npm test                        # 274 unit tests, 0 failures
 npm run control:audit-routes    # every machine-changing action passes the declared gate
+                                # exit 0 = holds | 1 = documented gap | 2 = UNDOCUMENTED BREACH
+                                # currently exits 1 - see ADR 0003
 python packages/model/local/test-grammar.py   # 90 grammar controls
 ```
 
