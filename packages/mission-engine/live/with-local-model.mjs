@@ -38,11 +38,20 @@ if (!existsSync(join(MODEL_DIR, 'model.onnx'))) {
   process.exit(2)
 }
 
-const server = spawn(
-  'python',
-  [join(REPO, 'packages', 'model', 'local', 'server.py'), '--port', PORT, '--model-dir', MODEL_DIR],
-  { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'] },
-)
+// CONSTRAINED GENERATION is opt-in and is started HERE, on the server, not per request. The server
+// builds a vocabulary index at load time, which costs real seconds, so paying it on every run would
+// make the unconstrained baseline - the thing M10 is measured against - slower for no reason.
+  //
+  // A server started WITHOUT --grammar answers an x-grammar request with HTTP 400 rather than quietly
+  // ignoring it. A harness that silently measures the wrong thing is worse than no harness.
+  const GRAMMAR = process.env.AIOS_MODEL_GRAMMAR === '1'
+  const serverArgs = [
+    join(REPO, 'packages', 'model', 'local', 'server.py'),
+    '--port', PORT, '--model-dir', MODEL_DIR,
+  ]
+  if (GRAMMAR) serverArgs.push('--grammar')
+
+  const server = spawn('python', serverArgs, { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'] })
 
 let ready = false
 let serverOutput = ''
@@ -85,6 +94,9 @@ if (!ready) {
 }
 
 console.log(`[runner] local model is up on 127.0.0.1:${PORT} (pid ${server.pid})`)
+  console.log(`[runner] constrained generation: ${
+    GRAMMAR ? 'ON  (a structural grammar masks the logits)' : 'off  (unconstrained - this is the M9 baseline)'
+  }`)
 
 /**
  * Run one harness as a child and resolve with its exit code.

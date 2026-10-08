@@ -111,7 +111,18 @@ export function parseModelPlan(raw: string): ParseResult {
   }
 
   // A refusal is a legitimate answer and is recorded as one, not as a failure.
-  if (typeof json.refusal === 'string') {
+  //
+  // It must be a SUBSTANTIVE refusal. Measured under M10 constrained generation, the model emitted
+  // `{"steps":[],"refusal":""}` - degenerate output, not a considered decision - and the bare
+  // `typeof === 'string'` test recorded it as "the model declined to plan this objective" with an
+  // empty reason. That is an audit-trail defect rather than a safety one: nothing executed, but a
+  // rejection log would claim the model weighed the objective and declined it, which is false, and
+  // would give a reviewer nothing to look at.
+  //
+  // A blank refusal is therefore NOT a refusal. It falls through to the structural checks below, which
+  // reject it as what it actually is - a plan with zero steps. This makes the parser STRICTER, never
+  // more permissive, so it cannot be a way of raising an acceptance rate.
+  if (typeof json.refusal === 'string' && json.refusal.trim().length > 0) {
     return reject('not-understood', `the model declined to plan this objective: ${json.refusal}`, raw)
   }
 

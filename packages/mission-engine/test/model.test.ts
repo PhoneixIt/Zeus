@@ -222,6 +222,41 @@ test('a refusal is recorded as not-understood, not as a malformed plan', () => {
   if (!r.ok) assert.equal(r.code, 'not-understood')
 })
 
+// ---- M10: a BLANK refusal is not a refusal.
+//
+// Found by measurement, not by reading. Under constrained generation the 1.5B model emitted
+// `{"steps":[],"refusal":""}` - degenerate output rather than a considered decision - and the bare
+// `typeof === 'string'` test recorded it as "the model declined to plan this objective", with an empty
+// reason. Nothing executed, so this was never a safety failure; it is an audit-trail failure, and this
+// project's whole premise is that rejections are legible afterwards. A rejection log claiming the model
+// weighed the objective and declined it is simply false.
+
+test('a BLANK refusal is not recorded as a considered decline', () => {
+  for (const blank of ['', '   ', '\n\t ']) {
+    const r = parseModelPlan(JSON.stringify({ steps: [], refusal: blank }))
+    assert.equal(r.ok, false, 'a blank refusal must not yield an accepted plan')
+    if (!r.ok) {
+      assert.notEqual(r.code, 'not-understood',
+        'a blank refusal must not be recorded as the model declining to plan')
+      assert.equal(r.code, 'invalid-proposal')
+    }
+  }
+})
+
+test('a blank refusal is classified as what it is, with a reason a human can read', () => {
+  const r = parseModelPlan('{"steps":[],"refusal":""}')
+  assert.equal(r.ok, false)
+  if (!r.ok) assert.match(r.reason, /zero steps/)
+})
+
+// The change must not be a way of making more things pass. A blank refusal alongside a REAL plan is
+// not a refusal, and the plan is judged on its own merits rather than being waved through on the
+// strength of a stray key.
+test('the blank-refusal fix does not launder a bad plan', () => {
+  const bad = parseModelPlan(JSON.stringify({ steps: [{ id: 'a' }], refusal: '' }))
+  assert.equal(bad.ok, false, 'a structurally invalid plan is still rejected when refusal is blank')
+})
+
 // ============================================================ the one permitted normalisation
 
 test('a markdown fence is the ONLY normalisation, and it is named', () => {

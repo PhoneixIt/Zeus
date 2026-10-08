@@ -72,6 +72,18 @@ const ENDPOINT: ModelEndpoint = {
   // that was mid-answer and would have finished. That is a misdiagnosis produced by a timeout that was
   // sized for a different model, so the size is now explicit at the call site.
   timeoutMs: Number(process.env.AIOS_MODEL_TIMEOUT_MS ?? 200_000),
+
+  // CONSTRAINED GENERATION, opt-in, and it rides the EXISTING header interface.
+  //
+  // No provider change was needed: `ModelEndpoint.headers` already exists precisely so that any
+  // HTTP-speaking model server can be pointed at without the provider knowing what that server is. That
+  // is the interface doing its job, and it is why M10 did not have to weaken or extend the contract.
+  //
+  // The unconstrained path stays reachable, and deliberately so: a constrained run whose acceptance rate
+  // is compared against nothing is not a measurement. `AIOS_MODEL_GRAMMAR` unset reproduces M9.
+  ...(process.env.AIOS_MODEL_GRAMMAR === '1'
+    ? { headers: { 'x-grammar': '1' } }
+    : {}),
 }
 
 /** Attempts allowed for the real objective. Reported, never silently exhausted. */
@@ -244,6 +256,7 @@ console.log(`  completion tokens   ${firstRaw.completionTokens}`)
 console.log(`  prompt tokens       ${firstRaw.promptTokens}`)
 console.log(`  model latency       ${(firstRaw.elapsedMs / 1000).toFixed(2)}s`)
 console.log(`  finished on EOS     ${firstRaw.stoppedOnEos}`)
+console.log(`  generation mode     ${firstRaw.constrained ? 'CONSTRAINED (grammar-masked)' : 'unconstrained'}`)
 
 let firstProposal: PlanProposal | null = null
 /**
@@ -469,7 +482,17 @@ async function rawCompletion(p: ModelPlanProvider, ctx: PlanContext, obj: string
   const t0 = Date.now()
   const res = await fetch(ENDPOINT.url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // The headers come from the ENDPOINT, not from a hand-written literal here.
+    //
+    // Measured defect: this probe originally sent only `content-type`, so under M10 it ran
+    // UNCONSTRAINED while every attempt below it ran CONSTRAINED. The harness therefore printed a
+    // beautiful, well-formed plan as the headline sample and then reported 0/5 for the same
+    // objective - a contradiction on its face, because the two were different experiments.
+    //
+    // It is the kind of defect that survives review: nothing crashes, the number is real, and the
+    // sample above it is genuinely good. Deriving the headers from the endpoint removes the
+    // possibility of the two modes drifting apart again.
+    headers: { 'content-type': 'application/json', ...(ENDPOINT.headers ?? {}) },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(180_000),
   })
@@ -486,6 +509,7 @@ async function rawCompletion(p: ModelPlanProvider, ctx: PlanContext, obj: string
     promptTokens: json.usage?.prompt_tokens ?? 0,
     elapsedMs: Date.now() - t0,
     stoppedOnEos: true,
+    constrained: json.local_inference?.constrained === true,
   }
 }
 

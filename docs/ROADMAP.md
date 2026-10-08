@@ -98,7 +98,8 @@ software projects, research, multi-step business/productivity tasks. Universal c
 | 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
 | 23 | Window management governance | **PARTIAL** | `/show`,`/focus` ungated (no injection needed) |
 | 24 | Recovery / replanning, live | **PROVEN** | mission:recovery, genuine divergence, 2 attempts |
-| 24b | Recovery bounded, no inherited evidence | **PROVEN** | ecovery.test.ts, 3 unresolvable-world cases |
+| 24b | Recovery bounded, no inherited evidence | **PROVEN** | 
+ecovery.test.ts, 3 unresolvable-world cases |
 | 24c | Objective reconciliation | **PROVEN** | planner/reconcile.ts, refuses ambiguity |
 | 25 | Browser mode | **NOT STARTED** | package empty |
 | 26 | API mode | **NOT STARTED** | no tool |
@@ -388,3 +389,62 @@ decision.
 3. Never convert a failed proof into a success by weakening the test.
 4. Never claim `PROVEN` without evidence on the real system.
 5. Report as status, not as a request for instructions.
+
+
+---
+
+## M10 - CONSTRAINED DECODING: COMPLETE, AND IT DID NOT SOLVE THE PROBLEM
+
+Authorised 2026-10-08 in preference to a larger model. Status: **complete, honest, negative.**
+
+### Capability ledger additions (M10)
+
+| # | Capability | Status | Evidence |
+|---|---|---|---|
+| 28a | Structural grammar over `PlanProposal` | **PROVEN** | 90 controls; 0.5% overhead |
+| 28b | Logit masking in the decode loop | **PROVEN** | constrained output parses where unconstrained does not |
+| 28c | Grammar rejects dead prefixes rather than wedging | **PROVEN** | refused at the FIRST character of the measured dead prefix |
+| 28d | `capability`/`tool`/`args` stay unfiltered by the grammar | **PROVEN (deliberate)** | `test_grammar_does_not_filter_semantics` fails if tightened |
+| 28e | Exhaustion is a refusal, not a 500 | **PROVEN** | was HTTP 500; measured and fixed |
+| 28f | Constrained 1.5B produces a usable plan | **NOT PROVEN** | 0/4; ceiling reached inside a string |
+
+### What changed and what did not
+
+Changed: a new grammar + masking (additive), two harness bugs, one strictly-stricter parser rule.
+Unchanged: `PlanProvider`'s contract (the grammar rides the existing `headers` field), the compiler,
+governance, router, verifiers, review layer, `control-core`.
+
+### The answer to the question that was actually asked
+
+> Can constrained local inference produce genuinely useful plans while every M1-M9 safety property
+> remains intact?
+
+**The safety half: yes, and that is now proven rather than assumed** - 274 TS tests, 90 grammar
+controls, route audit PASS, `control-core` byte-identical, zero executions from four attempts.
+
+**The usefulness half: no.** The grammar made output well-formed and did not make it right. That is
+the finding, and reporting "more outputs parse" as progress would have been the trap.
+
+### Next milestone, selected from the evidence
+
+**M12 - TOKEN BUDGET AND DECODING SHAPE**, chosen because it is now the only cheap thing left to try
+before a bigger model: the binding failure is the 512-token ceiling reached inside a string value.
+Three testable interventions, none of which touches a validator:
+
+1. **Raise the ceiling** and confirm whether plans complete at all. (Cheapest possible test; may be
+   all that is needed.)
+2. **Constrain free-form string LENGTH** in `args` and prose fields - a structural bound, sanctioned,
+   and it removes the model's ability to ramble. Directly targets the measured failure.
+3. **Backtracking on a dead prefix**, if (1) and (2) are insufficient.
+
+Only if all three fail is a larger model justified - and by then the decision would rest on a
+measured ceiling rather than a benchmark score.
+
+### Deliberately NOT selected
+
+- **M11 browser observation** stays queued: valuable, narrower, and does nothing for the binding
+  constraint.
+- **Desktop app, release/resume (H1/H2), mouse sentinel (H4)**: all blocked on human decisions.
+- **Pivoting inference to `onnxruntime-genai`**: see `docs/ECOSYSTEM-AUDIT.md`. It is the right long
+  term target and the wrong move now - it cannot load the M9 model without a re-export, so it is a
+  model-conversion project, not a dependency swap.

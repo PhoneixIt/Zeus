@@ -357,3 +357,36 @@ Recorded because they are the ones most likely to recur:
 
 The governing lesson: *an instrument that cannot fail is not evidence.* Every claim in this
 repository cites an assertion count from a run, not a description of intended behaviour.
+
+
+---
+
+## M10 (2026-10-08) - the grammar is now sound; the MODEL is still not
+
+**Supersedes the M9 entry as the most important one.** M9 said "the model cannot produce valid
+plans". M10 is more precise and slightly worse news.
+
+- Constrained generation is structurally sound: **90 controls pass**, including that it refuses a dead
+  key prefix at its first character and that no reachable state is a dead end.
+- Cost is **0.5% of wall clock**. Constrained decoding is not the constraint.
+- The 1.5B model still produced **0 usable plans**, and the failure is now a **512-token ceiling
+  reached inside a string value** - not malformed output. The model cannot sustain a two-step plan
+  inside the budget.
+- A 1.5B model can produce a genuinely good plan (observed once, UNCONSTRAINED). So the capability
+  is near the surface and constrained decoding did not unlock it.
+
+**Still open, and this is the binding constraint on usefulness:**
+
+1. **A local model that produces valid plans - NOT PROVEN.** 0/4 constrained, 0/6 unconstrained at
+   1.5B. A capability gap, not a safety gap.
+2. **Generation latency.** 80-150s per attempt. A 7B model on 2 physical cores is 20-40 min/plan and
+   remains impractical.
+3. **Constrained decoding can manufacture FALSE REFUSALS.** Because `refusal` is a legitimate
+   `PlanProposal` variant, a model unable to plan can emit a syntactically perfect refusal. That is
+   safe - nothing executes - but it is dishonest, and `{"refusal":"well-formed nonsense"}` is
+   indistinguishable from a real decline. Only the BLANK case is now caught.
+4. **No backtracking.** The grammar refuses a dead prefix rather than recovering from one. For a weak
+   model, backtracking would likely raise the validity rate; it is not implemented.
+
+**Standing, unchanged:** release-after-takeover NOT PROVEN (H1/H2); P0 mouse sentinel (H4); window
+management still ungated.

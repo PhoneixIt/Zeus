@@ -111,6 +111,16 @@ export class ModelPlanProvider implements PlanProvider {
   private readonly deps: ProviderDeps
   /** Set by the provider. Read by nothing that could act. */
   private lastRaw: string | null = null
+
+  /**
+   * Why the last generation was stopped by the grammar, or ''.
+   *
+   * Held on the instance for the same reason `lastRaw` is: the HTTP response is local to `call()` and
+   * does not exist in the scope where the parse result is interpreted. A constrained decoder cuts
+   * generation short routinely, and without this the failure is reported as "malformed plan", which is
+   * true and useless.
+   */
+  private lastGrammarStop = ''
   private lastIgnoredFields: readonly string[] = []
 
   constructor(deps: ProviderDeps) {
@@ -197,10 +207,24 @@ export class ModelPlanProvider implements PlanProvider {
     const parsed: ParseResult = parseModelPlan(text)
     if (!parsed.ok) {
       this.lastIgnoredFields = []
+      // When the generation was cut short BY THE GRAMMAR, say so.
+      //
+      // Otherwise the reason is "the plan is malformed", which is true but hides the cause: a tight
+      // grammar plus a weak model means "the model asked for something the grammar forbids and there
+      // was no legal alternative". That is a completely different finding from "the model produced
+      // nonsense", and conflating them would make a constrained-decoding measurement unreadable.
+      //
+      // The reason arrives as a string on the instance rather than being read off the response here,
+      // because the response object does not exist in this scope. An earlier version referenced it
+      // anyway - which is a ReferenceError at runtime, found by reading the scopes rather than by
+      // running it.
+      const exhaustion = this.lastGrammarStop
+        ? ` The grammar stopped generation: ${this.lastGrammarStop}`
+        : ''
       return {
         ok: false,
         code: parsed.code,
-        reason: `the model returned a plan that was REJECTED, not repaired - ${parsed.reason}`,
+        reason: `the model returned a plan that was REJECTED, not repaired - ${parsed.reason}${exhaustion}`,
         unsupported: [],
       }
     }
@@ -261,12 +285,16 @@ export class ModelPlanProvider implements PlanProvider {
       throw new Error(`the reasoner answered ${res.status} ${res.statusText}`)
     }
     const json = await res.json() as {
+      local_inference?: { grammar_exhausted?: boolean; grammar_stop_reason?: string }
       choices?: Array<{ message?: { content?: string } }>
       content?: string
       response?: string
     }
     // Three response shapes, because three server families. All of them reduce to TEXT, which is
     // then parsed by the same strict parser. No shape is trusted further than that.
+    this.lastGrammarStop = json?.local_inference?.grammar_exhausted === true
+      ? String(json?.local_inference?.grammar_stop_reason ?? 'no reason recorded')
+      : ''
     const text = json?.choices?.[0]?.message?.content ?? json?.content ?? json?.response
     if (typeof text !== 'string') {
       throw new Error(`the reasoner returned no text content (keys: ${Object.keys(json ?? {}).join(', ')})`)

@@ -859,3 +859,97 @@ running it is.**
 - `[IO.File]` resolves relative paths against the process CWD, not PowerShell's.
 - The host must be started with `$env:PORTAI_OPERATOR_DIR` set to `packages/control-core`.
 - The operator may come up in `OBSERVING` after a restart. That is a safe state, not a fault.
+
+
+---
+
+## M10 - CONSTRAINED DECODING (authorised 2026-10-08)
+
+Question: can a structural grammar make the 1.5B model emit plans that survive the existing
+architecture, WITHOUT the grammar replacing any validator?
+
+### Result, reported as the four separate numbers the brief required
+
+| Metric | Value | Note |
+|---|---|---|
+| Syntax validity | **partial - 0/4 complete documents** | the failure moved from *malformed* to *incomplete*: generation stopped at the 512-token ceiling **inside a string value** |
+| Semantic validity | **0/4** | nothing reached the compiler |
+| Safety / governance | **no invariant disturbed** | 0 executions; every attempt refused at a declared layer |
+| Task usefulness | **0/4** | no plan, no mission |
+
+Latency: 79-150s per attempt (min/mean/max 79.1 / 132.5 / 150.3s) at ~0.8 tok/s.
+Masking overhead: **0.5%** of wall clock (0.073s of 14.3s). Constrained decoding is NOT the
+bottleneck; the model is.
+
+A controlled request with a short prompt did complete: `{"steps":[],"refusal":""}`,
+`grammar_complete: true`. So the mechanism works; this model cannot sustain a 2-step plan inside
+512 tokens.
+
+### What the grammar is, and what it is not
+
+`packages/model/local/grammar.py` masks logits against a JSON schema. It guarantees structure,
+required fields, types, closed unions, bounds, and termination. It deliberately does NOT know
+which capabilities or tools exist, and `args` is entirely free-form - so the compiler's capability
+check and the router's tool check stay REACHABLE. `test_grammar_does_not_filter_semantics` asserts
+that permissiveness and would fail if someone helpfully added the real vocabulary.
+
+### Defects found - all in MY new code, all found by measurement
+
+1. **Key wedge.** `IN_KEY` allowed any letter, so the key buffer reached
+   `outputFilePathCSharpCodeExample123456789` - a prefix of no field - and **0 of 34,192** candidate
+   tokens were acceptable. Generation aborted. Fixed with key prefix viability; the dead prefix is now
+   refused at its FIRST character.
+2. **`feed()` mutated its input.** Speculative token trial corrupted shared state, so every candidate
+   after the first failure was rejected. Every grammar test used a fresh state and missed it.
+3. **Constrained branch `continue`d past the KV cache update.** The model ran with an empty cache and
+   wrong positions, dying with an ONNX Gather bounds error that looked like a model problem.
+4. **Number wedge.** `allowed_bytes` withheld the delimiters that terminate a number. At the 24-char
+   cap only whitespace remained, and **no token starts with a bare space** - so a long number wedged
+   permanently. The character machine had always accepted those delimiters: the mask and the machine
+   simply disagreed.
+5. **`GrammarExhausted` surfaced as HTTP 500.** A constrained decoder hitting its own limit is a
+   refusal, not a server fault. Now a clean stop with the state named.
+
+### A measurement defect that nearly produced a false conclusion
+
+`run-local-model-mission.ts` printed a headline sample from a **raw probe that sent no `x-grammar`
+header**, while the attempts it then measured ran **constrained**. The screen showed a beautiful
+well-formed 2-step plan and then reported 0/5 for the same objective - an apparent contradiction,
+because they were different experiments. The probe now derives its headers from `ModelEndpoint` (which
+already existed for exactly this purpose) and prints the mode it ran in.
+
+I nearly recorded "constrained decoding produces good plans, 0/5 but see the sample". It does not.
+
+### `parse.ts` - one change, and it makes the parser stricter
+
+`{"steps":[],"refusal":""}` was recorded as "the model declined to plan this objective" with an empty
+reason. Degenerate output was being logged as a considered decision. A blank refusal is no longer a
+refusal; it falls through and is rejected as the zero-step plan it is. This DECREASES acceptance and
+cannot be a way of raising a rate.
+
+### Also found and fixed elsewhere
+
+- `provider.ts` read `json` in a scope where it does not exist - a `ReferenceError` at runtime.
+- `server.py` read `self.eos` during the constructor, before it was assigned.
+- `get_vocab(with_offsets=...)` - the parameter is `with_added_tokens`.
+- Four stale model servers were all bound to 8792; the oldest answered. `Get-Process` has no
+  `CommandLine`; `Get-CimInstance Win32_Process` does. The oldest was answering unconstrained
+  requests, which is why the first constrained run appeared to do nothing at all.
+
+### Reproduce
+
+```
+$env:AIOS_MODEL_GRAMMAR='1'
+$env:AIOS_MODEL_DIR="$env:LOCALAPPDATA\AIOS\models\qwen2.5-1.5b-instruct"
+$env:AIOS_MODEL_NAME='qwen2.5-1.5b-instruct'
+$env:AIOS_MODEL_TIMEOUT_MS='900000'
+npm run mission:local -- --only mission
+python packages/model/local/test-grammar.py     # 90 controls
+```
+
+### Verdict
+
+Constrained decoding **does** what it was supposed to do to syntax, at negligible cost (0.5% overhead),
+and **does not** make this model useful. The bottleneck moved from output discipline to raw capability
+plus a token ceiling. Nothing was weakened to achieve that: 274 TS tests and 90 grammar controls pass,
+the route audit passes, and `control-core` is byte-identical.
