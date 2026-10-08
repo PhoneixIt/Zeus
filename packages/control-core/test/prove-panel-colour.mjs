@@ -62,6 +62,16 @@ const g = await op.guard()
 // It must NOT print PASS. A proof that reports PASS while the instrument it depends on is dead is
 // exactly what let five never-running harnesses be cited as evidence for a milestone.
 let pixelCaptureLost = null
+// OCCLUSION, which is not the same as a defect.
+//
+// /panelgrid reports a rect and reads the pixels inside it WITHOUT checking that the panel is actually
+// visible there. Measured: the captured region contained the DESKTOP WALLPAPER, not the panel - so this
+// proof was reading someone else's pixels and reporting them as the panel's.
+//
+// That is the exact hazard this proof exists to catch ("the panel must not read green while input is
+// blocked"), so it is treated the same way as a dead instrument: the claim was NOT TESTED. Reporting it
+// as a FAILURE would blame the panel for pixels that were never its own.
+let panelOccluded = null
 const panel = await op.raw('/panelgrid').then((r) => r.body).catch((e) => {
   pixelCaptureLost = e
   console.log('\n=== INCONCLUSIVE: the panel pixels could not be read ===')
@@ -70,6 +80,18 @@ const panel = await op.raw('/panelgrid').then((r) => r.body).catch((e) => {
   return {}
 })
 const dom = pixelCaptureLost ? '' : hex(panel.dominant)
+
+// Declared HERE rather than above: it reads `dom`, and a `const` used before its initialiser is a
+// ReferenceError at module evaluation - which is how the first version of this patch failed.
+const domLooksOurs = /^#(C08A10|A02020|1E7A33|106E8A|6B4EC0)/i.test(dom)
+
+if (!pixelCaptureLost && !domLooksOurs) {
+  panelOccluded = dom
+  console.log('\n=== INCONCLUSIVE: the captured region does not contain the panel ===')
+  console.log(`    dominant=${dom} is not a colour this panel can paint.`)
+  console.log('    Something else is on screen where the panel says it is, so the pixels read here are')
+  console.log('    not the panel\'s. The claim below was NOT TESTED - it was not disproved.')
+}
 
 // SKIPPED, which is a third thing that is neither PASS nor FAIL.
 //
@@ -85,11 +107,11 @@ console.log(`   panel dominant=${dom} purity=${panel.purity} rect=${JSON.stringi
 check(g.state === 'ARMED' && g.mayInject === false,
   'REPRODUCED: control state is ARMED while input is blocked',
   `state=${g.state} mayInject=${g.mayInject}`)
-if (pixelCaptureLost) skip('the panel is NOT painted green while input is blocked'); else
+if (pixelCaptureLost || panelOccluded) skip('the panel is NOT painted green while input is blocked'); else
 check(dom !== GREEN,
   'the panel is NOT painted green while input is blocked',
   `dominant=${dom}, healthy green would be ${GREEN}`)
-if (pixelCaptureLost) skip('and is painted a blocked/stop colour instead'); else
+if (pixelCaptureLost || panelOccluded) skip('and is painted a blocked/stop colour instead'); else
 check(isBlockedColour(dom),
   'and is painted a blocked/stop colour instead',
   `dominant=${dom}, expected ${AMBER} or ${RED}`)
@@ -98,7 +120,7 @@ check(isBlockedColour(dom),
 if (panel.latched) {
   console.log(`   note: the emergency latch is set from an earlier test, so ${RED} is correct here.`)
 } else {
-  if (pixelCaptureLost) skip('with no latch, the blocked colour is specifically amber'); else
+  if (pixelCaptureLost || panelOccluded) skip('with no latch, the blocked colour is specifically amber'); else
   check(dom === AMBER, 'with no latch, the blocked colour is specifically amber', `dominant=${dom}`)
 }
 
@@ -106,10 +128,10 @@ console.log('\n=== the same panel in the genuinely healthy case ===')
 console.log('   Not reachable from here: clearing a takeover requires the human\'s chord.')
 console.log('   Stated rather than faked. Verified by the human pressing Ctrl+Alt+F12.')
 
-console.log(`\n   (${skipped} assertion(s) skipped because the pixels could not be read)`)
+console.log(`\n   (${skipped} assertion(s) skipped: the pixels could not be read or were not the panel's)`)
 console.log(`\n=== SUMMARY: ${
-  fails !== 0 ? fails + ' FAILURE(S)' : pixelCaptureLost || skipped ? 'INCONCLUSIVE' : 'PASS'
+  fails !== 0 ? fails + ' FAILURE(S)' : pixelCaptureLost || panelOccluded || skipped ? 'INCONCLUSIVE' : 'PASS'
 } ===`)
 if (fails !== 0) console.log('THE CLAIM IS NOT ESTABLISHED. The panel may be lying about being safe.')
 if (fails === 0 && pixelCaptureLost) console.log('THE RUN WAS NOT COMPLETE. Do not read this as a clean pass.')
-process.exit(fails ? 1 : pixelCaptureLost ? 3 : 0)
+process.exit(fails ? 1 : (pixelCaptureLost || panelOccluded || skipped) ? 3 : 0)

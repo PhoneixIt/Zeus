@@ -770,3 +770,74 @@ baseline - that is the finding.
 Steps 1-3 all touch `control-core/src`. Per the ADR rule this is a human decision, and unlike H5 it is not
 optional work: until it is done, this repository cannot honestly claim the control core's properties are
 demonstrated.
+
+
+---
+
+## M17 PART 3 (2026-10-08) - `capture-helper.ps1` WAS NEVER IN THE REPOSITORY
+
+The single largest defect found in this project, and it was found because the M17 gate refused to go
+green for a reason nobody had investigated.
+
+### What it was
+
+`OperatorHost.cs` has always delegated its screen capture to a PowerShell helper beside `host.json`:
+
+    string helper = Path.Combine(dir, "capture-helper.ps1");
+    if (!File.Exists(helper)) throw new FileNotFoundException("capture-helper.ps1 missing at " + helper);
+
+**That file was not in the repository.** So every `/screen.png` and `/panelgrid` call threw
+`FileNotFoundException` from inside the request handler, the socket closed without a response, and the
+client saw `other side closed`.
+
+Consequence: **the control core has never taken a screenshot**, and two proofs could never test what the
+human actually sees. The same defect class as the five proofs that never executed - a required artefact
+absent, the failure invisible, and the repository still citing capabilities that depended on it.
+
+### The fix
+
+`capture-helper.ps1` written to the contract the C# **already** expects, not a new one: `-X -Y -W -H` in
+virtualised coordinates, `-VirtW -VirtH`, `-Out`, and stdout containing the literal `"scalePct":[N]`
+that `ScreenPng` parses.
+
+The host process is deliberately DPI-**unaware** - the C# records that making it aware fixed the crop
+but broke click targeting, producing a scale of exactly 0.8 that missed every target. So the helper
+makes **its own thread** per-monitor-v2 aware and **measures** the scale rather than assuming it.
+
+**Measured: `scalePct: [80]`, physical 1920x1080 against virtualised 1536x864** - exactly the 0.8 the
+C# comments describe, now derived rather than stumbled upon.
+
+The capture is a single `Graphics.CopyFromScreen`. A first version did the whole thing in C# with
+`CreateCompatibleDC`/`BitBlt`/`Image.FromHbitmap`, which needed an explicit `System.Drawing` reference
+and juggled four GDI handles per capture - slow resource exhaustion in a long-lived process, not a
+crash. One call with nothing to release is the right shape.
+
+### A second finding: OCCLUSION
+
+`/panelgrid` reports a rect and reads the pixels inside it **without confirming the panel is visible
+there**. Captured directly, the region contained the **desktop wallpaper** - `purity: 0.022`, dominant
+`#B9BCD2` - while the panel was occluded.
+
+That matters because this proof exists to catch "the panel reads green while input is blocked", so
+reading someone else's pixels is precisely the hazard it guards against. `prove-panel-colour` now
+detects a dominant colour the panel cannot paint and reports **INCONCLUSIVE** rather than FAILURE: the
+claim was not tested, and blaming the panel for pixels that were never its own would be wrong.
+
+**Known weakness, stated rather than smoothed over:** occlusion is intermittent, so this proof can report
+PASS on one run and INCONCLUSIVE on the next depending on whether the panel happens to be on top. A
+PASS from it is therefore weaker evidence than a PASS from `prove-status-truth`.
+
+### Where the gate stands
+
+| Proof | Before | After |
+|---|---|---|
+| `prove-status-truth` | INCONCLUSIVE | **PASS** |
+| `prove-panel-colour` | INCONCLUSIVE | PASS / INCONCLUSIVE (occlusion-dependent) |
+| `prove-chord-swallow` | FAILED (4) | FAILED (4) |
+| `prove-panel-release` | FAILED (2) | FAILED (2) |
+| `prove-no-self-release` | FAILED (3) | FAILED (1) |
+
+`prove-no-self-release` improved from three failures to one: the payload now reports the pending
+takeover, and `takeoverPending is STILL set` passes. **The remaining failures are instrumentation, not
+escape** - the swallow counter, the untagged-click tag, and one message that does not name the human's
+action. The refusals all hold.
