@@ -204,26 +204,3 @@ push. M12 writes down what is true. It changes nothing about behaviour.
 
 **Queued behind it, in order:** durable state (SQLite) Â· process-tree containment (Job Objects) Â·
 window-management gating fix Â· browser reproducibility Â· M13 model-ceiling experiments.
-
----
-
-## 2026-10-08 - M17: control-core authorisation boundary
-
-The authority boundary changed is the EXISTING dispatch-head gate, not a new one:
-
-    if (RequiresPermission(path) && !Guard.MayInject())
-
-Three route paths were added to `InjectionRoutes`. No new component, no new IPC layer, no new
-dependency, no renamed type. `control-core/src/OperatorHost.cs` is the only C# file touched and the
-change is 17 added lines with nothing removed.
-
-Why this is the correct boundary: it already fails closed on all three conditions that must block
-action - latched emergency stop, pending human takeover, unhealthy or absent hook - and it already runs
-before any route body, so an omission denies by default. Adding per-route checks would have created a
-second, weaker enforcement mechanism that could drift from the first.
-
-What it enforces: a window cannot be minimised, hidden, restored, or focused without permission.
-
-Limitation now on the record: `/shutdown` is ungated, and a host restart clears the in-memory
-emergency-stop latch. Unreachable by the operator through the governed terminal path (no shell is
-permitted), but real.
