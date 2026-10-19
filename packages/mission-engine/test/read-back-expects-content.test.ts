@@ -232,7 +232,7 @@ test('7. validatePlan gives a read-back the expectation from the write it follow
     ],
   }, 'write the report to my Documents folder and read it back')
 
-  const read = v.steps.find((s) => s.id === 's4')
+  const read = v.steps.find((s: { id: string }) => s.id === 's4')
   assert.ok(read, 'the read-back step must survive validation')
   // The write was relocated, so the read-back follows it and declares where it is looking.
   assert.equal(String(read?.args.expectedPath ?? ''), String(read?.args.path ?? ''),
@@ -256,7 +256,7 @@ test('7b. a read-back with no producing step at all is REFUSED', async () => {
     steps: [{ id: 's1', intent: 'Read the note', tool: 'read-file', args: { path: p } }],
   }, 'read the note')
   assert.equal(v.deliverables.length, 0, 'nothing was written, so there is no deliverable')
-  assert.ok(v.refusals.some((r) => /cannot say which file it is proving/i.test(r)),
+  assert.ok(v.refusals.some((r: string) => /cannot say which file it is proving/i.test(r)),
     `a read-back with nothing to prove must be refused: ${JSON.stringify(v.refusals)}`)
 })
 
@@ -289,7 +289,7 @@ test('8c. a headless-only plan for a visible goal is still refused', async () =>
     reply: '', model: 'test',
     steps: [{ id: 's1', intent: 'Research', tool: 'web-research', args: { url: 'https://example.com', objective: goal, pages: 1 } }],
   }, goal)
-  assert.ok(v.refusals.some((r) => /headless research/i.test(r)),
+  assert.ok(v.refusals.some((r: string) => /headless research/i.test(r)),
     'fixing read-back must not weaken the visible-interaction refusal')
 })
 
@@ -312,7 +312,7 @@ test('the exact live shape: a 0-byte stub at the requested path no longer verifi
         { id: 's4', intent: 'Read it back', tool: 'read-file', args: { path: 'C:\\Users\\Samer\\Documents\\Zeus-Browser-Proof.txt' } },
       ],
     }, 'write the report to Documents and read it back')
-    const read = v.steps.find((s) => s.id === 's4')
+    const read = v.steps.find((s: { id: string }) => s.id === 's4')
     assert.ok(read, 'the read-back survives validation')
     const r = await verifyRead(
       { id: 's4', tool: 'read-file', args: read?.args ?? {} },

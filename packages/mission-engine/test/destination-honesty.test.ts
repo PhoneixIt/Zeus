@@ -73,7 +73,7 @@ test('a person-named destination that was substituted is RECORDED, not silently 
   assert.equal(v.substitutions[0].written, join(AGENT_OUT, 'AIOS-Desktop-Mission-Report.txt'),
     'and the path actually written is recorded beside it')
   // And it is on the step, so anything downstream can see it without re-deriving.
-  const step = v.steps.find((s) => s.id === 's3')
+  const step = v.steps.find((s: { id: string }) => s.id === 's3')
   assert.equal(String(step?.args.requestedPath ?? ''), REQUESTED)
 })
 
@@ -147,7 +147,7 @@ test('a substitution is announced in the notes, not only in the record', async (
     }],
   }, 'create the report in my Documents folder')
 
-  assert.ok(v.inferred.some((i) => /Documents/.test(i) && /output/i.test(i)),
+  assert.ok(v.inferred.some((i: string) => /Documents/.test(i) && /output/i.test(i)),
     'the transcript must say where it went and where it was asked to go')
 })
 
@@ -194,7 +194,7 @@ test('THE EXACT SHAPE THAT PRODUCED THE FALSE SUCCESS IS NOW A FAILURE', async (
     'the postcondition still proves the file exists - it is a true claim')
 
   // ...which is exactly why the substitution, and not the postcondition, is what fails the mission.
-  const substitutions = v.substitutions.filter((x) => x.requested.toLowerCase() !== x.written.toLowerCase())
+  const substitutions = v.substitutions.filter((x: { requested: string; written: string }) => x.requested.toLowerCase() !== x.written.toLowerCase())
   assert.ok(substitutions.length > 0,
     'and the mission cannot be reported satisfied while a person-named destination was not honoured')
   assert.notEqual(written.toLowerCase(), REQUESTED.toLowerCase())

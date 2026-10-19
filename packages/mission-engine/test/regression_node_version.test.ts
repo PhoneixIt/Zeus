@@ -37,7 +37,7 @@ test('isRetryable: unrelated transient failures remain retryable', () => {
 
 // Test 3: undefined follows the intended policy
 test('isRetryable: undefined follows the intended policy', () => {
-  assert.strictEqual(isRetryableSimulated(undefined), true, 'undefined should be retryable')
+  assert.strictEqual(isRetryableSimulated(undefined as unknown as { kind: string; reason?: string }), true, 'undefined should be retryable')
 })
 
 // Test 4: outcome-unknown/needs-human/replan-required remain non-retryable

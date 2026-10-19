@@ -76,7 +76,7 @@ test('the model list this machine reports contains free models, and they are all
       assert.equal(m.free, true, `${m.id} was returned as free but is not classified free`)
       assert.equal(models.isFreeModel(m.id), true, `${m.id} came back from the free path but does not pass isFreeModel`)
     }
-    assert.equal(list.some((m) => m.id.startsWith('openai/')), false,
+    assert.equal(list.some((m: { id: string }) => m.id.startsWith('openai/')), false,
       'a billable model reached the free list')
   } finally {
     process.env.USERPROFILE = HOME
@@ -140,7 +140,7 @@ test('a new session exists, is listed, and survives being read back', () => {
   assert.equal(s.model, sessions.DEFAULT_FREE_MODEL, 'the default model must be a free one')
 
   const { sessions: list } = sessions.listSessions()
-  assert.ok(list.some((x) => x.id === s.id), 'a created session must be listed')
+  assert.ok(list.some((x: { id: string }) => x.id === s.id), 'a created session must be listed')
   assert.ok(sessions.readSession(s.id), 'a created session must be readable')
   sessions.deleteSession(s.id)
 })
@@ -213,7 +213,7 @@ test('a corrupt session file is reported, not silently hidden', () => {
   writeFileSync(sessions.SESSIONS_DIR && p, '{ this is not json', 'utf8')
   const { sessions: list, unreadable } = sessions.listSessions()
   assert.ok(unreadable.includes(`${id}.json`), 'a corrupt file must be named in `unreadable`')
-  assert.equal(list.some((s) => s.id === id), false, 'a corrupt file must not be presented as a session')
+  assert.equal(list.some((s: { id: string }) => s.id === id), false, 'a corrupt file must not be presented as a session')
   rmSync(p, { force: true })
 })
 

@@ -124,8 +124,8 @@ test('the fix is a real behavioural change, demonstrated end to end', () => {
   const use = (): string => {
     const id = identityOf()
     // Mirrors the production guard exactly.
-    clientIdentity = clientIdentity === null ? id : clientIdentity
-    return id
+    clientIdentity = id ?? clientIdentity
+    return id ?? ''
   }
 
   writeFileSync(state, JSON.stringify({ pid: 1916, port: 50001 }))

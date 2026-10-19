@@ -120,9 +120,9 @@ test('the transcript names BOTH paths', async () => {
     steps: [{ id: 's3', intent: 'Create the report', tool: 'write-file', args: { path: REQUESTED, content: 'x' } }],
   }, 'create the report in my Documents folder')
 
-  assert.ok(v.inferred.some((i) => /Documents/.test(i)),
+  assert.ok(v.inferred.some((i: string) => /Documents/.test(i)),
     'the note must name where it was asked to go')
-  assert.ok(v.inferred.some((i) => /output/i.test(i)),
+  assert.ok(v.inferred.some((i: string) => /output/i.test(i)),
     'and where it went instead')
 })
 
@@ -192,7 +192,7 @@ test('THE EXACT SHAPE THAT PRODUCED THE FALSE SUCCESS IS NOW A FAILURE', async (
     'the postcondition still proves the file exists - it is a true claim')
 
   // ...which is exactly why the substitution, and not the postcondition, is what fails the mission.
-  const substitutions = v.substitutions.filter((x) => x.requested.toLowerCase() !== x.written.toLowerCase())
+  const substitutions = v.substitutions.filter((x: { requested: string; written: string }) => x.requested.toLowerCase() !== x.written.toLowerCase())
   assert.ok(substitutions.length > 0,
     'and the mission cannot be reported satisfied while a person-named destination was not honoured')
   assert.notEqual(written.toLowerCase(), REQUESTED.toLowerCase())

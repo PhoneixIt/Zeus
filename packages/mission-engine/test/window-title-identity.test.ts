@@ -79,7 +79,8 @@ async function verifyLaunch(
     if ('rejected' in v && typeof v.rejected === 'string') return { ok: false, reason: v.rejected }
     return { ok: true, reason: undefined }
   } finally {
-    for (const k of Object.keys(saved)) real[k] = saved[k]
+    const savedAsRecord = saved as Record<string, unknown>
+    for (const k of Object.keys(savedAsRecord)) real[k] = savedAsRecord[k]
   }
 }
 

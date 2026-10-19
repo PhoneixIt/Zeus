@@ -58,7 +58,18 @@ function scanPageForInstructions(text: string): { name: string; matched: string 
 }
 
 /** Normalize page facts from a raw read, using the shared browser-tools normaliser. */
-function normalisePageFacts(raw: unknown): { facts: { url: string; title: string; text: string; characters: number; headings: string[]; links: { text: string; href: string }[] }; notices: { name: string; matched: string }[] } | { error: string } {
+type NormalisedPageFacts = {
+  facts: {
+    url: string
+    title: string
+    text: string
+    characters: number
+    headings: string[]
+    links: { text: string; href: string }[]
+  }
+  notices: { name: string; matched: string }[]
+}
+function normalisePageFacts(raw: unknown): NormalisedPageFacts | { error: string } {
   const n = normalisePage(raw);
   if ('error' in n) return { error: n.error };
   const facts = n.facts;
@@ -69,7 +80,7 @@ function normalisePageFacts(raw: unknown): { facts: { url: string; title: string
       title: facts.title ?? PAGE_TITLE,
       text: facts.text ?? '',
       characters: typeof facts.characters === 'number' ? facts.characters : (facts.text?.length ?? 0),
-      headings: Array.isArray(facts.headings) ? facts.headings.slice(0, 25).map((h: string) => typeof h === 'string' ? h.slice(0, 120) : ''),
+      headings: [],
       links: Array.isArray(facts.links) ? facts.links.map((l: any) => ({ text: typeof l.text === 'string' ? l.text.slice(0, 80) : '', href: typeof l.href === 'string' ? l.href.slice(0, 400) : '' })) : [],
     },
     notices: notices.length > 0 ? scanForInstructions(facts.text ?? '') : [],

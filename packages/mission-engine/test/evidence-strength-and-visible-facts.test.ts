@@ -115,7 +115,7 @@ const research = { id: 's4', intent: 'Research the page', tool: 'web-research', 
 test('2a. a real window plus headless facts is REFUSED', async () => {
   const { validatePlan } = await loadAgent()
   const v = validatePlan({ reply: '', model: 'test', steps: [launch, listwins, research] }, VISIBLE_FACTS_GOAL)
-  const r = v.refusals.find((x) => /takes its facts from headless research/i.test(x))
+  const r = v.refusals.find((x: string) => /takes its facts from headless research/i.test(x))
   assert.ok(r,
     `a visible goal whose facts come from a headless fetch must be refused: ${JSON.stringify(v.refusals)}`)
   // The refusal must name the capabilities that WOULD work. The plan already opens a window, so
@@ -197,7 +197,7 @@ test('4. deliverable identity and destination honesty are intact', async () => {
   assert.equal(v.deliverables.length, 1)
   assert.equal(v.deliverables[0].readBackStepId, 's2')
   assert.equal(v.substitutions.length, 0, 'the output directory is authorised, so nothing is substituted')
-  assert.equal(v.steps.find((s) => s.id === 's2')?.args.deliverableId, v.deliverables[0].id)
+  assert.equal(v.steps.find((s: { id: string }) => s.id === 's2')?.args.deliverableId, v.deliverables[0].id)
 })
 
 test('5. an adopted editor document is still refused on a browser launch', async () => {

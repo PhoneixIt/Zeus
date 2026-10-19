@@ -116,18 +116,14 @@ test('a python script run against an undeclared path is refused', async () => {
 })
 
 test('a command that can write but names no file is refused', async () => {
-  const id = 'm-nofile'
-  try {
-    registerContract(id, buildArtifactContract([], null, dir => dir, ))
-  } catch { /* setup only */ }
   const dir = fixtureDir()
   try {
-    registerContract(id, buildArtifactContract([], null, dir))
-    const r = await runTerminal(id, 'npm install express')
+    registerContract('m-nofile', buildArtifactContract([], null, dir))
+    const r = await runTerminal('m-nofile', 'npm install express')
     assert.equal(r.kind, 'failed', 'a command that cannot say what it writes must be refused')
     assert.match(String(r.reason), /names no file|not a read-only command/i)
   } finally {
-    forgetContract(id); rmSync(dir, { recursive: true, force: true })
+    forgetContract('m-nofile'); rmSync(dir, { recursive: true, force: true })
   }
 })
 

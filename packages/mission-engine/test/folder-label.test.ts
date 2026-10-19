@@ -185,7 +185,7 @@ test('compose-summary: a failed label produces no summary text at all', async ()
 // ---------------------------------------------------------------- the contract the model reads
 
 test('the folderLabel contract tells the model to omit the operand', () => {
-  const spec = composeSummaryTool.args?.find((a) => a.name === 'folderLabel')
+  const spec = (composeSummaryTool as any).args?.find((a: { name: string; required: boolean; description: string }) => a.name === 'folderLabel')
   assert.ok(spec, 'compose-summary must declare folderLabel')
   assert.equal(spec!.required, false, 'folderLabel stays optional - omission is the correct move')
   assert.match(spec!.description, /OMIT THIS/, 'the contract must say omission is preferred')

@@ -62,6 +62,7 @@ function describePostcondition(pc: ObjectivePostcondition): string {
     case 'directory-entry-count': return `${pc.path} holds exactly ${pc.entries} entries`
     case 'consequential-deleted': return `${pc.path} was deleted${pc.effect ? ` (${pc.effect})` : ''}, corroborated from outside the tool`
     case 'command-exited': return `${pc.executable} exited ${pc.exitCode}, corroborated from outside the process`
+    default: return `${pc.kind} postcondition`
   }
 }
 

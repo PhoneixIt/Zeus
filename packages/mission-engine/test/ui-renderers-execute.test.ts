@@ -99,6 +99,7 @@ interface StubNode {
   click(): void
   get firstChild(): StubNode | null
   failAppend: boolean
+  classes: Set<string>
 }
 
 function makeNode(tag = 'div', id = ''): StubNode {

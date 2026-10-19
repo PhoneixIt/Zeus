@@ -46,8 +46,8 @@ test('a read-back follows the path the producing step actually used', async () =
   }, 'data protection companies')
 
   assert.equal(v.refusals.length, 0)
-  const wrote = String(v.steps.find((s) => s.id === 's2')!.args.path)
-  const read = String(v.steps.find((s) => s.id === 's3')!.args.path)
+  const wrote = String(v.steps.find((s: { id: string }) => s.id === 's2')!.args.path)
+  const read = String(v.steps.find((s: { id: string }) => s.id === 's3')!.args.path)
 
   assert.equal(wrote, join(AGENT_OUT, 'companies.csv'), 'the write is confined to the output folder')
   assert.equal(read, wrote, 'THE READ-BACK MUST POINT AT THE SAME FILE THE WRITE USED')
@@ -61,11 +61,11 @@ test('a read-back follows the path the producing step actually used', async () =
   // and it names both the old and the new path. Only the sentence describing how the pairing was
   // decided has changed, so that is what the assertion now checks.
   assert.ok(
-    v.inferred.some((i) => i.includes('s3') && /so it reads that file rather than/i.test(i)),
+    v.inferred.some((i: string) => i.includes('s3') && /so it reads that file rather than/i.test(i)),
     `the path correction must be reported: ${JSON.stringify(v.inferred)}`,
   )
   assert.ok(
-    v.inferred.some((i) => i.includes('s3') && i.includes(join(AGENT_OUT, 'companies.csv'))),
+    v.inferred.some((i: string) => i.includes('s3') && i.includes(join(AGENT_OUT, 'companies.csv'))),
     'and the note must name the file the read-back now opens',
   )
 })
@@ -87,11 +87,11 @@ test('a read-back with NO path at all reads the file the preceding step wrote', 
   }, 'data protection companies')
 
   assert.equal(v.refusals.length, 0, `a read with no path must not be refused: ${v.refusals.join('; ')}`)
-  const wrote = String(v.steps.find((s) => s.id === 's2')!.args.path)
-  const read = String(v.steps.find((s) => s.id === 's3')!.args.path)
+  const wrote = String(v.steps.find((s: { id: string }) => s.id === 's2')!.args.path)
+  const read = String(v.steps.find((s: { id: string }) => s.id === 's3')!.args.path)
   assert.equal(read, wrote, 'a read-back with no path must read the file the plan wrote')
   assert.ok(
-    v.inferred.some((i) => i.includes('s3') && /no path was given/i.test(i)),
+    v.inferred.some((i: string) => i.includes('s3') && /no path was given/i.test(i)),
     `the supplied path must be announced: ${JSON.stringify(v.inferred)}`,
   )
 })
@@ -106,7 +106,7 @@ test('a read of a file this plan never wrote is left exactly as given', async ()
       { id: 's2', intent: 'read a DIFFERENT file', tool: 'read-file', args: { path: 'b.txt' } },
     ],
   }, 'do two unrelated things')
-  const read = String(v.steps.find((s) => s.id === 's2')!.args.path)
+  const read = String(v.steps.find((s: { id: string }) => s.id === 's2')!.args.path)
   assert.equal(read, 'b.txt', 'a read of an unrelated file must not be redirected')
 })
 
@@ -123,8 +123,8 @@ test('the reconciliation does not widen the write confinement', async () => {
       { id: 's2', intent: 'read back', tool: 'read-file', args: { path: 'C:\\Windows\\System32\\evil.csv' } },
     ],
   }, 'a list of companies')
-  const wrote = String(v.steps.find((s) => s.id === 's1')!.args.path)
-  const read = String(v.steps.find((s) => s.id === 's2')!.args.path)
+  const wrote = String(v.steps.find((s: { id: string }) => s.id === 's1')!.args.path)
+  const read = String(v.steps.find((s: { id: string }) => s.id === 's2')!.args.path)
   // The dangerous destination is still refused; both steps land in the output folder instead.
   assert.ok(wrote.startsWith(AGENT_OUT), `write escaped: ${wrote}`)
   assert.equal(read, wrote)

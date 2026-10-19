@@ -110,7 +110,7 @@ test('1c. and the name survives all the way to a paired write and read-back', as
 
   assert.equal(v.refusals.length, 0, `the plan must be runnable: ${JSON.stringify(v.refusals)}`)
   const write = v.steps.find((s) => s.tool.includes('write-file'))
-  const read = v.steps.find((s) => s.tool.includes('read-file'))
+  const read = v.steps.find((s: { id: string; tool: string }) => s.tool.includes('read-file'))
   assert.match(String(write?.args.path ?? ''), /Zeus-Browser-Proof\.txt$/,
     'the deliverable keeps the name the person asked for')
   assert.equal(String(read?.args.path ?? ''), String(write?.args.path ?? ''),
@@ -236,7 +236,7 @@ test('5a. an EXPLICIT deliverableId resolves the mismatch, because it is a decla
   }, 'write a report and read it back')
 
   assert.equal(v.refusals.length, 0, `an explicit id is a valid dependency: ${JSON.stringify(v.refusals)}`)
-  const read = v.steps.find((s) => s.tool.includes('read-file'))
+  const read = v.steps.find((s: { id: string; tool: string }) => s.tool.includes('read-file'))
   assert.equal(String(read?.args.path ?? ''), `${OUT}report.txt`,
     'and the path follows from the declared identity')
   assert.equal(v.deliverables[0].readBackStepId, 's2')
@@ -310,7 +310,7 @@ test('6c. and the ok-gate still refuses satisfaction while it is outstanding', a
     reply: '', model: 'test',
     steps: [{ id: 's1', intent: 'Write', tool: 'write-file', args: { path: REQUESTED, content: THREE_FACTS } }],
   }, REAL_GOAL)
-  const outstanding = v.substitutions.filter((x) => !x.authorized && x.requested.toLowerCase() !== x.written.toLowerCase())
+  const outstanding = v.substitutions.filter((x: { authorized: boolean; requested: string; written: string }) => !x.authorized && x.requested.toLowerCase() !== x.written.toLowerCase())
   assert.ok(outstanding.length > 0)
   const ok = true && true && false && outstanding.length === 0
   assert.equal(ok, false, 'every step verified and the executor said complete, and it is STILL false')
@@ -340,7 +340,7 @@ test('7. a read-back carries the expected content from its deliverable', async (
       { id: 's2', intent: 'Read back', tool: 'read-file', args: { path: REQUESTED } },
     ],
   }, REAL_GOAL)
-  const read = v.steps.find((s) => s.tool.includes('read-file'))
+  const read = v.steps.find((s: { id: string; tool: string }) => s.tool.includes('read-file'))
   assert.equal(Number(read?.args.expectChars ?? 0), THREE_FACTS.length,
     'so a 0-byte file at this path cannot pass')
   assert.ok(String(read?.args.expectText ?? '').includes('Example Domain'))
@@ -364,7 +364,7 @@ test('8b. a headless-only plan for a visible goal is still refused', async () =>
     reply: '', model: 'test',
     steps: [{ id: 's1', intent: 'Research', tool: 'web-research', args: { url: 'https://example.com', objective: goal, pages: 1 } }],
   }, goal)
-  assert.ok(v.refusals.some((r) => /headless research/i.test(r)))
+  assert.ok(v.refusals.some((r: string) => /headless research/i.test(r)))
 })
 
 test('8c. the requested filename is still preserved when a folder is named in prose', async () => {

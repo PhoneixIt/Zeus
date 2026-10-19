@@ -117,7 +117,7 @@ test('a visible goal answered ONLY by headless research is REFUSED', async () =>
   // The refusal is a whole-plan judgement, so the step object itself is still returned; what stops
   // the plan is the refusal, and runGoal returns early on an empty-or-refused set. Asserted on the
   // refusal rather than on the step list, which is the thing that actually prevents execution.
-  const aboutVisibility = v.refusals.find((r) => /headless research/i.test(r))
+  const aboutVisibility = v.refusals.find((r: string) => /headless research/i.test(r))
   assert.ok(aboutVisibility,
     `the refusal must be about visibility, not an unrelated argument problem: ${JSON.stringify(v.refusals)}`)
   // And it must say what the person should have got instead, because "I could not show you that"
@@ -165,7 +165,7 @@ test('an ordinary research goal answered headlessly is NOT refused', async () =>
   const goal = 'research data protection companies and give me a spreadsheet'
   const v = validatePlan(headlessOnly(goal), goal)
 
-  const aboutVisibility = v.refusals.filter((r) => /headless research/i.test(r))
+  const aboutVisibility = v.refusals.filter((r: string) => /headless research/i.test(r))
   assert.equal(aboutVisibility.length, 0,
     'headless research is a legitimate answer when nobody asked to see anything')
 })
@@ -177,7 +177,7 @@ test('EVERY visible capability is recognised as visible', async () => {
   const { CAPABILITIES } = await import(pathToFileURL(join(HERE, '..', 'live', 'agent', 'capabilities.ts')).href)
   const { validatePlan } = await loadAgent()
   const goal = 'show me the taskbar'
-  const windowing = CAPABILITIES.filter((c) => /launch-app|desktop-input|screen-diff|list-windows|survey-window|ocr/.test(c.id))
+  const windowing = CAPABILITIES.filter((c: { id: string }) => /launch-app|desktop-input|screen-diff|list-windows|survey-window|ocr/.test(c.id))
   assert.ok(windowing.length > 0, 'the registry must still expose window capabilities')
 
   for (const c of windowing) {
@@ -185,7 +185,7 @@ test('EVERY visible capability is recognised as visible', async () => {
       reply: '', model: 'test',
       steps: [{ id: 's1', intent: 'Do the visible thing', tool: c.id, args: { app: 'msedge', action: 'type', text: 'x', path: 'C:\\Users\\Samer\\Documents\\x.txt', url: 'https://example.com/' } }],
     }, goal)
-    const refused = v.refusals.some((r) => /headless research/i.test(r))
+    const refused = v.refusals.some((r: string) => /headless research/i.test(r))
     assert.equal(refused, false, `${c.id} opens or reads a real window and must not be refused as headless`)
   }
 })
