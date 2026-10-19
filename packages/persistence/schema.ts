@@ -38,7 +38,7 @@
  */
 
 /** Bumped whenever `MIGRATIONS` gains an entry. Never edit an applied migration. */
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export interface Migration {
   readonly version: number
@@ -198,6 +198,27 @@ CREATE TABLE sessions (
   pid         INTEGER NOT NULL,
   host        TEXT
 );
+`,
+  },
+  {
+    version: 2,
+    name: 'objective-postconditions',
+    sql: `
+-- ------------------------------------------------------- the objective's own requirements
+-- A DECLARATION, exactly like basis above: persisted so the verdict can be RE-DERIVED on read, not
+-- cached. There is deliberately still no column meaning "succeeded" - completion remains derived from
+-- steps AND from whether these conditions were met, recomputed every time a mission is read back.
+--
+-- The column exists because the alternative is worse. Without it a restart would silently DROP every
+-- postcondition, and a mission that had genuinely proved its objective would come back UNPROVEN - so
+-- the honest verdict would be computed against an empty claim and every restored mission would look
+-- unfinished. Failing closed toward "nothing is ever satisfied" is not failing closed, it is simply
+-- wrong in the other direction.
+--
+-- Rows written before this migration have NULL here, which reads as UNDECLARED, which reads as
+-- UNPROVEN, which reads as NOT successful. That is the correct verdict for a mission whose objective
+-- checks were never recorded, and it is why this migration is additive with no backfill.
+ALTER TABLE missions ADD COLUMN objective_postconditions TEXT;
 `,
   },
 ]

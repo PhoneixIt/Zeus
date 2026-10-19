@@ -98,6 +98,19 @@ function mission(id: string, effect: DeclaredEffect | undefined, target = probe)
       },
     ] as Step[],
     history: [], pendingApprovals: [], startedAt: 0,
+    // WHAT THE OBJECTIVE REQUIRES, in checkable terms.
+    //
+    // The objective is "delete the probe", so the only claim worth making is that the probe is
+    // gone - and `consequential-deleted` requires that to be corroborated from OUTSIDE the tool
+    // that deleted it, which is the only version of this claim worth making about an irreversible
+    // action.
+    //
+    // This is what makes the harness's central assertion meaningful. Without it the mission is
+    // UNPROVEN by construction and `record.complete` is false even when the approval gate worked
+    // perfectly - which is exactly what happened: the gate proved itself, the journal recorded the
+    // deletion, the probe was gone, and the run still reported failure because nothing had said
+    // what success would mean. The fix is to declare the objective, never to relax the assertion.
+    objectivePostconditions: [{ kind: 'consequential-deleted', path: target }],
   }
 }
 

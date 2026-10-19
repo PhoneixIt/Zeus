@@ -451,6 +451,27 @@ function terminalMission(id: string, effect: DeclaredEffect | undefined, argv: s
   }
 }
 
+/**
+ * The same mission, additionally stating what must be true before it counts as done.
+ *
+ * `terminalMission` alone declares no objective, and a mission with no declared objective is
+ * UNPROVEN by design. A test that asserts an outcome of `complete` therefore has to say what it was
+ * trying to achieve - here, that node ran, exited 0, and produced the file, with the result
+ * corroborated from outside the process rather than taken from its own exit code.
+ */
+function terminalMissionWithObjective(
+  id: string, effect: DeclaredEffect | undefined, argv: string[], out: string,
+): Mission {
+  return {
+    ...terminalMission(id, effect, argv),
+    objective: 'run the process and produce the file it writes',
+    objectivePostconditions: [
+      { kind: 'command-exited', executable: NODE, exitCode: 0 },
+      { kind: 'artifact-exists', path: out },
+    ],
+  }
+}
+
 test('the ROUTER exposes the effect, so the gate is placed on the command not the tool', () => {
   const w = world()
   try {
@@ -503,11 +524,11 @@ test('an APPROVED consequential terminal command runs, and is then independently
     store.request(k, 'authorised')
     store.decide(k, 'approved', 'test-human', Date.now())
     const v = makeTerminalVerifier({ workspace: w.ws, expect: () => ({ path: 'report.txt', content: 'computed answer' }) })
-    const r = await execute(terminalMission('m2', undefined, [s]), {
+    const r = await execute(terminalMissionWithObjective('m2', undefined, [s], out), {
       tools: reg, verifier: v as never, control: fakeControl() as ControlSurface, approvals: store, config: CONFIG,
     })
     assert.equal(r.mission.plan[0].result!.outcome.kind, 'verified', 'approved + executed + independently confirmed')
-    assert.equal(r.record.complete, true)
+    assert.equal(r.record.complete, true, 'and the declared objective was verified from the corroborating evidence')
     assert.equal(readFileSync(out, 'utf8'), 'computed answer')
   } finally { cleanup(w) }
 })

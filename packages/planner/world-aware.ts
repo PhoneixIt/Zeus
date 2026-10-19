@@ -412,6 +412,27 @@ export class DeterministicWorldAwarePlanProvider implements PlanProvider {
           `${outName} exists and names all ${files.length} file(s) observed under ${subject}` +
           `${dirs.length ? ` across ${dirs.length} subfolder(s)` : ''}, totalling ` +
           `${files.reduce((a, f) => a + (f.sizeBytes ?? 0), 0)} bytes`,
+        // WHAT MUST BE PROVABLE BEFORE THIS MAY BE CALLED DONE.
+        //
+        // Stated separately from `expectedResult` because that sentence is prose and this is the
+        // part a machine can decide. Deliberately narrower than `expectedResult`: this declares the
+        // artefact exists and survives an independent re-read, and does NOT claim to prove the
+        // summary names all N files.
+        //
+        // It could, in principle. The composer is deterministic and this planner holds the listing,
+        // so the exact bytes are predictable and `artifact-content-matches` exists for exactly that.
+        // It is not declared here because the prediction has to match the TOOL's entry construction
+        // byte for byte - extension derivation, directory detection, sort order - and getting that
+        // subtly wrong would fail every correct mission rather than catch an incorrect one. A
+        // postcondition that is wrong in the safe direction is still wrong, and a permanent false
+        // negative across the evidence base is a worse outcome than a narrower honest claim.
+        //
+        // Declaring less than `expectedResult` promises is recorded here rather than left implicit:
+        // the reviewer sees both, and the gap between them is visible.
+        objectivePostconditions: [
+          { kind: 'artifact-exists', path: outPath },
+          { kind: 'artifact-read-back', path: outPath },
+        ],
         basis: {
           observationId: world.observationId,
           observedAt: world.observedAt,

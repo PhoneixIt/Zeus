@@ -49,6 +49,11 @@ function world() {
       args: { path: probe }, ...(e ? { effect: e } : {}),
     }] as Step[],
     history: [], pendingApprovals: [], startedAt: 0,
+    // The objective IS "delete the probe", so the check is that the probe is gone - corroborated from
+    // outside the tool that deleted it, which is the only version of this claim worth making about an
+    // irreversible action. Declared here rather than left implicit, because an approval test that
+    // passed on an unverified objective would be testing the gate and not the action.
+    objectivePostconditions: [{ kind: 'consequential-deleted', path: probe }],
   })
   return { root, ws, journal, probe, cap, registry, effect, mission }
 }

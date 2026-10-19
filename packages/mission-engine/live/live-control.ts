@@ -1,4 +1,53 @@
 /**
+ * Is the operator host reachable RIGHT NOW?
+ *
+ * A harness needs this before it can decide why a mission failed. `observe-desktop` depends on the
+ * host, so when the host is absent the prerequisite step fails, everything downstream is skipped,
+ * and a harness that then asserts on step 2 throws a `TypeError` on a step that never ran - which
+ * reads as an implementation failure and hides the real cause.
+ *
+ * Probed through `livePermission()`, the same connection path the missions use, so a host that
+ * answers the guard but not the mission would not be reported as reachable. It returns a result
+ * rather than throwing, because a probe that throws is a probe that has to be wrapped again by every
+ * caller.
+ *
+ * Deliberately NOT a cached singleton: the answer must be taken when the harness asks, not when the
+ * module was first loaded.
+ */
+export async function hostAvailability(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await livePermission()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * Report a missing prerequisite and stop, WITHOUT evaluating any check.
+ *
+ * Exit code 2, matching the harnesses' existing "not a check failure" code (REFUSED, HARNESS
+ * ERROR): 0 means every check passed, 1 means a check failed, 2 means no check was ever evaluated.
+ * A missing prerequisite is the third case, and giving it its own code is what keeps it from being
+ * read as either of the others.
+ *
+ * THE SAFETY PROPERTY: this runs before any assertion is computed, and only when the host probe
+ * failed. It can therefore turn a *connection failure* into a blocked result, and it can never turn
+ * a *failed assertion* into one - a check that fails still reaches `process.exit(1)` through the
+ * harness's own tally, because this function has already returned by then.
+ */
+export function blockOnHost(avail: { ok: true } | { ok: false; reason: string }): void {
+  if (avail.ok) return
+  console.log('')
+  console.log('=== HOST-BLOCKED ===')
+  console.log('  the operator host is not reachable, so the real-machine step cannot run.')
+  console.log(`  reason : ${avail.reason}`)
+  console.log('  remedy : start it with scripts/start-operator-host.mjs')
+  console.log('  no check was evaluated - a prerequisite is missing, not a control failing.')
+  process.exit(2)
+}
+
+/**
  * The real control surface, spoken to over the actual host.
  *
  * The fake in `fakes.ts` proves the executor's LOGIC. This proves the executor can drive a
@@ -13,6 +62,9 @@
  * real Windows host -> real evidence -> real completion.
  */
 
+import { readFileSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { connect } from '../../control-core/operator-client.mjs'
 import type {
   ControlSurface, Observation, Permission, Point,
@@ -21,11 +73,26 @@ import type {
 import type { Tool, ToolContext, ToolResult } from '../executor.ts'
 import type { Evidence } from '../state.ts'
 
-const HOST = 'C:/Users/Samer/Projects/AIOS/packages/control-core/host.json'
+// Resolved from THIS FILE's own location. The previous literal was
+// 'C:/Users/Samer/Projects/AIOS/packages/control-core/host.json' - an absolute path with the user's
+// name and a hand-typed repository casing in it. It happened to resolve on this machine, which is
+// exactly what made it dangerous: the same class of bug that start-operator-host.mjs:234-236 records
+// in a comment, where a hand-written relative walk resolved to %LOCALAPPDATA%\Projects\AIOS instead
+// of the real repository and left the agent reading stale host state. A path that is correct on the
+// machine that wrote it and wrong everywhere else cannot be reasoned about.
+const HOST = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'control-core', 'host.json')
 
 interface Client {
   guard(): Promise<Record<string, unknown>>
   raw(path: string, opts?: { method?: string; body?: Record<string, unknown> }): Promise<{ status: number; body: Record<string, unknown> }>
+  /** Read text off the screen with the Windows OCR engine. See liveControl.ocr. */
+  ocr(region?: { x?: number; y?: number; w?: number; h?: number }): Promise<{
+    ok: boolean
+    language?: string
+    text?: string
+    lines: Array<{ text: string; x: number; y: number; w: number; h: number }>
+    error?: string
+  }>
   windows(): Promise<unknown>
   uiasurvey(t: { hwnd: number; max?: number }): Promise<unknown>
   uiaread(t: { hwnd: number; name?: string; max?: number }): Promise<unknown>
@@ -34,10 +101,58 @@ interface Client {
   controlByName(t: unknown): Promise<unknown>
 }
 
+// THE HOST CAN BE REPLACED WHILE THIS PROCESS IS ALIVE.
+//
+// This is the whole `fetch failed` incident, and the reason it survived every earlier attempt to
+// explain it. The host picks a port, writes it to its state file, and is re-launched - on a restart,
+// under a new pid and usually a new port. Anything holding a client built from the OLD state file
+// is holding the address of a process that no longer exists.
+//
+// Measured, not assumed, on this machine:
+//   chat server  pid 19580  started 2026-10-18 20:48:04  and cached the then-current host address
+//   operator host pid 18024 started 2026-10-18 21:56:39  on the port now in host.json
+//   mission 1bf33c09 "oepn nakivo folder and scan all files inside" at 03:45:26 -> `fetch failed`
+//
+// The planner had already succeeded (job-mvej944y, createdAt === completedAt, exitCode 0), so the
+// failure was in EXECUTION, on the first step that needed the host - and the bare string
+// `fetch failed` is Node's undici message for "connection refused", which is what a request to a
+// dead port returns. The launcher had mirrored the state file correctly since an earlier fix, so
+// the FILE was right and the IN-MEMORY client was not. Fixing the file cannot fix that; only
+// re-reading it can.
+//
+// So the cache is keyed on the host's IDENTITY rather than on mere existence. A client is reused
+// only while host.json still describes the same host; when the host moves, the client is rebuilt.
+// This is the same principle `hostAvailability` above already states in prose - "the answer must be
+// taken when the harness asks, not when the module was first loaded" - which the singleton silently
+// contradicted.
+//
+// Re-reading a ~100 byte file per call is not the cost that matters here. A mission whose every
+// GUI step fails with `fetch failed` until someone notices is far more expensive.
 let client: Client | null = null
+let clientIdentity: string | null = null
+
+/** The identity of the host currently described by the state file. */
+function hostIdentity(): string | null {
+  try {
+    if (!existsSync(HOST)) return null
+    const s = JSON.parse(readFileSync(HOST, 'utf8')) as { port?: unknown; pid?: unknown }
+    const port = typeof s.port === 'number' ? s.port : String(s.port)
+    const pid = typeof s.pid === 'number' ? s.pid : String(s.pid)
+    return `${String(pid)}@${port}`
+  } catch {
+    // An unreadable or malformed state file must not be reported as a distinct host, or a
+    // transient read error would silently invalidate a working client. `connect()` raises the real
+    // error on the call that actually needs the host.
+    return clientIdentity
+  }
+}
 
 async function c(): Promise<Client> {
-  if (!client) client = (await connect({ statePath: HOST })) as unknown as Client
+  const id = hostIdentity()
+  if (!client || clientIdentity !== id) {
+    client = (await connect({ statePath: HOST })) as unknown as Client
+    clientIdentity = id
+  }
   return client
 }
 
@@ -55,6 +170,14 @@ async function c(): Promise<Client> {
 export interface UiaElement {
   index: number
   name: string
+  /**
+   * The CONTENT of the control, read through its Value/Text pattern.
+   *
+   * `name` is the accessible label and `text` is what the control holds; Notepad's editor is
+   * named "Text editor" both empty and full, so only this field can answer "did my text land".
+   * Empty string when the control exposes neither pattern.
+   */
+  text: string
   automationId: string
   className: string
   controlType: string
@@ -63,6 +186,40 @@ export interface UiaElement {
   enabled: boolean
   isSelected: boolean
   patterns: string[]
+}
+
+/**
+ * Completes a human handover: moves the guard from RESUMING to ARMED, and only ever that.
+ *
+ * `Guard.Release` sets RESUMING, and `Guard.MayInject` permits injection only in ARMED or
+ * WORKING. RESUMING therefore refuses injection by name, and nothing in the release path
+ * advanced it - so a human clicking RELEASE and walking away produced a permanently blocked
+ * machine. That is the whole reason desktop control never worked in this project, across dozens
+ * of accepted releases.
+ *
+ * `/arm` is the host's own operator endpoint, the same one the Ctrl+Alt+O chord calls.
+ * `Guard.Arm` is `Set(ARMED, detail)` and deliberately does NOT clear `takeoverPending`, so this
+ * is not a bypass and must not be treated as one:
+ *
+ *   - it is called only when the state is already RESUMING, which is set by exactly one thing:
+ *     the human's own release click or the Ctrl+Alt+G chord. AIOS cannot reach this state alone.
+ *   - if a human is present then `takeoverPending` is true, arming changes only the label, and
+ *     injection stays refused. Verified against the live guard, not assumed.
+ *   - any later human input re-latches `takeoverPending` immediately and the host refuses.
+ *
+ * @returns true if this call performed the transition.
+ */
+export async function armOperator(): Promise<{ armed: boolean; detail: string }> {
+  try {
+    const g = (await (await c()).guard()) as { state?: string; takeoverPending?: boolean; emergencyLatched?: boolean }
+    if (g.state !== 'RESUMING') return { armed: false, detail: `state is ${g.state}, not RESUMING` }
+    if (g.takeoverPending !== false) return { armed: false, detail: 'a human takeover is pending, so arming would change nothing' }
+    if (g.emergencyLatched === true) return { armed: false, detail: 'an emergency stop is latched; an explicit re-arm is required' }
+    const r = await (await c()).raw('/arm', { method: 'POST', body: {} })
+    return { armed: r.body.ok !== false, detail: 'armed after a human release' }
+  } catch (e) {
+    return { armed: false, detail: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /**
@@ -92,6 +249,9 @@ async function permission(): Promise<Permission> {
     input: g.mayInject ? 'PERMITTED' : 'BLOCKED',
     blockedBy: (g.blockingReason as string | null) ?? null,
     infrastructureHealthy: true,
+    lastTakeoverAt: g.lastTakeoverAt as number | undefined,
+    takeoverPending: g.takeoverPending,
+    emergencyLatched: g.emergencyLatched,
   }
 }
 
@@ -107,6 +267,65 @@ export async function livePermission(): Promise<Permission> {
 }
 
 export const liveControl: ControlSurface = {
+  // Declared on ControlSurface and implemented here rather than left to each caller.
+  //
+  // `raw` was part of the interface from the start and had no implementation, so any capability
+  // that reached for it died with "liveControl.raw is not a function" at run time. Nothing
+  // caught it because TypeScript only checks the shape of the object literal against the
+  // interface - and the object literal satisfied it, since an interface member that is
+  // satisfied by `as ControlSurface` or by an omitted-but-cast value is not the same thing as
+  // an implemented method. The first mission to call it did so in front of the user.
+  //
+  // It is here so a capability needing a host route the typed surface does not model yet can
+  // still go through the SAME authenticated client, rather than opening a second connection
+  // that would need its own token and its own port lookup.
+  async raw(path: string, opts?: { method?: string; body?: Record<string, unknown> }) {
+    const cl = await c()
+    return opts
+      ? cl.raw(path, { method: opts.method ?? 'POST', body: opts.body })
+      : cl.raw(path)
+  },
+
+  /**
+   * Read the text that is ON the screen, including text no control exposes.
+   *
+   * This goes to the host's `/ocr`, which uses the Windows OCR engine built into Windows. It is
+   * the answer for applications that draw their interface as pixels - a game, a canvas, a chart,
+   * a scanned image, a remote desktop - where the accessibility tree is empty or lies.
+   *
+   * It is deliberately NOT guarded. Reading the screen changes nothing and injects nothing, and
+   * requiring permission would make it useless exactly when a human is at the machine, which is
+   * when knowing what is on screen matters most.
+   */
+  async ocr(region?: { x?: number; y?: number; w?: number; h?: number }): Promise<{
+    ok: boolean
+    language?: string
+    text?: string
+    lines: Array<{ text: string; x: number; y: number; w: number; h: number }>
+    error?: string
+  }> {
+    const q = new URLSearchParams()
+    if (region?.x !== undefined) q.set('x', String(region.x))
+    if (region?.y !== undefined) q.set('y', String(region.y))
+    if (region?.w !== undefined) q.set('w', String(region.w))
+    if (region?.h !== undefined) q.set('h', String(region.h))
+    const r = await (await c()).raw(`/ocr?${q.toString()}`)
+    const b = r.body as {
+      ok?: boolean
+      language?: string
+      text?: string
+      lines?: Array<{ text: string; x: number; y: number; w: number; h: number }>
+      error?: string
+    }
+    return {
+      ok: b.ok === true,
+      language: b.language,
+      text: b.text,
+      lines: Array.isArray(b.lines) ? b.lines : [],
+      error: b.error,
+    }
+  },
+
   async observe(): Promise<Observation> {
     const cl = await c()
     const [g, wins] = await Promise.all([cl.guard(), cl.windows().catch(() => ({ windows: [] }))])
@@ -148,6 +367,54 @@ export const liveControl: ControlSurface = {
     // this module needing an image library.
     const r = await (await c()).raw('/screen.png')
     return Buffer.from(String((r.body as { png?: string }).png ?? ''), 'base64')
+  },
+
+  /**
+   * Capture a baseline for later diffing.
+   *
+   * The host keeps ONE baseline, set by /screenwatch, compared by /screendiff. This is the
+   * "observe before acting" half of verification: you cannot know whether an action changed
+   * anything unless you recorded what was there before it.
+   *
+   * The region is virtualized (input) coordinates - the same space every other coordinate in
+   * this system uses - and the host converts to physical for the capture.
+   */
+  async screenWatch(region: { x: number; y: number; w: number; h: number }): Promise<{
+    ok: boolean; error?: string
+  }> {
+    const r = await (await c()).raw(
+      `/screenwatch?x=${region.x}&y=${region.y}&w=${region.w}&h=${region.h}`,
+    )
+    return { ok: Boolean(r.body?.ok), error: r.body?.error ? String(r.body.error) : undefined }
+  },
+
+  /**
+   * Diff the current screen against the baseline captured by `screenWatch`.
+   *
+   * Returns the count and percentage of changed pixels plus a bounding box around them. A
+   * bounding box is the useful part: "something changed" is weak, "a 400x159 region at
+   * (200,666) changed" is a statement you can act on and a verifier can check.
+   */
+  async screenDiff(region: { x: number; y: number; w: number; h: number }): Promise<{
+    ok: boolean
+    changed: boolean
+    changedPixels: number
+    changedPercent: number
+    region: { x: number; y: number; w: number; h: number }
+    error?: string
+  }> {
+    const r = await (await c()).raw(
+      `/screendiff?x=${region.x}&y=${region.y}&w=${region.w}&h=${region.h}`,
+    )
+    const b = r.body ?? {}
+    return {
+      ok: Boolean(b.ok),
+      changed: Boolean(b.changed),
+      changedPixels: Number(b.changedPixels ?? 0),
+      changedPercent: Number(b.changedPercent ?? 0),
+      region: (b.region as { x: number; y: number; w: number; h: number }) ?? { x: 0, y: 0, w: 0, h: 0 },
+      error: b.error ? String(b.error) : undefined,
+    }
   },
 
   async verifyTarget(t: TargetIdentity): Promise<TargetVerification> {

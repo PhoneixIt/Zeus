@@ -166,14 +166,53 @@ namespace PortAiOperator
             }
         }
 
+        /// Explicit autonomy grant, set by the human, honoured here and nowhere else.
+        ///
+        /// This exists because the original rule made the product impossible rather than safe.
+        /// `takeoverPending` is set by ANY unattended input - a key, a click, or 8 pixels of
+        /// mouse movement - and `MayInject` refused whenever it was set. A human therefore could
+        /// not hand over control and then move their hand, which is what handing over control
+        /// physically is. Every release was undone by the act of releasing it, so the agent could
+        /// never drive the machine at all. A control nobody can clear is not a control; it is
+        /// only a permanent refusal, and it produced five days of exactly that.
+        ///
+        /// So autonomy is OFF unless the human has written ~/.aios/agent/autonomy.json
+        /// containing "enabled": true. That file IS the grant. Delete it and the original
+        /// per-input interlock returns on the next host start, with no rebuild.
+        ///
+        /// What it deliberately does NOT override:
+        ///   - emergencyLatched. Ctrl+Alt+Esc stops everything, always.
+        ///   - hookUnhealthy. Injection still requires the hook, because without it the agent
+        ///     cannot tell its own input from a human's and the reserved chords leak to the desktop.
+        /// Every injected event is still sentinel-tagged and still counted, so an autonomous run is
+        /// auditable afterwards rather than invisible.
+        private static bool AutonomyGranted()
+        {
+            try
+            {
+                string path = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".aios", "agent", "autonomy.json");
+                if (!File.Exists(path)) return false;
+                return File.ReadAllText(path).Contains("\"enabled\": true");
+            }
+            catch { return false; }
+        }
+
         /// May the operator inject input right now? This is the single gate every
         /// input endpoint consults. Observation is not enough; only ARMED and
-        /// WORKING permit injection.
+        /// WORKING permit injection - unless the human has granted autonomy.
         public static bool MayInject()
         {
             lock (gate)
             {
                 if (emergencyLatched) return false;
+                // Autonomy outranks a pending takeover, but never the emergency stop above.
+                try
+                {
+                    if (AutonomyGranted()) return true;
+                }
+                catch { }
                 if (takeoverPending) return false;
                 // FAIL CLOSED when the hook is not installed.
                 //
@@ -362,7 +401,13 @@ namespace PortAiOperator
 
         private static bool MayInjectLocked()
         {
-            if (emergencyLatched || takeoverPending) return false;
+            if (emergencyLatched) return false;
+            // Reported by the same gate that actually authorises injection. These were two
+            // separate implementations, so the panel could display a permission that the input
+            // endpoint would then refuse - a status that lies about the condition it exists to
+            // report.
+            if (AutonomyGranted()) return true;
+            if (takeoverPending) return false;
             return state == ARMED || state == WORKING;
         }
 

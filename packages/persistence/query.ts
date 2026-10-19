@@ -21,7 +21,24 @@
 
 import type { DurableStore, EvidenceRow, PersistedApproval } from './store.ts'
 import type { Mission } from '../mission-engine/state.ts'
-import { isComplete } from '../mission-engine/state.ts'
+import { isComplete, isMissionSuccessful, objectiveVerdict } from '../mission-engine/state.ts'
+import type { Evidence, ObjectiveVerdict } from '../mission-engine/state.ts'
+
+/**
+ * Persisted evidence rows, keyed by step, in the shape the objective rule consumes.
+ *
+ * Keyed by step id because that is how the executor keys `record.verified`, so a restored mission
+ * is judged against exactly the evidence map it was originally judged against. Rows with no step id
+ * are dropped rather than filed under a placeholder key: a piece of unattributed evidence must not
+ * be able to satisfy an objective postcondition, since nothing would tie it to the mission's work.
+ */
+function evidenceByStep(rows: readonly EvidenceRow[]): Record<string, Evidence> {
+  const out: Record<string, Evidence> = {}
+  for (const r of rows) {
+    if (r.stepId) out[r.stepId] = r.evidence
+  }
+  return out
+}
 
 export interface EvidenceSummary {
   readonly total: number
@@ -41,8 +58,10 @@ export interface MissionSummary {
   readonly persistedState: string
   readonly stepsTotal: number
   readonly stepsByStatus: Readonly<Record<string, number>>
-  /** Re-derived from steps and evidence, never read from a stored flag. There is no stored flag. */
+  /** Re-derived from steps AND evidence AND the objective's declared conditions, never read from a stored flag. There is no stored flag. */
   readonly complete: boolean
+  /** What the evidence said about the objective. Retained so "failed" and "never checkable" stay distinguishable on disk. */
+  readonly objectiveVerdict: ObjectiveVerdict
   readonly startedAt: number
   readonly finishedAt?: number
   readonly evidence: EvidenceSummary
@@ -110,7 +129,14 @@ export function summariseMission(
     persistedState: m.state,
     stepsTotal: m.plan.length,
     stepsByStatus,
-    complete: isComplete(m),
+    // Re-derived on every read from the restored steps AND the restored objective postconditions.
+    //
+    // Both halves are required. Re-deriving from steps alone is the original defect - a persisted
+    // mission whose every step verified but whose objective did not hold would read as complete after
+    // a restart. Re-deriving from a CACHED flag is a different defect, which is why nothing is
+    // cached and the verdict is recomputed from evidence every time.
+    complete: isMissionSuccessful(m, evidenceByStep(recovered.evidence)),
+    objectiveVerdict: objectiveVerdict(m.objectivePostconditions, evidenceByStep(recovered.evidence)),
     startedAt: m.startedAt,
     finishedAt: m.finishedAt,
     evidence: summariseEvidence(recovered.evidence, store.session.sessionId),

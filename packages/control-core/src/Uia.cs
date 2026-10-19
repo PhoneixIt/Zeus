@@ -150,8 +150,20 @@ namespace PortAiOperator
         public static string ElJson(El e, int index)
         {
             StringBuilder sb = new StringBuilder();
+            // The CONTENT of a text-bearing control, read through its Value or Text pattern.
+            //
+            // This is here because the accessible Name of a text box is the box's LABEL, not its
+            // contents. Notepad's editor reports Name="Text editor" whatever is typed into it;
+            // the sentence the user just typed is only reachable through the Value pattern. A
+            // survey that reports only Name therefore says "Text editor" after typing and the
+            // same thing on an empty document, which makes it useless for the one question it
+            // is most often asked - did my text actually land? - and made every `type` step
+            // unverifiable, because the verifier correctly looked for the typed text in a
+            // field that by design never contains it.
+            string content = ContentOf(e);
             sb.Append("{\"index\":").Append(index)
               .Append(",\"name\":\"").Append(Esc(e.Name)).Append("\"")
+              .Append(",\"text\":\"").Append(Esc(content)).Append("\"")
               .Append(",\"automationId\":\"").Append(Esc(e.AutomationId)).Append("\"")
               .Append(",\"className\":\"").Append(Esc(e.ClassName)).Append("\"")
               .Append(",\"controlType\":\"").Append(Esc(e.ControlType)).Append("\"")
@@ -163,6 +175,37 @@ namespace PortAiOperator
             for (int i = 0; i < e.Patterns.Count; i++) { if (i > 0) sb.Append(','); sb.Append('"').Append(e.Patterns[i]).Append('"'); }
             sb.Append("]}");
             return sb.ToString();
+        }
+
+        /// What a control CONTAINS, via Value, then Text, then falling back to the accessible
+        /// Name. Returns "" rather than throwing when the control has none of those patterns.
+        ///
+        /// The fallback to Name is deliberate and is the last resort, not the first: Name is a
+        /// label, and reporting it as content would let a verifier match a label and call the
+        /// text present. Empty is the honest answer for a control with no content.
+        public static string ContentOf(El e)
+        {
+            try
+            {
+                if (e.Patterns.Contains("Value"))
+                {
+                    object p = e.Ae.GetCurrentPattern(ValuePattern.Pattern);
+                    string v = ((ValuePattern)p).Current.Value;
+                    if (!string.IsNullOrEmpty(v)) return v;
+                }
+            }
+            catch { }
+            try
+            {
+                if (e.Patterns.Contains("Text"))
+                {
+                    var tp = (TextPattern)e.Ae.GetCurrentPattern(TextPattern.Pattern);
+                    string t = tp.DocumentRange.GetText(-1);
+                    if (!string.IsNullOrEmpty(t)) return t;
+                }
+            }
+            catch { }
+            return "";
         }
 
         /// Search one window's accessibility subtree.
@@ -390,6 +433,183 @@ namespace PortAiOperator
             if (text.Length == 0) text = e.Name;
             return "{\"text\":\"" + Esc(text) + "\",\"source\":\"" +
                 (e.Patterns.Contains("Value") ? "Value" : e.Patterns.Contains("Text") ? "Text" : "Name") + "\"}";
+        }
+
+        /// A snapshot of what this window is currently showing.
+        ///
+        /// Used to decide whether the window has finished settling. It combines the window title
+        /// with the content of every text-bearing control, because both move while an application
+        /// is still loading: Notepad's title gains the restored document's name, and the editor
+        /// gains its text, at different moments.
+        public static string Fingerprint(IntPtr hwnd)
+        {
+            var sb = new StringBuilder(Win.Title(hwnd));
+            foreach (string c in Contents(hwnd, 120)) { sb.Append('\n').Append(c.Length).Append(':').Append(c, 0, Math.Min(c.Length, 200)); }
+            return sb.ToString();
+        }
+
+        /// Wait until this window stops changing, or the deadline passes.
+        ///
+        /// WHY THIS EXISTS
+        ///
+        /// Six characters were going missing, and every hypothesis about WHY was wrong until this
+        /// one was tested. It was not shift handling - all-uppercase strings landed in full. It
+        /// not a cold process - killing Notepad before every attempt made the loss vanish, 6/6.
+        /// It was not the Ctrl+A/Delete "blank the document" step - that ran in the losing case and
+        /// the winning case alike.
+        ///
+        /// What the losing and winning cases shared was the DIFFERENCE between them: a graceful
+        /// close leaves Notepad a saved session, so the next launch RESTORES the previous document
+        /// and typing races that load. Killed processes have no session, so there is nothing to
+        /// restore and nothing to race - which is why force-killing "fixed" it and was the wrong
+        /// conclusion to draw from it.
+        ///
+        /// So rather than guess a startup time, this waits for the window to become quiet: the
+        /// title and the contents must read the same on three consecutive samples. That is an
+        /// observable property of the target, not an assumption about how long Notepad takes.
+        ///
+        /// Returns the milliseconds waited. The caller types on a deadline either way - waiting
+        /// forever for a window that legitimately never stops changing would be worse than typing
+        /// into it.
+        public static int WaitStable(IntPtr hwnd, int timeoutMs, out bool stable)
+        {
+            string previous = null;
+            int same = 0;
+            int waited = 0;
+            stable = false;
+            while (waited < timeoutMs)
+            {
+                string now = Fingerprint(hwnd);
+                if (now == previous)
+                {
+                    same++;
+                    if (same >= 2) { stable = true; return waited; }  // three identical reads
+                }
+                else { same = 0; previous = now; }
+                Thread.Sleep(120);
+                waited += 120;
+            }
+            return waited;
+        }
+
+        /// Does this window expose a control that can hold text yet?
+        ///
+        /// The readiness question, asked of the window rather than of the global focus element.
+        ///
+        /// The first version of this asked `AutomationElement.FocusedElement` and required it to
+        /// belong to the target process and expose a Value or Text pattern. It never returned true
+        /// for Notepad: the measured result was readyWaitMs=3000 - the full timeout, burned on
+        /// every call - and the typing then lost the same six characters it always did. A gate
+        /// that cannot open is indistinguishable from no gate at all, except that it also costs
+        /// three seconds, so the question was wrong rather than the answer.
+        ///
+        /// What actually matters is whether the window's tree contains a control that accepts
+        /// text at all. A XAML editor that has not been built yet is simply absent from the tree;
+        /// once it exists it appears with a Value or Text pattern, whether or not it holds
+        /// anything. That is the signal waited on here.
+        ///
+        /// Empty content deliberately does NOT count as "not ready": a freshly opened document is
+        /// an empty editor that is perfectly ready for text, and a content-based test would wait
+        /// forever for something to be typed before allowing it to be typed.
+        public static bool HasTextTarget(IntPtr hwnd)
+        {
+            try
+            {
+                foreach (El e in Find(hwnd, "", "", "", 120, false))
+                {
+                    if (e.Offscreen || !e.Enabled) continue;
+                    if (e.Patterns.Contains("Value") || e.Patterns.Contains("Text")) return true;
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        /// Can this process's window actually RECEIVE text yet?
+        ///
+        /// The question "is the window foreground" is not the same as "is the window ready".
+        /// SetForegroundWindow can succeed while a modern XAML application - Notepad being the
+        /// one that matters - is still constructing its editor and has not yet given keyboard
+        /// focus to it. Keystrokes sent in that interval are accepted by the operating system,
+        /// delivered to the input queue, and then discarded by the application that is not ready
+        /// for them.
+        ///
+        /// Measured, with no other difference between the runs: typing into a freshly-launched
+        /// Notepad lost the FIRST SIX CHARACTERS of a 34-character sentence, so the document and
+        /// the file saved from it both began "nd-to-end" instead of "AIOS end-to-end". SendInput
+        /// reported 34 sent, 34 released, lastError 0 - a completely successful-looking report
+        /// attached to a document that was quietly wrong. That is the failure this test exists
+        /// to prevent, and it is why a fixed sleep is not the answer: a fixed sleep is a guess
+        /// about somebody else's startup time, and it is wrong in whichever direction it guesses.
+        ///
+        /// So readiness is ASKED rather than assumed. The focused element is located through UIA
+        /// and must belong to this process AND expose a pattern that accepts text. When both hold,
+        /// the application has somewhere to put the characters.
+        ///
+        /// Returns false rather than throwing when UIA cannot answer; the caller treats that as
+        /// "not ready yet" and keeps waiting, which is the safe direction to be wrong in.
+        public static bool ReadyForText(int pid)
+        {
+            try
+            {
+                var fe = AutomationElement.FocusedElement;
+                if (fe == null) return false;
+                if (fe.Current.ProcessId != pid) return false;
+                return fe.GetCurrentPattern(ValuePattern.Pattern) != null
+                    || fe.GetCurrentPattern(TextPattern.Pattern) != null;
+            }
+            catch { return false; }
+        }
+
+        /// The text content of every element in this window that exposes any.
+        ///
+        /// Used to check that typed text actually ARRIVED, which is not the same question as
+        /// whether the keystrokes were sent. Empty is a real answer and means the window exposes
+        /// no readable content - it is never a substitute for a failure.
+        public static List<string> Contents(IntPtr hwnd, int max)
+        {
+            var outp = new List<string>();
+            foreach (El e in Find(hwnd, "", "", "", max, false))
+            {
+                string c = ContentOf(e);
+                if (c.Length > 0) outp.Add(c);
+            }
+            return outp;
+        }
+
+        /// The length of the longest SUFFIX of `wanted` that is also a suffix of `content`.
+        ///
+        /// Suffix, not substring, because that is where typing lands: at the caret, at the end of
+        /// what is already there. A document that holds more text than the view exposes still ends
+        /// with what was just typed, so this is the comparison that survives truncation.
+        public static int SuffixOverlap(string wanted, string content)
+        {
+            if (string.IsNullOrEmpty(wanted) || string.IsNullOrEmpty(content)) return 0;
+            int max = Math.Min(wanted.Length, content.Length);
+            for (int k = max; k > 0; k--)
+            {
+                if (string.CompareOrdinal(content, content.Length - k, wanted, wanted.Length - k, k) == 0)
+                    return k;
+            }
+            return 0;
+        }
+
+        /// Did `wanted` arrive? Reports the strongest evidence available.
+        ///
+        /// Returns the length of the longest matching suffix across the whole window, so the
+        /// caller can tell "nothing landed" (0) from "landed but the view is showing less than
+        /// everything" (partial) from "fully present" (complete). Collapsing those three into one
+        /// boolean is what let a truncated read look like a total failure.
+        public static int LandedSuffix(IntPtr hwnd, string wanted, int max)
+        {
+            int best = 0;
+            foreach (string c in Contents(hwnd, max))
+            {
+                int n = SuffixOverlap(wanted, c);
+                if (n > best) best = n;
+                if (best == wanted.Length) break;
+            }
+            return best;
         }
 
         /// A bounded overview of what this window actually exposes, so the operator can

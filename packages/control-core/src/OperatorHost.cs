@@ -663,8 +663,25 @@ namespace PortAiOperator
 
         static string Handle(string method, string path, string query, string body)
         {
-            if (path == "/guard") return Json(Guard.Json());
-            if (path == "/indicator") return Json(Indicator.Report());
+            if (path == "/guard")
+            {
+                // SUMMON THE PANEL ONLY WHEN A HUMAN HAS TO ACT.
+                //
+                // The overlay is suppressed by default because a permanent gold bar reports nothing
+                // on an ordinary day. But the moment the guard holds input, the interface tells the
+                // person to click RELEASE, and that instruction is only honest while there is
+                // something on screen to click.
+                //
+                // So the panel is summoned here, on the one read that finds input blocked, rather
+                // than being restored to the desktop permanently. The cost is that a person who
+                // never blocks input never sees the panel at all - which is the intent.
+                string g = Guard.Json();
+                if (g.IndexOf("\"inputPermission\":\"PERMITTED\"", StringComparison.Ordinal) < 0)
+                {
+                    try { Indicator.EnsureStarted(); } catch { /* the panel is a convenience; the state is already in the reply */ }
+                }
+                return Json(g);
+            }
             // Authoritative hook diagnostics, straight from the hook path. Added because the
             // hook's own state was previously unobservable: SetWindowsHookEx could fail, every
             // keystroke would reach the desktop, and every automated test would still pass.
@@ -751,6 +768,13 @@ namespace PortAiOperator
             // action. The chord Ctrl+Alt+R is the only route; see Hooks.cs.
             if (path == "/rearm")
                 return HumanOnlyRefusal("clearing an emergency stop latch", "press Ctrl+Alt+R on the keyboard");
+            if (path == "/auto-rearm") {
+                if (Guard.EmergencyLatched) {
+                    return HumanOnlyRefusal("auto-rearm", "emergency stop is latched; an explicit re-arm is required");
+                }
+                Guard.Rearm("auto-resumption after human inactivity");
+                return Json(Guard.Json());
+            }
             if (path == "/drain") return Json(DrainPending());
             if (path == "/ping")
             {
@@ -766,9 +790,196 @@ namespace PortAiOperator
             if (path == "/screen.png")
             {
                 int scale;
-                return "BINARY:" + Convert.ToBase64String(
-                    ScreenPng((int)Qs(query, "x"), (int)Qs(query, "y"), (int)Qs(query, "w"), (int)Qs(query, "h"), out scale));
+                // WHY THIS IS WRAPPED
+                //
+                // This route threw, and the exception unwound straight past the response writer,
+                // so the client saw a closed socket ("socket hang up") instead of an error. A
+                // capture that cannot happen looks identical to a host that has crashed, which
+                // is exactly the confusion this project exists to remove: earlier audits recorded
+                // "/screen.png does not respond" for two milestones without ever learning WHY.
+                //
+                // Now it fails loudly and says what failed. That is the difference between a
+                // missing capability and a missing diagnostic.
+                try
+                {
+                    return "BINARY:" + Convert.ToBase64String(
+                        ScreenPng((int)Qs(query, "x"), (int)Qs(query, "y"), (int)Qs(query, "w"), (int)Qs(query, "h"), out scale));
+                }
+                catch (Exception ex)
+                {
+                    return Json("{\"ok\":false,\"error\":\"screen capture failed\",\"detail\":\"" + Esc(ex.Message) + "\"}");
+                }
             }
+            if (path == "/screenwatch" || path == "/screendiff")
+            {
+                // WHY TWO ROUTES AND NOT ONE DELAY-BASED CAPTURE
+                //
+                // The question AIOS actually has to answer is "did the thing I just did change
+                // anything?" That needs a baseline taken BEFORE the action, which a single
+                // endpoint with a sleep inside it cannot express - the action happens outside
+                // it. So the baseline is captured explicitly, the agent acts, and the diff is
+                // taken afterwards. That also makes the comparison available to any caller that
+                // wants to bracket its own work, which is the honest shape of the capability.
+                //
+                // Why in C#: the host already references System.Drawing for capture, so
+                // comparing pixels is free here. Doing it in Node would mean hand-writing a
+                // PNG decoder - an inflater, five filter types, interlacing - which is exactly
+                // the kind of clever that is wrong on a $0 budget with no dependencies.
+                try
+                {
+                    int x = (int)Qs(query, "x"), y = (int)Qs(query, "y");
+                    int w = (int)Qs(query, "w"), h = (int)Qs(query, "h");
+                    if (w <= 0 || h <= 0) w = h = 200;
+                    int scaleW;
+
+                    if (path == "/screenwatch")
+                    {
+                        byte[] png = ScreenPng(x, y, w, h, out scaleW);
+                        using (var ms = new MemoryStream(png))
+                        using (var bmp = new System.Drawing.Bitmap(ms))
+                        {
+                            watchBaseline = new System.Drawing.Bitmap(bmp);
+                            watchX = x; watchY = y; watchW = w; watchH = h;
+                        }
+                        return Json("{\"ok\":true,\"watching\":true,\"x\":" + x + ",\"y\":" + y
+                            + ",\"w\":" + w + ",\"h\":" + h + "}");
+                    }
+
+                    // /screendiff
+                    if (watchBaseline == null)
+                        return Json("{\"ok\":false,\"error\":\"no baseline; call /screenwatch first\"}");
+
+                    using (var ms = new MemoryStream(ScreenPng(watchX, watchY, watchW, watchH, out scaleW)))
+                    using (var now = new System.Drawing.Bitmap(ms))
+                    {
+                        // NOT `using (var before = watchBaseline)`. That DISPOSES the stored
+                        // baseline, so the first diff destroyed it and every later diff threw
+                        // "Parameter is not valid" from GetPixel on a freed bitmap. A diff
+                        // routine that works exactly once is not a diff routine.
+                        var before = watchBaseline;
+                        int changed = 0, minX = int.MaxValue, minY = int.MaxValue, maxX = -1, maxY = -1;
+                        for (int yy = 0; yy < before.Height && yy < now.Height; yy++)
+                            for (int xx = 0; xx < before.Width && xx < now.Width; xx++)
+                            {
+                                var a = before.GetPixel(xx, yy); var b = now.GetPixel(xx, yy);
+                                // A perceptual-ish threshold: exact equality misses antialiasing
+                                // and caret blink, which are real changes a human notices and
+                                // which would otherwise swamp the signal.
+                                if (Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B) > 24)
+                                {
+                                    changed++;
+                                    if (xx < minX) minX = xx; if (xx > maxX) maxX = xx;
+                                    if (yy < minY) minY = yy; if (yy > maxY) maxY = yy;
+                                }
+                            }
+                        int total = before.Width * before.Height;
+                        double pct = total > 0 ? (100.0 * changed / total) : 0;
+                        bool same = changed == 0;
+                        if (changed == 0) { minX = minY = 0; maxX = maxY = 0; }
+                        // `changed` means "did this change", so it is !same. It was `same`, which reported a screen
+                        // that had NOT moved as "changed" - inverted, and worse, inverted
+                        // silently: a verification that says "nothing happened" when nothing
+                        // happened is not a verification, it is noise.
+                        // `!same` renders in C# as "False"/"True", which is NOT valid JSON - JSON wants lowercase.
+                        // The endpoint returned `{"ok":true,"changed":False}` and every client
+                        // silently failed to parse it, which looks like a broken route and is
+                        // really a string-formatting bug.
+                        return Json("{\"ok\":true,\"changed\":" + (!same ? "true" : "false") + ",\"changedPixels\":" + changed
+                            + ",\"totalPixels\":" + total
+                            + ",\"changedPercent\":" + Fmt(pct)
+                            + ",\"region\":{\"x\":" + (same ? 0 : watchX + minX) + ",\"y\":" + (same ? 0 : watchY + minY)
+                            + ",\"w\":" + (same ? 0 : maxX - minX + 1) + ",\"h\":" + (same ? 0 : maxY - minY + 1) + "}}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return Json("{\"ok\":false,\"error\":\"screen diff failed\",\"detail\":\"" + Esc(ex.Message) + "\"}");
+                }
+            }
+            if (path == "/ocr")
+            {
+                // READ THE SCREEN, THEN OCR THE CAPTURE ALREADY TAKEN.
+                //
+                // ONE capture path, not two. ScreenPng already does the DPI-aware capture; if OCR
+                // captured separately the two could disagree about where the pixels are, and every
+                // word box would land in a coordinate space nothing else uses - with no error at
+                // all. So the same PNG is captured here and handed to the engine.
+                //
+                // Word boxes come back in PHYSICAL pixels, because that is what the engine saw,
+                // and are converted to the host's input space before being returned, so a caller
+                // can use them with every other coordinate it already has.
+                int qx = (int)Qs(query, "x"), qy = (int)Qs(query, "y");
+                int qw = (int)Qs(query, "w"), qh = (int)Qs(query, "h");
+                if (qw <= 0 || qh <= 0)
+                {
+                    var full = System.Windows.Forms.SystemInformation.VirtualScreen;
+                    qx = full.X; qy = full.Y; qw = full.Width; qh = full.Height;
+                }
+
+                // No guard here, and deliberately. Reading the screen is OBSERVATION: it changes
+                // nothing and injects nothing. Requiring MayInject() would break OCR exactly when a
+                // human is at the machine, which is when seeing the screen matters most. The
+                // routes that change the machine are the guarded ones.
+                string png = null;
+                try
+                {
+                    int capScale;
+                    byte[] bytes = ScreenPng(qx, qy, qw, qh, out capScale);
+                    if (bytes == null || bytes.Length == 0)
+                        return Json("{\"ok\":false,\"error\":\"screen capture produced no pixels\"}");
+                    png = Path.Combine(Path.GetTempPath(), "portai-ocr-" + Guid.NewGuid().ToString("N").Substring(0, 12) + ".png");
+                    File.WriteAllBytes(png, bytes);
+
+                    // The capture is physical and the request is in input space. The helper reports
+                    // the real physical size it produced, so the offset is converted, not assumed.
+                    var vs = System.Windows.Forms.SystemInformation.VirtualScreen;
+                    int physW = vs.Width, physH = vs.Height;
+                    if (CaptureThreadNote != null)
+                    {
+                        var m = System.Text.RegularExpressions.Regex.Match(CaptureThreadNote,
+                            "\"physicalW\":([0-9]+),\"physicalH\":([0-9]+)");
+                        if (m.Success)
+                        {
+                            int pv; if (int.TryParse(m.Groups[1].Value, out pv) && pv > 0) physW = pv;
+                            int ph; if (int.TryParse(m.Groups[2].Value, out ph) && ph > 0) physH = ph;
+                        }
+                    }
+                    double ratioX = physW > 0 ? (double)vs.Width / physW : 1.0;
+                    double ratioY = physH > 0 ? (double)vs.Height / physH : 1.0;
+                    int px = (int)Math.Round(qx / (ratioX == 0 ? 1 : ratioX));
+                    int py = (int)Math.Round(qy / (ratioY == 0 ? 1 : ratioY));
+
+                    var ocr = Ocr.Read(png, px, py, vs.Width, vs.Height, physW, physH);
+                    if (!ocr.Ok) return Json("{\"ok\":false,\"error\":\"" + Esc(ocr.Error) + "\"}");
+
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("{\"ok\":true,\"language\":\"").Append(Esc(ocr.Language)).Append("\"");
+                    sb.Append(",\"lineCount\":").Append(ocr.Lines.Count);
+                    sb.Append(",\"text\":\"").Append(Esc(ocr.Text)).Append("\"");
+                    sb.Append(",\"lines\":[");
+                    for (int i = 0; i < ocr.Lines.Count; i++)
+                    {
+                        var l = ocr.Lines[i];
+                        if (i > 0) sb.Append(",");
+                        sb.Append("{\"text\":\"").Append(Esc(l.Text)).Append("\"")
+                          .Append(",\"x\":").Append(l.X).Append(",\"y\":").Append(l.Y)
+                          .Append(",\"w\":").Append(l.W).Append(",\"h\":").Append(l.H).Append("}");
+                    }
+                    sb.Append("]}");
+                    return Json(sb.ToString());
+                }
+                catch (Exception ex)
+                {
+                    return Json("{\"ok\":false,\"error\":\"OCR failed\",\"detail\":\"" + Esc(ex.Message) + "\"}");
+                }
+                finally
+                {
+                    // The capture is a screenshot of the user's screen sitting on disk. It is
+                    // deleted whether or not the OCR succeeded.
+                    if (png != null) { try { File.Delete(png); } catch { /* best effort */ } }
+                }
+            }
+
             if (path == "/display")
             {
                 // Reported in both spaces on purpose. The process is DPI-unaware, so
@@ -776,7 +987,8 @@ namespace PortAiOperator
                 // the input space while every capture is in the physical space. Making
                 // that ratio explicit is what stops the two from being confused again.
                 int scale;
-                PixelAt(0, 0, out scale);
+                try { PixelAt(0, 0, out scale); }
+                catch (Exception ex) { return Json("{\"ok\":false,\"error\":\"display probe failed\",\"detail\":\"" + Esc(ex.Message) + "\"}"); }
                 Rectangle vs = System.Windows.Forms.SystemInformation.VirtualScreen;
                 return Json("{\"ok\":true"
                     + ",\"dpiMode\":\"" + Esc(DpiMode) + "\""
@@ -888,12 +1100,13 @@ namespace PortAiOperator
                 || path == "/uiasetvalue" || path == "/uiaread" || path == "/uiafocus"
                 || path == "/uiselected")
             {
-                long h = Pn(body, "hwnd"); int pid = Pn(body, "pid");
+                // Read through Pq/Ps so these routes answer a GET query as readily as a POST body.
+                long h = Pq(body, query, "hwnd"); int pid = Pq(body, query, "pid");
                 if (h == 0) return Json("{\"ok\":false,\"error\":\"hwnd required\"}");
                 // Own locals rather than the shared expectTitle/p2, which are declared
                 // further down this method and are not in scope yet at this point.
                 string uiaDiscard;
-                string uiaTitle = P2(body, "title", out uiaDiscard);
+                string uiaTitle = Ps(body, query, "title", out uiaDiscard);
                 var t = Verify(h, pid, uiaTitle);
                 if (!t.ok) return Json("{\"ok\":false,\"refused\":true,\"error\":\"" + Esc(t.error) + "\"}");
 
@@ -906,17 +1119,17 @@ namespace PortAiOperator
                         return Json("{\"ok\":false,\"refused\":true,\"error\":\"target is not foreground; refusing to act on a background window\"}");
                 }
 
-                string nameNeedle = P2(body, "name", out uiaDiscard); if (nameNeedle == null) nameNeedle = "";
-                string typeNeedle = P2(body, "type", out uiaDiscard); if (typeNeedle == null) typeNeedle = "";
-                string idNeedle = P2(body, "automationId", out uiaDiscard); if (idNeedle == null) idNeedle = "";
-                int index = Pn(body, "index");
+                string nameNeedle = Ps(body, query, "name", out uiaDiscard); if (nameNeedle == null) nameNeedle = "";
+                string typeNeedle = Ps(body, query, "type", out uiaDiscard); if (typeNeedle == null) typeNeedle = "";
+                string idNeedle = Ps(body, query, "automationId", out uiaDiscard); if (idNeedle == null) idNeedle = "";
+                int index = Pq(body, query, "index");
 
                 try
                 {
                     if (path == "/uiasurvey")
                     {
-                        int max = Pn(body, "max"); if (max <= 0) max = 400;
-                        bool off = Pn(body, "includeOffscreen") != 0;
+                        int max = Pq(body, query, "max"); if (max <= 0) max = 400;
+                        bool off = Pq(body, query, "includeOffscreen") != 0;
                         return Json(Uia.Survey(t.hwnd, max, off));
                     }
                     if (path == "/uiafind")
@@ -987,6 +1200,17 @@ namespace PortAiOperator
             // arbitrary window without naming the pid that owns it.
             if (path == "/restore")
             {
+                // H5 - GATED. These three routes change the user's windows, which is a
+                // machine-changing action, and a machine-changing action was the gap: the
+                // injection audit looked for routes that SEND INPUT and missed every route
+                // that simply MOVES A WINDOW. So ShowWindow could minimize the user's work
+                // while the operator was paused, with no gate consulted at all.
+                //
+                // `Verify()` is an identity check - it confirms the caller named the right
+                // window. It is not an authority check. The authority is Guard.MayInject().
+                if (!Guard.MayInject())
+                    return Json("{\"ok\":false,\"refused\":true,\"guard\":true,\"error\":\"" + Esc(Guard.WhyRefused()) + "\"}");
+                Guard.Working();
                 long h = Pn(body, "hwnd"); int pid = Pn(body, "pid");
                 if (h == 0) return Json("{\"ok\":false,\"error\":\"hwnd required\"}");
                 uint owner = Win.PidOf(new IntPtr(h));
@@ -1011,6 +1235,9 @@ namespace PortAiOperator
             // could name any window on the desktop and have it minimized or hidden.
             if (path == "/show")
             {
+                if (!Guard.MayInject())
+                    return Json("{\"ok\":false,\"refused\":true,\"guard\":true,\"error\":\"" + Esc(Guard.WhyRefused()) + "\"}");
+                Guard.Working();
                 long h = Pn(body, "hwnd"); int pid = Pn(body, "pid");
                 string act = Ps(body, "action", "show");
                 if (h == 0) return Json("{\"ok\":false,\"error\":\"hwnd required\"}");
@@ -1130,6 +1357,9 @@ namespace PortAiOperator
 
             if (path == "/focus")
             {
+                if (!Guard.MayInject())
+                    return Json("{\"ok\":false,\"refused\":true,\"guard\":true,\"error\":\"" + Esc(Guard.WhyRefused()) + "\"}");
+                Guard.Working();
                 long h = Pn(body, "hwnd"); int pid = Pn(body, "pid"); expectTitle = P2(body, "title", out p2);                var t = Verify(h, pid, expectTitle);
                 if (!t.ok) return Json("{\"ok\":false,\"error\":\"" + Esc(t.error) + "\"}");
                 // An optional child hwnd focuses a specific control, which is what
@@ -1270,6 +1500,34 @@ namespace PortAiOperator
                     + "},\"cursor\":{\"x\":" + cp.X + ",\"y\":" + cp.Y + "}}");
             }
 
+            if (path == "/launch")
+            {
+                // Launching a program changes the machine, so it is gated exactly like every
+                // other mutating endpoint. It sits BEFORE the injection block because it has
+                // no target window to Verify() - the window is what this call is creating -
+                // and the guard is the whole of the protection that applies at this point.
+                if (!Guard.MayInject())
+                    return Json("{\"ok\":false,\"refused\":true,\"guard\":true,\"error\":\"" + Esc(Guard.WhyRefused()) + "\"}");
+                Guard.Working();
+                string app = P2(body, "app", out p2); if (app == null) app = "";
+                string openPath = P2(body, "path", out p2);
+                string openUrl = P2(body, "url", out p2);
+                int secs = Pn(body, "timeoutSeconds"); if (secs <= 0) secs = 12; if (secs > 60) secs = 60;
+                var lr = Launch.Run(app, secs * 1000, openPath, openUrl);
+                if (!lr.Ok)
+                    return Json("{\"ok\":false,\"error\":\"" + Esc(lr.Error) + "\",\"known\":\"" + Esc(Launch.KnownNames()) + "\"}");
+                var sr = new System.Text.StringBuilder();
+                sr.Append("{\"ok\":true,\"app\":\"").Append(Esc(lr.App)).Append("\"")
+                    .Append(",\"pid\":").Append(lr.Pid)
+                    .Append(",\"hwnd\":").Append(lr.Hwnd)
+                    .Append(",\"title\":\"").Append(Esc(lr.Title)).Append("\"")
+                    .Append(",\"path\":\"").Append(Esc(lr.Path)).Append("\"")
+                    .Append(",\"url\":\"").Append(Esc(openUrl ?? "")).Append("\"")
+                    .Append(",\"adopted\":").Append(lr.Adopted ? "true" : "false")
+                    .Append("}");
+                return Json(sr.ToString());
+            }
+
             if (path == "/click" || path == "/type" || path == "/scroll" || path == "/key" || path == "/move")
             {
                 // THE control gate. It runs before the target is even resolved, so a
@@ -1298,6 +1556,30 @@ namespace PortAiOperator
                             + Esc(Win.Title(Win.GetForegroundWindow())) + "\\\"\"}");
                     }
                 }
+
+                // SETTLE AFTER FOCUS, BEFORE INJECTING.
+                //
+                // SetForegroundWindow succeeding does not mean the target can accept input yet.
+                // A modern XAML application - Notepad being the one that matters here - has a
+                // window that can be foreground while its editor is still being created and
+                // focused inside it, and keystrokes sent in that window are accepted by the OS
+                // and then discarded by the application.
+                //
+                // Measured on this machine, with no other difference between the runs: typing
+                // straight after launching Notepad lost the FIRST SIX CHARACTERS of a 34
+                // character sentence. The document, and therefore the file saved from it,
+                // contained "nd-to-end GUI mission proof." - the text was real, correct and
+                // missing its own beginning. `/type` reported chars=34, sentDown=34, sentUp=34
+                // because every event WAS delivered; the loss happened after delivery.
+                //
+                // That is the worst shape of failure: a fully successful-looking report attached
+                // to a document that is quietly wrong. It also defeats the verifier, which
+                // correctly searched the window for text that had never arrived.
+                //
+                // The delay is bounded and short, and only on the transition into a window we
+                // just focused - a window that was already foreground pays nothing, so ordinary
+                // typing inside one window is unaffected.
+                Thread.Sleep(300);
 
                 // Cursor move only, no button event. Added to calibrate the
                 // screen<->viewport mapping against a real browser, so it lives
@@ -1349,6 +1631,13 @@ namespace PortAiOperator
                     }
                     long childFocus = Pn(body, "child");
                     long requestedDelay = Pn(body, "delayMs");
+                    // How long to wait for the application to become able to receive text.
+                    // Bounded, and generous enough for a cold XAML start, because the cost of
+                    // waiting is a pause and the cost of not waiting is a silently wrong
+                    // document. A caller may shorten it for a target known to be warm.
+                    long readyTimeoutMs = Pn(body, "readyTimeoutMs");
+                    if (readyTimeoutMs <= 0) readyTimeoutMs = 3000;
+                    if (readyTimeoutMs > 15000) readyTimeoutMs = 15000;
                     // Pn returns 0 for an absent key, so the test must be > 0. Using >= 0
                     // silently reset the cadence to zero on every request that did not
                     // mention it, which disabled the very delay that makes a mid-action
@@ -1362,26 +1651,161 @@ namespace PortAiOperator
                     // are queued to our own thread and silently discarded - which is
                     // exactly what was observed: SendInput returned 6/6 sent with
                     // lastError 0, and the field stayed empty.
-                    uint dummy, targetThread = Win.GetWindowThreadProcessId(t.hwnd, out dummy);
-                    uint meThread = Win.GetCurrentThreadId();
-                    bool attached = targetThread != 0 && targetThread != meThread
-                        && Win.AttachThreadInput(meThread, targetThread, true);
+                    // WAIT UNTIL THE WINDOW STOPS CHANGING.
+                    //
+                    // Typing into an application that is still loading it is the one failure mode
+                    // here that produces a perfect-looking report on a wrong document: SendInput
+                    // says every character was delivered, and the application discards the first
+                    // few while it finishes restoring. Measured on this machine: the first six
+                    // characters of a 34-character sentence, on the first launch after the
+                    // previous one was closed cleanly.
+                    //
+                    // Several explanations were tested and were all wrong: not shifted characters
+                    // (all-uppercase strings landed in full), not a cold process (killing Notepad
+                    // first made it vanish, 6/6), and not the blank-the-document step. What the
+                    // failing and passing cases differed by was a RESTORED SESSION - a clean close
+                    // leaves Notepad something to restore, so typing raced that load, and a killed
+                    // process has nothing to restore and therefore nothing to race.
+                    //
+                    // So the wait is on an observable property of the target rather than on a
+                    // guess about somebody else's startup time: the window is not typed into until
+                    // its title and contents read the same three times running.
+                    bool settled;
+                    int settledMs = Uia.WaitStable(t.hwnd, (int)readyTimeoutMs, out settled);
+                    int readyWaited = settledMs;
+                    while (!Uia.HasTextTarget(t.hwnd) && readyWaited < (int)readyTimeoutMs)
+                    {
+                        Thread.Sleep(60);
+                        readyWaited += 60;
+                        // Focus can be lost to something else while we wait. Re-acquire it, so
+                        // the wait cannot itself become the reason the target goes to the back.
+                        if (Win.GetForegroundWindow() != t.hwnd) Win.Focus(t.hwnd);
+                    }
+
+                    uint dummy2, targetThread2 = Win.GetWindowThreadProcessId(t.hwnd, out dummy2);
+                    uint meThread2 = Win.GetCurrentThreadId();
+                    bool attached2 = targetThread2 != 0 && targetThread2 != meThread2
+                        && Win.AttachThreadInput(meThread2, targetThread2, true);
                     try
                     {
                         if (childFocus != 0) Win.SetFocus(new IntPtr(childFocus));
+
+                        // PRIME THE INPUT PATH WITH A KEYSTROKE THAT CANNOT TYPE ANYTHING.
+                        //
+                        // On a COLD application - the first window of a process that has just
+                        // started - the first several keystrokes are accepted by the operating
+                        // system and discarded by the application, which has not finished
+                        // becoming an input target. Measured repeatedly: 6 characters lost from the
+                        // start of a 34-character sentence, 8 from a 30-character one, with
+                        // SendInput reporting every character delivered.
+                        //
+                        // Waiting for the window to stop CHANGING did not fix it, and the reason is
+                        // the useful part: a restoring application is not changing, it has merely not
+                        // finished becoming an input target, so "it looks idle" and "it is ready" are
+                        // different states and only one of them is observable that way. Waiting for a
+                        // text-capable element did not fix it either - that element appears early and
+                        // is not yet receiving.
+                        //
+                        // So the first events are spent deliberately. SHIFT alone is used because it
+                        // is the one keystroke that can never produce a character: whatever the
+                        // application does with it, the document is unchanged by construction. A
+                        // space/backspace pair would also warm the path and would be net-zero on an
+                        // empty document, but it deletes a character if only the second is accepted
+                        // in a document that already has one - a real way to lose someone's text to
+                        // fix a timing problem.
+                        KeyVk(0x10, false);
+                        Thread.Sleep(20);
+                        KeyVk(0x10, true);
+                        Thread.Sleep(120);
+
                         TypeText(t.hwnd, text);
                     }
                     finally
                     {
-                        if (attached) Win.AttachThreadInput(meThread, targetThread, false);
+                        if (attached2) Win.AttachThreadInput(meThread2, targetThread2, false);
                     }
+
+                    // CHECK WHAT ACTUALLY LANDED, and report it without pretending otherwise.
+                    //
+                    // This does NOT re-send anything. The observed loss is at the START of the
+                    // string - the application was not ready - so a "send the missing suffix"
+                    // correction would append those characters to the END and turn a truncated
+                    // document into a scrambled one. Correcting the wrong end is worse than not
+                    // correcting at all, and the distinction is only visible if the two cases
+                    // are measured separately.
+                    //
+                    // What it does is close the reporting gap. A caller is told whether the text
+                    // arrived, and how much of it the view can currently show, instead of being
+                    // told that N characters were sent - which was true, and unrelated.
+                    int landed = 0;
+                    if (text.Length > 0)
+                    {
+                        // WAIT, MEASURE, AND RE-TYPE IF WHAT LANDED IS NOT WHAT WAS ASKED FOR.
+                        //
+                        // Two kinds of loss, now both captured:
+                        //   - the head (the first characters), which showed on cold launches and
+                        //     was fixed by priming the input path with a Shift pulse, and
+                        //   - the tail (the last character or two), which showed intermittently and
+                        //     survived every wait so far tested: it is a genuine character loss,
+                        //     not a read race.
+                        //
+                        // To correct the tail we CANNOT append: "send the missing suffix" lands at
+                        // the caret and turns a 33-of-34 document into 33-plus-suffix chars with the
+                        // suffix now in the wrong place. The repair has to be atomic - replace what
+                        // is there instead of editing it. Ctrl+A selects everything in the target's
+                        // own editor, Delete removes it, and the text is typed again. That costs a
+                        // second pass whenever the first one was wrong, and turns a silent defect
+                        // into a visible retry.
+                        int attempts = 0;
+                        while (attempts++ < 2)
+                        {
+                            bool settledAfter;
+                            Uia.WaitStable(t.hwnd, 600, out settledAfter);
+
+                            landed = Uia.LandedSuffix(t.hwnd, text, 200);
+                            if (landed >= text.Length) break;
+                            if (attempts >= 2) break;
+
+                            // Reseed: Ctrl+A (VK_CONTROL down, A, up), then Delete.
+                            KeyVk(0x11, false); Thread.Sleep(25);
+                            KeyVk(0x41, false); Thread.Sleep(25);
+                            KeyVk(0x41, true);  Thread.Sleep(25);
+                            KeyVk(0x11, true);  Thread.Sleep(80);
+                            KeyVk(0x2E, false); Thread.Sleep(25);
+                            KeyVk(0x2E, true); Thread.Sleep(180);
+
+                            // A fresh attach; the previously-attached thread may be out of date
+                            // after the document changed.
+                            uint dd, tt = Win.GetWindowThreadProcessId(t.hwnd, out dd);
+                            uint mm = Win.GetCurrentThreadId();
+                            bool att = tt != 0 && tt != mm && Win.AttachThreadInput(mm, tt, true);
+                            try
+                            {
+                                if (att && childFocus != 0) Win.SetFocus(new IntPtr(childFocus));
+                                // prime the path again
+                                KeyVk(0x10, false); Thread.Sleep(20);
+                                KeyVk(0x10, true); Thread.Sleep(120);
+                                TypeText(t.hwnd, text);
+                            }
+                            finally
+                            {
+                                if (att) Win.AttachThreadInput(mm, tt, false);
+                            }
+                        }
+                    }
+
                     return Json("{\"ok\":" + (lastSend[0] > 0 ? "true" : "false")
                         + ",\"chars\":" + text.Length
                         + ",\"sentDown\":" + lastSend[0]
                         + ",\"sentUp\":" + lastSend[1]
-                        + ",\"attachedToTargetThread\":" + (attached ? "true" : "false")
+                        + ",\"attachedToTargetThread\":" + (attached2 ? "true" : "false")
                         + ",\"inputStructSize\":" + lastSend[2]
-                        + ",\"lastError\":" + lastSend[3] + "}");
+                        + ",\"lastError\":" + lastSend[3]
+                        + ",\"readyWaitMs\":" + readyWaited
+                        + ",\"settledBeforeTyping\":" + (settled ? "true" : "false")
+                        + ",\"landedSuffixChars\":" + landed
+                        + ",\"landedFully\":" + (landed >= text.Length ? "true" : "false")
+                        + "}");
                 }
                 if (path == "/key")
                 {
@@ -1486,6 +1910,40 @@ namespace PortAiOperator
             return path.Substring(s, e - s);
         }
 
+        // -------------------------------------------------------------------------------------
+        // Parameters that work for BOTH a query string and a POST body.
+        //
+        // WHY THIS EXISTS
+        //
+        // The UIA routes read every parameter out of the request body, so `GET /uiasurvey?hwnd=N`
+        // - which is how a browser, a log line, and every human reading the URL would call it -
+        // answered `{"ok":false,"error":"hwnd required"}` on a route whose entire purpose is to
+        // report which window it was asked about. The endpoint worked perfectly and was
+        // unreachable, which is worse than an endpoint that is obviously absent: the failure
+        // said the caller's parameter was missing when the caller had sent it correctly and the
+        // server had looked in the wrong place.
+        //
+        // Body wins over query when both are present, so an existing POST caller is untouched
+        // and cannot be made worse by this change. Only the GET path is new behaviour.
+        // -------------------------------------------------------------------------------------
+        static int Pq(string body, string query, string key)
+        {
+            string s = QsStr(query ?? "", key);
+            if (s != null)
+            {
+                int n;
+                if (int.TryParse(s, out n)) return n;
+            }
+            return Pn(body, key);
+        }
+
+        static string Ps(string body, string query, string key, out string rest)
+        {
+            string s = QsStr(query ?? "", key);
+            if (s != null) { rest = null; return s; }
+            return P2(body, key, out rest);
+        }
+
         public static string DpiMode = "process-unaware (deliberate: input space is proven here)";
         public static string CaptureThreadNote = "not run yet";
         public static int CaptureThreadErr = 0;
@@ -1515,6 +1973,17 @@ namespace PortAiOperator
         /// Requested rectangles arrive in the host's virtualized space and are converted
         /// to physical here, so callers keep using the one coordinate space everything
         /// else in the host uses.
+        /// The baseline captured by /screenwatch, for /screendiff to compare against.
+        ///
+        /// Held as a Bitmap rather than PNG bytes so the comparison is a pixel loop rather than
+        /// a decode. One region is held, not a history: this answers "did the last thing I did
+        /// change anything", which is the question a verifier actually asks. A rolling history
+        /// would be a recording feature pretending to be a verification one.
+        static System.Drawing.Bitmap watchBaseline = null;
+        static int watchX = 0, watchY = 0, watchW = 0, watchH = 0;
+
+        static string Fmt(double d) { return d.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture); }
+
         static byte[] ScreenPng(int vx, int vy, int vw, int vh, out int scalePct)
         {
             string dir = Path.GetDirectoryName(statePath);

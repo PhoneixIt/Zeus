@@ -1,0 +1,76 @@
+﻿
+
+Id          : 1084
+ProcessName : node
+CPU         : 11.15625
+WS          : 84475904
+Command     : 
+
+Id          : 7320
+ProcessName : node
+CPU         : 0.21875
+WS          : 16326656
+Command     : 
+
+Id          : 7788
+ProcessName : node
+CPU         : 1.578125
+WS          : 9744384
+Command     : 
+
+Id          : 11340
+ProcessName : node
+CPU         : 23.515625
+WS          : 2486272
+Command     : 
+
+Id          : 14412
+ProcessName : node
+CPU         : 0.5
+WS          : 75251712
+Command     : 
+
+Id          : 16400
+ProcessName : node
+CPU         : 8.328125
+WS          : 66928640
+Command     : 
+
+Id          : 17600
+ProcessName : node
+CPU         : 0.34375
+WS          : 16891904
+Command     : 
+
+Id          : 19612
+ProcessName : node
+CPU         : 0.515625
+WS          : 17567744
+Command     : 
+
+Id          : 156
+ProcessName : powershell
+CPU         : 3.421875
+WS          : 14249984
+Command     : 
+
+Id          : 13676
+ProcessName : powershell
+CPU         : 5.984375
+WS          : 17219584
+Command     : 
+
+Id          : 18680
+ProcessName : powershell
+CPU         : 1.796875
+WS          : 66195456
+Command     : 
+
+Id          : 21432
+ProcessName : powershell
+CPU         : 2.359375
+WS          : 73342976
+Command     : 
+
+
+

@@ -1,0 +1,27 @@
+﻿AIOS MODEL-PLANNING FAILURE RECORD  (final attempt, after structural invariants)
+server  : 127.0.0.1:8793   Qwen2.5-0.5B-Instruct, grammar ON, eos=151645, ready=true
+budget  : x-grammar=1  x-max-new-tokens=1200  request timeout=240s  (UNCHANGED this round)
+struct. : grammar 131/131, eos 36/36, unit 636/636, bridge PASS -- all green BEFORE generating
+
+ATTEMPT 1 (15 chars, 11.9s)
+{"refusal":"{"}
+
+ATTEMPT 2 - the one bounded corrective attempt (36 chars, 9.0s)
+{"refusal":"<ref>\"refusal\"</ref>"}
+
+VALIDATION RESULT (parse.ts, verbatim)
+  not-understood: the model declined to plan this objective: {
+  not-understood: the model declined to plan this objective: <ref>"refusal"</ref>
+
+OUTCOME
+  No plan. Nothing compiled, nothing executed, no tool invoked.
+  output file exists : false
+  source folder      : unchanged, 4 entries (data.csv, logs, notes.txt, readme.md)
+
+NOTE ON THIS RESULT
+  This is NOT the structural failure seen previously. Every structural invariant added this round
+  was never reached, because the model produced a REFUSAL rather than a plan. The new grammar rules
+  (no duplicate keys in args, no step fields inside args) and the new pre-execution validator
+  (registered tools, capability-name dependencies, self-dependency, cycles, read-only effects,
+  required inspect+write, exact output target) were therefore NOT exercised by this model output.
+  They are proven by their own tests; they remain unproven against a live 0.5B sample.

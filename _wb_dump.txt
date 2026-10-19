@@ -1,0 +1,71 @@
+SHEETS: ['Summary', 'Tool Stack', '$0 Risks', 'Hardware Sizing']
+
+==============================================================================
+SHEET: Summary   dims=A1:B13  max_row=13 max_col=2
+==============================================================================
+  A1='AIOS tool stack: status summary'
+  A3='Metric' | B3='Value'
+  A4='Total stack layers' | B4="=COUNTA('Tool Stack'!A5:A26)"
+  A5='MVP-only layers' | B5='=COUNTIF(\'Tool Stack\'!D5:D26,"MVP")'
+  A6='V1-only layers' | B6='=COUNTIF(\'Tool Stack\'!D5:D26,"V1")'
+  A7='MVP/V1 layers' | B7='=COUNTIF(\'Tool Stack\'!D5:D26,"MVP/V1")'
+  A8='Reuse evaluations done' | B8='=COUNTIF(\'Tool Stack\'!F5:F26,"Done")'
+  A9='Reuse evaluations in progress' | B9='=COUNTIF(\'Tool Stack\'!F5:F26,"In progress")'
+  A10='Licenses verified' | B10='=COUNTIF(\'Tool Stack\'!G5:G26,"Yes")'
+  A11='Reuse evaluation completion' | B11='=IF(B4=0,0,B8/B4)'
+  A13="Note: all tool choices are PROPOSED. The laptop has not been measured; run the roadmap's Appendix A commands and enter free RAM on the Hardware Sizing sheet."
+
+==============================================================================
+SHEET: Tool Stack   dims=A1:H26  max_row=26 max_col=8
+==============================================================================
+  A1='AIOS proposed $0 tool stack'
+  A2='All entries are PROPOSED, not decisions. Each needs a Reuse Evaluation Record (license, maintenance, Windows behavior) before adoption. Blue cells (columns F-H) are for you to edit.'
+  A4='Layer' | B4='Default (free / open source)' | C4='Alternatives to evaluate' | D4='Tier' | E4='Evidence label' | F4='Reuse evaluation status' | G4='License verified?' | H4='Decision / notes'
+  A5='Language/runtime' | B5='Match existing repo (D-001); if undecided, Python for ecosystem in models, automation, testing' | C5='TypeScript if repo is already Node' | D5='MVP' | E5='PROPOSED' | F5='Not started' | G5='Not checked'
+  A6='State and event log' | B6='SQLite in WAL mode: append-only events table plus checkpoint tables' | C6='Existing repo storage if adequate' | D6='MVP' | E6='PROPOSED' | F6='Not started' | G6='Not checked'
+  A7='Schemas/validation' | B7='JSON Schema plus the idiomatic validator for the language (e.g. Pydantic in Python)' | D7='MVP' | E7='PROPOSED' | F7='Not started' | G7='Not checked'
+  A8='Task engine' | B8='Thin state machine of your own over SQLite; the contract is small' | C8='LangGraph or Temporal (probably too heavy; wrap only if clearly better)' | D8='MVP' | E8='PROPOSED' | F8='Not started' | G8='Not checked'
+  A9='Policy engine' | B9='Deterministic code with risk tiers R0-R4, kept outside the model' | C9='Open Policy Agent or Cedar' | D9='MVP' | E9='PROPOSED' | F9='Not started' | G9='Not checked'
+  A10='Local model runtime' | B10='llama.cpp or Ollama, both with OpenAI-compatible local endpoints' | C10='LM Studio (check its terms)' | D10='MVP' | E10='PROPOSED' | F10='Not started' | G10='Not checked'
+  A11='Constrained output' | B11='llama.cpp grammar / JSON-schema decoding (key for small models, benchmark B1)' | C11='Ollama structured outputs' | D11='MVP' | E11='PROPOSED' | F11='Not started' | G11='Not checked'
+  A12='Models' | B12='Open-weight GGUF models sized to measured memory (e.g. Qwen, Llama, Gemma, Mistral, Phi families)' | C12="Check each model's license; benchmark B1-B6" | D12='MVP' | E12='PROPOSED' | F12='Not started' | G12='Not checked'
+  A13='Provider-neutral layer' | B13='Thin interface over the OpenAI-compatible API' | C13='LiteLLM, only if multi-provider routing is needed' | D13='V1' | E13='PROPOSED' | F13='Not started' | G13='Not checked'
+  A14='Dev agent and VCS' | B14='OpenCode (already in use), git, git worktrees' | D14='MVP' | E14='PROPOSED' | F14='Not started' | G14='Not checked'
+  A15='Testing' | B15='pytest (or language equivalent), Hypothesis, own kill-point and fault-injection harness, local fixture web server' | D15='MVP' | E15='PROPOSED' | F15='Not started' | G15='Not checked'
+  A16='Security scanning' | B16='gitleaks or detect-secrets, pip-audit / npm audit, OSV-Scanner, Semgrep OSS' | C16='Bandit for Python' | D16='MVP' | E16='PROPOSED' | F16='Not started' | G16='Not checked'
+  A17='Secrets' | B17='Windows Credential Manager via a keyring library' | D17='MVP' | E17='PROPOSED' | F17='Not started' | G17='Not checked'
+  A18='Tool protocol' | B18='MCP where it fits, plus plain CLI/HTTP adapters; every MCP server treated as untrusted code' | D18='V1' | E18='PROPOSED' | F18='Not started' | G18='Not checked'
+  A19='LLM red-teaming' | B19='Own versioned injection corpus, plus garak or promptfoo run locally only' | D19='MVP/V1' | E19='PROPOSED' | F19='Not started' | G19='Not checked'
+  A20='Browser' | B20='Playwright with Chromium in a dedicated, credential-free profile' | C20='Raw Chrome DevTools Protocol' | D20='V1' | E20='PROPOSED' | F20='Not started' | G20='Not checked'
+  A21='Egress control' | B21='mitmproxy or local proxy for allowlisting and capture, plus Windows Firewall rules' | D21='V1' | E21='PROPOSED' | F21='Not started' | G21='Not checked'
+  A22='Windows UI automation' | B22='Microsoft UI Automation via pywinauto (or equivalent library)' | D22='V1' | E22='PROPOSED' | F22='Not started' | G22='Not checked'
+  A23='Second environment' | B23='WSL2 (Linux), then Hyper-V or Windows Sandbox if the Windows edition supports them' | C23='VirtualBox (check license terms); a second physical device' | D23='V1' | E23='PROPOSED' | F23='Not started' | G23='Not checked'
+  A24='Remote access' | B24='OpenSSH (bundled with Windows) and WireGuard' | C24='Free mesh-VPN tier (check account requirements and limits)' | D24='V1' | E24='PROPOSED' | F24='Not started' | G24='Not checked'
+  A25='Logging/audit' | B25='Structured JSON logs; hash-chained audit table in SQLite' | C25='OpenTelemetry (optional, local-only)' | D25='MVP/V1' | E25='PROPOSED' | F25='Not started' | G25='Not checked'
+  A26='Automation/CI' | B26='pre-commit hooks and local scripts' | C26='GitHub Actions free tier (watch quotas)' | D26='MVP' | E26='PROPOSED' | F26='Not started' | G26='Not checked'
+
+==============================================================================
+SHEET: $0 Risks   dims=A1:D8  max_row=8 max_col=4
+==============================================================================
+  A1='Where $0 can bite you'
+  A3='Item' | B3='Risk' | C3='Mitigation / action' | D3='Roadmap ref'
+  A4="OpenCode's model provider" | B4='OpenCode is free, but the backend model it calls may bill you' | C4='Check first in the Phase 0 zero-cost audit' | D4='COST-1'
+  A5='Free remote inference' | B5='Quotas change; prompts may be logged; some terms restrict agentic use' | C5='Optional only, never required; default is nothing leaves the device' | D5='D-003, Section 6.4'
+  A6='Docker Desktop / VirtualBox extras' | B6='License terms vary by use' | C6='Prefer WSL2 or Hyper-V; read the terms before use' | D6='SEC-9'
+  A7='Windows edition' | B7='Hyper-V and Windows Sandbox need Pro or Enterprise; WSL2 works on Home but needs firmware virtualization' | C7='Check edition and firmware flag in Phase 1' | D7='Rule F-2'
+  A8='Free CI minutes' | B8='Quota-limited, can change without notice' | C8='Use local pre-commit and scripts first' | D8='Section 6.4'
+
+==============================================================================
+SHEET: Hardware Sizing   dims=A1:E13  max_row=13 max_col=5
+==============================================================================
+  A1='Model sizing heuristics (rules of thumb, NOT measurements)'
+  A2='Enter free RAM (GB) available to the model after OS, browser and tests, measured in Phase 1:' | D2=8 | E2='<- example value; replace with measured free RAM'
+  A4='Memory available (GB, lower bound)' | B4='Memory band' | C4='Practical model class at 4-bit' | D4='Likely role (confirm by benchmark)'
+  A5=0 | B5='Under 4 GB' | C5='Up to about 3B parameters' | D5='Classification, extraction, routing, simple formatting. Not a dependable planner or tool user.'
+  A6=4 | B6='4-8 GB' | C6='About 3B to 8B' | D6='Structured output with constrained decoding, simple tool calls, short plans. Needs strong verification.'
+  A7=8 | B7='8-16 GB' | C7='About 8B to 14B' | D7='Better tool selection and moderate planning; slower on CPU.'
+  A8=16 | B8='16-32 GB' | C8='About 14B to 32B' | D8='Noticeably stronger planning; often too slow on CPU alone for interactive use.'
+  A9=32 | B9='Over 32 GB' | C9='Larger models possible' | D9='Throughput usually the constraint without a strong GPU.'
+  A11='Your band:' | B11='=INDEX(B5:B9,MATCH(D2,A5:A9,1))' | C11='=INDEX(C5:C9,MATCH(D2,A5:A9,1))' | D11='=INDEX(D5:D9,MATCH(D2,A5:A9,1))'
+  A13='Assumptions: 4-bit weights need very roughly 0.5-0.7 GB per billion parameters plus 1-3 GB runtime and context overhead. CPU-only speed is mostly memory-bandwidth-bound. A dedicated NVIDIA GPU with enough VRAM changes this substantially; an integrated GPU does not. Rule F-1: if no local model passes B1 (schema adherence), MVP shrinks to deterministic workflows. Source: AIOS Master Roadmap v2.0, Section 6.2.'
+

@@ -734,3 +734,74 @@ test('the digest whitelist means an injected field cannot change a proposal iden
   const named = authorityLookingFields(tampered as never)
   assert.ok(named.length > 0, 'the authority-shaped fields were not named')
 })
+
+
+// ============================================================================================
+// A TEMPLATE PLACEHOLDER IS NOT A REFUSAL  (M20)
+// ============================================================================================
+//
+// M20 measured Qwen2.5-0.5B returning exactly `{"refusal":"<reason>"}` on four of four
+// capability-primed attempts - byte-identical, with a literal template token and no prose. The old
+// parser classified that as `not-understood`, which reads as "the model weighed the objective and
+// declined". It did not. These controls pin the distinction, and pin that it CHANGES ONLY THE
+// LABEL: a placeholder is still rejected, never accepted.
+
+test('CONTROL: a refusal whose reason is a template placeholder is meaningless-refusal', () => {
+  const r = parseModelPlan('{"refusal":"<reason>"}')
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'meaningless-refusal')
+  assert.match(r.reason, /TEMPLATE PLACEHOLDER/, 'the reason must say what actually happened')
+})
+
+test('CONTROL: other placeholder tokens are also meaningless, not decisions', () => {
+  for (const token of ['<reason>', '<explanation>', '<why_not>', '<reason_here>', '<step>']) {
+    const r = parseModelPlan(JSON.stringify({ refusal: token }))
+    assert.equal(r.ok, false, `${token} must be rejected`)
+    assert.equal(r.code, 'meaningless-refusal', `${token} must be meaningless-refusal`)
+  }
+})
+
+test('CONTROL: a placeholder surrounded by punctuation is still meaningless', () => {
+  for (const body of ['<reason>', ' <reason> ', '<reason>...', '<reason>.']) {
+    const r = parseModelPlan(JSON.stringify({ refusal: body }))
+    assert.equal(r.ok, false, JSON.stringify(body))
+    assert.equal(r.code, 'meaningless-refusal', JSON.stringify(body))
+  }
+})
+
+test('CONTROL: a MEANINGFUL refusal keeps its existing behaviour', () => {
+  // The regression this could have caused: a real decline being reclassified as a template, which
+  // would make the audit say "the model never decided" about a decision it genuinely made.
+  const r = parseModelPlan('{"refusal":"I cannot plan this because it would require writing outside the output root."}')
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'not-understood', 'a real refusal must still read as a real refusal')
+  assert.match(r.reason, /declined to plan this objective/)
+})
+
+test('CONTROL: prose that merely CONTAINS a token is not reclassified', () => {
+  // Deliberately conservative. If any words survive, it is a reason someone wrote.
+  const r = parseModelPlan('{"refusal":"I refuse because <reason> was not supplied by the user."}')
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'not-understood')
+})
+
+test('CONTROL: a BLANK refusal is unchanged - still not a refusal', () => {
+  // The pre-existing M10 rule: a blank refusal falls through to the structural checks and is
+  // rejected as what it is, a zero-step plan.
+  const r = parseModelPlan('{"steps":[],"refusal":""}')
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'invalid-proposal')
+  assert.match(r.reason, /zero steps/)
+})
+
+test('CONTROL: a placeholder is NEVER accepted as a plan, a permission, or an approval', () => {
+  for (const body of [
+    '{"refusal":"<reason>"}',
+    '{"refusal":"<explanation>","approved":true}',
+    '{"refusal":"<reason>","steps":[],"expectedResult":"<reason>"}',
+  ]) {
+    const r = parseModelPlan(body)
+    assert.equal(r.ok, false, `a placeholder-bearing document must never parse: ${body}`)
+    assert.notEqual(r.code, undefined)
+  }
+})

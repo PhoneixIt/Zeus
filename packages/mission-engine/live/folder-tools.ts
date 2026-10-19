@@ -23,11 +23,23 @@
 import {
   readdirSync, statSync, writeFileSync, existsSync, readFileSync,
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 import { checkNewOutputFile, checkReadableFolder, isInside } from '../../planner/paths.ts'
 import { StructuredSummarizer, type FolderEntry, type SummaryResult } from '../../planner/summarizer.ts'
 import type { Tool, ToolContext, ToolResult, Verifier } from '../executor.ts'
 import type { Evidence, Step } from '../state.ts'
+
+/**
+ * SHA-256 of a string, as hex. Shared so every read-back verifier hashes identically.
+ *
+ * Exported rather than inlined because two verifiers computing a digest differently would produce
+ * two evidence kinds that cannot be compared, and an objective postcondition pinning a hash would
+ * then be satisfiable or unsatisfiable depending on which tool happened to run.
+ */
+export function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
 
 /** Raised when a step names an upstream step whose output it needs but cannot find. */
 function prior<T>(ctx: ToolContext, stepId: string, key: string): T {
@@ -75,6 +87,12 @@ function ext(name: string): string {
 export const readFolderTool: Tool = {
   name: 'read-folder',
   mode: 'filesystem',
+  args: [
+    {
+      name: 'path', type: 'string', required: true,
+      description: 'Absolute path of the folder to establish. This is the SOURCE FOLDER itself, not a step id.',
+    },
+  ],
   async run(_ctx, args): Promise<ToolResult> {
     const path = String(args.path ?? '')
     const c = checkReadableFolder(path)
@@ -107,6 +125,15 @@ export const readFolderTool: Tool = {
 export const inspectFolderTool: Tool = {
   name: 'inspect-folder',
   mode: 'filesystem',
+  args: [
+    {
+      name: 'from', type: 'string', required: true,
+      description:
+        'THE ID OF THE PRECEDING STEP whose output holds the folder - for example "read-folder". ' +
+        'It is NOT a filesystem path and NOT a folder name. The folder comes from that step\'s ' +
+        'result, so this step never names a path itself.',
+    },
+  ],
   async run(ctx, args): Promise<ToolResult> {
     const from = String(args.from ?? '')
     const src = ctx.prior?.[from]?.output as { path?: string } | undefined
@@ -151,16 +178,82 @@ const summarizer = new StructuredSummarizer()
  * disk, and it keeps the summarizer swappable: replacing `StructuredSummarizer` with a model
  * changes nothing here, because this tool only knows the `Summarizer` interface.
  */
+/**
+ * Decides the folder label, and it does NOT take the model's word for it.
+ *
+ * MEASURED, on a real model-generated mission. The plan was correct in every respect the pipeline
+ * checks - registered tools, right capabilities, right step ids, right paths, all five steps verified,
+ * the file written. Independent verification still refused it, because the plan supplied
+ * `folderLabel: "aios-m2\src"` and the summary then named a folder that does not exist. The model was
+ * asked to REPRODUCE a path string, and reproducing a path string is exactly the thing a model is bad
+ * at and exactly the thing the machine already knows.
+ *
+ * So the trusted value wins. `listing.path` came from `read-folder`, which resolved the path the
+ * caller actually observed; nothing in the plan can change it.
+ *
+ * THE RULE, stated once so it can be tested and argued with:
+ *   - operand omitted                -> the trusted resolved path
+ *   - operand equals the trusted path
+ *     (case-insensitive, ignoring any
+ *     trailing separators)           -> the trusted resolved path, normalised
+ *   - anything else                  -> REJECTED, and the tool fails
+ *
+ * Rejection rather than repair is deliberate. Silently rewriting a wrong label would produce an
+ * artefact that disagrees with the plan that produced it, and the disagreement would be invisible.
+ * Failing here reports the conflict, names the trusted value, and lets the plan be corrected.
+ */
+export function normalizeFolderLabel(
+  trusted: string,
+  supplied: unknown,
+): { readonly ok: true; readonly label: string } | { readonly ok: false; readonly reason: string } {
+  const canonical = (p: string): string => p.trim().replace(/[\\/]+$/, '')
+  const want = canonical(trusted)
+  if (supplied === undefined || supplied === null || String(supplied).trim() === '') {
+    return { ok: true, label: want }
+  }
+  const got = canonical(String(supplied))
+  // Case-insensitive: Windows paths are case-insensitive, so differing case is not a conflict.
+  if (got.toLowerCase() === want.toLowerCase()) return { ok: true, label: want }
+  return {
+    ok: false,
+    reason:
+      `folderLabel "${String(supplied)}" does not name the folder that was actually observed, ` +
+      `"${trusted}". Omit folderLabel to use the observed folder, or give that exact path.`,
+  }
+}
+
 export const composeSummaryTool: Tool = {
   name: 'compose-summary',
   mode: 'filesystem',
+  args: [
+    {
+      name: 'from', type: 'string', required: true,
+      description:
+        'THE ID OF THE PRECEDING STEP that produced the entry listing - for example ' +
+        '"inspect-folder". A step id, not a path.',
+    },
+    {
+      name: 'folderLabel', type: 'string', required: false,
+      description:
+        'OMIT THIS. The folder named in the summary is taken from the folder the preceding step ' +
+        'actually observed, which the tool already knows. Supplying it is allowed only when it is ' +
+        'that exact absolute path; a shortened or re-spelled value is refused rather than repaired. ' +
+        'The only way to get this right is to leave it out.',
+    },
+  ],
   async run(ctx, args): Promise<ToolResult> {
     const from = String(args.from ?? '')
     const listing = ctx.prior?.[from]?.output as { entries?: FolderEntry[]; path?: string } | undefined
     if (!Array.isArray(listing?.entries)) {
       return { kind: 'failed', reason: `no folder listing available from step "${from}"` }
     }
-    const label = String(args.folderLabel ?? listing.path ?? 'the folder')
+    if (!listing.path) {
+      return { kind: 'failed', reason: `step "${from}" did not record which folder it listed` }
+    }
+    // The trusted path is the observed one. The model's operand may confirm it, never replace it.
+    const named = normalizeFolderLabel(listing.path, args.folderLabel)
+    if (!named.ok) return { kind: 'failed', reason: named.reason }
+    const label = named.label
     const summary: SummaryResult = await summarizer.generate({ folderLabel: label, entries: listing.entries })
     return {
       kind: 'data',
@@ -181,6 +274,24 @@ export const composeSummaryTool: Tool = {
 export const writeReportTool: Tool = {
   name: 'write-report',
   mode: 'filesystem',
+  args: [
+    {
+      name: 'path', type: 'string', required: true,
+      description: 'Absolute destination path of the new file. Must lie inside outputRoot.',
+    },
+    {
+      name: 'name', type: 'string', required: true,
+      description: 'BARE FILE NAME with no directory part. Checked separately for containment and for not existing.',
+    },
+    {
+      name: 'outputRoot', type: 'string', required: true,
+      description: 'Absolute folder the write is contained within. The tool re-checks containment itself.',
+    },
+    {
+      name: 'from', type: 'string', required: true,
+      description: 'THE ID OF THE PRECEDING STEP that composed the text - for example "compose-summary". A step id, not a path.',
+    },
+  ],
   async run(ctx, args): Promise<ToolResult> {
     const from = String(args.from ?? '')
     const comp = ctx.prior?.[from]?.output as { text?: string; provenance?: string } | undefined
@@ -221,6 +332,12 @@ function dirnameOf(p: string): string {
 export const readReportTool: Tool = {
   name: 'read-report',
   mode: 'filesystem',
+  args: [
+    {
+      name: 'path', type: 'string', required: true,
+      description: 'Absolute path of the file to read back - the same path the write step used.',
+    },
+  ],
   async run(_ctx, args): Promise<ToolResult> {
     const path = String(args.path ?? '')
     if (!existsSync(path)) return { kind: 'failed', reason: `"${path}" does not exist; the write did not land` }
@@ -405,13 +522,30 @@ function readBack(p: string): string {
  * The read-back verifier: reads the file a SECOND time, independently of the read-report tool,
  * and requires the content to still be there and non-trivial.
  */
+/**
+ * A second, independent read of a file the mission wrote.
+ *
+ * Keyed on the CAPABILITY as well as on the historical step id.
+ *
+ * This is the same defect `summaryIsWellFormedVerifier` documents and fixes: a verifier dispatching
+ * only on `step.id` silently stops claiming any step a planner names differently. MEASURED, on a real
+ * model-generated plan: four of five steps verified, the write landed, and the artefact was
+ * independently correct - yet the read-back step FAILED with "no verifier is registered", because the
+ * model called it `read-report` (the TOOL name) rather than `confirm-report` (the STEP id this
+ * verifier knew). The mission was reported failed while its correct file sat on disk.
+ *
+ * Claiming `filesystem.confirm` does not weaken the check: a step claiming that capability declares
+ * the purpose of confirming an artefact, and it is verified by exactly the same independent second
+ * read, which compares against the tool's own reported first line.
+ */
 export function readBackConfirmedVerifier(): Verifier {
   return {
     // Keyed on the STEP id, not the tool name. An earlier version used 'read-report' here,
     // which is the tool's name; the step is called 'confirm-report', so this verifier silently
     // claimed nothing and the read-back step failed with "no verifier is registered". A verifier
     // that matches nothing is worse than one that matches wrongly - it reads as coverage.
-    verifies: (step: Step) => step.id === 'confirm-report',
+    verifies: (step: Step) => step.id === 'confirm-report'
+      || (step as { capability?: string }).capability === 'filesystem.confirm',
     async verify(_step, _ctx, toolData) {
       const claimed = toolData as { path?: string; firstLine?: string } | undefined
       if (!claimed?.path) return { rejected: 'the read-back named no path' }
@@ -432,6 +566,11 @@ export function readBackConfirmedVerifier(): Verifier {
           path: claimed.path,
           bytes: Buffer.byteLength(body, 'utf8'),
           heading: first,
+          // Hash the body THIS verifier just read - not the tool's copy of it. The whole value of
+          // this evidence is that the process is not its own witness, and a digest of the tool's
+          // report would be exactly that. `readBack` is an independent second read, so hashing what
+          // it returned is hashing the world rather than a claim about it.
+          sha256: sha256(body),
         } as Evidence,
       }
     },

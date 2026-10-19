@@ -123,6 +123,35 @@ export function parseModelPlan(raw: string): ParseResult {
   // reject it as what it actually is - a plan with zero steps. This makes the parser STRICTER, never
   // more permissive, so it cannot be a way of raising an acceptance rate.
   if (typeof json.refusal === 'string' && json.refusal.trim().length > 0) {
+    const reason = json.refusal.trim()
+
+    // A TEMPLATE PLACEHOLDER IS NOT A REFUSAL.
+    //
+    // Measured under M20: with capability priming, Qwen2.5-0.5B returned exactly
+    // `{"refusal":"<reason>"}` on four of four attempts - byte-identical, and containing the
+    // literal template token rather than any prose the model authored. The old code recorded that
+    // as `not-understood`, i.e. "the model declined to plan this objective", which is a claim
+    // about a DECISION the model never made. A reviewer reading that log is told the model
+    // weighed the objective and declined; nothing happened of the kind.
+    //
+    // This is the limit GOVERNANCE-CONTRACT I10 records as known and unclosed: "a non-blank but
+    // meaningless refusal is still indistinguishable from a real decline." It is now closed.
+    //
+    // Both classifications REJECT, so this changes what the audit says, never what is permitted.
+    // Nothing here can turn a refusal into a plan, a permission, or an approval.
+    const TEMPLATE_TOKEN = /<[a-z_]+>/gi
+    const hasToken = TEMPLATE_TOKEN.test(reason)
+    // Deliberately narrow: the reason must be ENTIRELY template tokens and punctuation. A reason
+    // that still contains words is left alone, so real prose is never reclassified by accident.
+    const residue = reason.replace(/<[a-z_]+>/gi, '').replace(/[^A-Za-z0-9]/g, '')
+    if (hasToken && residue.length === 0) {
+      TEMPLATE_TOKEN.lastIndex = 0
+      return reject('meaningless-refusal',
+        `the model emitted a refusal whose reason is a TEMPLATE PLACEHOLDER, not prose ` +
+        `(${JSON.stringify(reason)}). It did not weigh the objective and decline; it filled in a ` +
+        `placeholder. This is recorded as such so a reviewer is not told a decision was made.`, raw)
+    }
+    TEMPLATE_TOKEN.lastIndex = 0
     return reject('not-understood', `the model declined to plan this objective: ${json.refusal}`, raw)
   }
 

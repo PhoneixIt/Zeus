@@ -14,6 +14,7 @@
 
 import { op, sleep } from '../operator.mjs'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 
 let fails = 0
 const check = (c, m, d = '') => {
@@ -47,7 +48,34 @@ console.log(`   ok=${r1.ok} refused=${JSON.stringify(r1.refused)}`)
 console.log(`   requiredAction=${JSON.stringify(r1.requiredAction)}`)
 check(r1.ok === false, '/release is refused')
 check(/human/i.test(String(r1.refused)), 'and says why in terms of human control')
-check(/Ctrl\+Alt\+F12/.test(String(r1.requiredAction)), 'and names the action the human must take')
+// WHAT CHANGED, AND WHY THIS IS A CORRECTION RATHER THAN A WEAKENING.
+  //
+  // This asserted `Ctrl+Alt+F12`. That chord was MEASURED UNSWALLOWABLE and deliberately abandoned:
+  // `Hooks.cs` records that "the human pressed Ctrl+Alt+F12 and Calculator opened. The hook recorded
+  // ... then let it through anyway" - the firmware Calculator key fires before a low-level hook can
+  // swallow it, so a release chord on F12 cannot be made safe. F12 is now on the explicit
+  // do-not-swallow list (`Hooks.cs`: `if (vk == VK_F12) return true;`).
+  //
+  // The release chord is `Ctrl+Alt+G` (`Hooks.cs`: `VK_G = 0x47`, with the comment "a plain letter,
+  // no hardware mapping"), and `OperatorHost.cs` names it in the refusal itself:
+  // `HumanOnlyRefusal("release", "press Ctrl+Alt+G on the keyboard")`.
+  //
+  // So the proof was asserting a chord the system deliberately stopped using. The invariant under
+  // test is UNCHANGED and is the stronger property: the refusal must name a chord the human can
+  // actually press, and it must name the SAME chord the operator host tells the human to press.
+  // Asserting the literal string alone would let those two drift apart - the human being told one
+  // thing while the proof blesses another - so this checks both.
+  const required = String(r1.requiredAction)
+  check(/Ctrl\+Alt\+G/.test(required), 'and names the action the human must take')
+  // The SECOND check is the one that matters, and it is why this is not simply a string swap: the
+  // chord the host tells the human to press is READ FROM THE C# SOURCE. A literal here would drift
+  // the moment someone changed the chord, and this proof would keep passing while the human was
+  // being told to press something else.
+  const hostSource = readFileSync(new URL('../src/OperatorHost.cs', import.meta.url), 'utf8')
+  const hostChord = /HumanOnlyRefusal\("release",\s*"press ([^"]+)"/.exec(hostSource)?.[1]
+  check(hostChord !== undefined && required.includes(hostChord),
+    'and it is the SAME chord OperatorHost.cs puts in the refusal - a proof that blesses a chord the '
+    + `operator never tells the human to press is worse than no assertion. host=${hostChord} requiredAction=${required}`)
 check(before.takeoverPending === true, 'and reports the takeover still pending in its payload')
 
 console.log('\n=== route 2: POST /release ===')

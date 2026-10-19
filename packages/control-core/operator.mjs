@@ -25,41 +25,80 @@
 // actually happened, not a narration: every entry is written after the corresponding
 // Win32 call returned.
 
-// PLAYWRIGHT IS LOADED LAZILY, and the reason is worth stating plainly.
+// THE BROWSER IS DRIVEN OVER RAW CDP, AND THE PLAYWRIGHT DEPENDENCY IS GONE.
 //
-// It used to be a top-level import, and `playwright` is neither installed nor declared in
-// package.json - so this module could not be imported AT ALL, and every harness that needed the
-// operator (including all five proof harnesses: takeover, no-self-release, panel release, panel
-// colour, status truth) failed with ERR_MODULE_NOT_FOUND before running a single check.
+// It used to be loaded lazily, and the lazy import of `playwright` failed: the package is neither
+// installed nor declared in package.json, so the browser capability raised "the browser capability
+// needs the playwright package" at the point of use. It had originally been a TOP-LEVEL import,
+// which meant a missing browser library made this module un-importable at all - taking the operator
+// with it and stopping every harness that needed the operator, including the proof harnesses, which
+// are about WINDOWS and never touch a browser.
 //
-// Those proofs are about WINDOWS and the panel. They never touch a browser. So a missing browser
-// library must not be able to prevent the safety properties of the whole control core from being
-// demonstrated.
+// The premise of that error was wrong, and it is worth being exact about why. What is missing is a
+// convenience WRAPPER, not the capability:
 //
-// The Chromium BINARY is present (ms-playwright/chromium-1243); it is the npm package that is
-// absent. Browser driving is therefore genuinely unavailable today, and that is now reported as a
-// clear error at the point of use rather than as a module-load failure that takes the operator with
-// it.
+//   - the Chromium binary is present (ms-playwright/chromium-1243)
+//   - the CDP endpoint on 127.0.0.1:9333 is already polled by cdpAlive()
+//   - Node v22+ ships `fetch` and `WebSocket`, both verified present on v24.21.0
+//
+// Playwright is, for the six methods this file uses, a wrapper over the Chrome DevTools Protocol -
+// which is JSON over a WebSocket. `./cdp.mjs` speaks it directly, with no dependency at all.
+//
+// Playwright is still preferred IF it is ever installed, because it is battle-tested and this client
+// is not. But its absence is no longer a reason the browser cannot work.
 let chromium = null
+let cdpBrowser = null
 async function chromiumApi() {
   if (chromium) return chromium
   try {
     ({ chromium } = await import('playwright'))
     return chromium
-  } catch (e) {
-    throw new Error(
-      'the browser capability needs the playwright package, which is neither installed nor declared ' +
-      `in package.json (${e instanceof Error ? e.message : String(e)}). Every non-browser capability ` +
-      'works without it. See docs/known-defects under M17.',
-    )
+  } catch {
+    // Fall through to the built-in client. This is the path that runs today.
+    return null
   }
 }
+
+/**
+ * A playwright-shaped browser handle, from whichever backend is available.
+ *
+ * Both backends expose `contexts()[0].pages()` and a page with `evaluate`/`url`/`title`, so every
+ * call site below is unchanged. The preference order is deliberate: real playwright if installed,
+ * otherwise the dependency-free CDP client. Only if BOTH are unavailable does this raise, and it says
+ * which is missing and how to start the browser.
+ */
+async function connectBrowser() {
+  const api = await chromiumApi()
+  if (api) return api.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`)
+  if (!cdpBrowser) cdpBrowser = await connectOverCDP(`http://127.0.0.1:${CDP_PORT}`)
+  return cdpBrowser
+}
 import { op, listWindows, foreground, sleep, identity } from './driver.mjs'
+import { connectOverCDP } from './cdp.mjs'
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync } from 'node:fs'
 
 const CHROME = 'C:/Users/Samer/AppData/Local/ms-playwright/chromium-1243/chrome-win64/chrome.exe'
-const CDP_PORT = 9333
+
+/**
+ * The port this module attaches to, overridable so a TEST can use its own.
+ *
+ * It defaults to 9333, which is what every existing caller has always used - nothing about the
+ * production path changes. The override exists for `browser-smoke.mjs`, which must NOT attach to (or
+ * terminate) a developer's own browser session: a headless check that reused the default port would
+ * either collide with a running browser or, worse, terminate one. The value is parsed strictly,
+ * because an unparseable value would otherwise become `NaN` and silently produce the URL
+ * `http://127.0.0.1:NaN` - a browser capability that is broken in a way nothing reports.
+ */
+const CDP_PORT = (() => {
+  const raw = process.env.AIOS_CDP_PORT
+  if (!raw) return 9333
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+    throw new Error(`AIOS_CDP_PORT must be an integer port in 1024-65535, got ${JSON.stringify(raw)}`)
+  }
+  return n
+})()
 const PROFILE_DIR = 'C:/Users/Samer/AppData/Local/Temp/opencode/browser-lab/profile'
 const SHOTS = 'C:/Users/Samer/AppData/Local/Temp/opencode/desktop-capture'
 const AUDIT = 'C:/Users/Samer/AppData/Local/Temp/opencode/operator/audit.jsonl'
@@ -339,7 +378,9 @@ export const focusBrowser = focus
 
 async function attach() {
   if (!browser || !context) {
-    browser = await (await chromiumApi()).connectOverCDP(`http://127.0.0.1:${CDP_PORT}`)
+    // Either backend produces the same shape, so nothing below this line knows or cares which one
+    // answered. That is the point of the small surface: the swap is one line, not a rewrite.
+    browser = await connectBrowser()
     context = browser.contexts()[0]
   }
   return context
@@ -352,7 +393,13 @@ export async function page() {
   // confusing "page(...).evaluate is not a function". So the handle is validated
   // here and the wait is bounded, rather than leaving callers to guard.
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const pages = ctx.pages()
+    // AWAITED, and that `await` is load-bearing. Playwright's `context.pages()` is SYNCHRONOUS - it
+    // reads pages the connection already knows about - but the CDP client's `pages()` must fetch
+    // /json/list, so it returns a promise. Without the await, `pages` is a Promise, `pages.length`
+    // is undefined, and every attempt falls through to `newPage()` on an empty-looking list until
+    // this loop times out with "no usable page handle". Awaiting a non-promise is a no-op, so this
+    // is correct for BOTH backends and the playwright path is unchanged.
+    const pages = await ctx.pages()
     const candidate = pages[pages.length - 1] || (pages.length === 0 ? await ctx.newPage() : null)
     if (candidate && typeof candidate.evaluate === 'function') return candidate
     await sleep(250)

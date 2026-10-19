@@ -88,6 +88,17 @@ export interface ControlRecord {
   readonly livenessProbes: number
   readonly livenessProbeHits: number
   readonly livenessFailures: number
+  // ---- /hooks: the mouse-attribution repair, observed rather than assumed.
+  //
+  // `mouseTaggedSeen` says whether attribution happened. These say WHY, and they exist because
+  // the counter alone cannot distinguish "the sentinel comparison is false" from "the handler
+  // died before it reached the comparison" - a distinction that decides whether the repair works
+  // or is merely present in the source. `mouseProcError` matters for the same reason: that handler
+  // swallowed every exception for its entire life, so a fault looked exactly like a clean miss.
+  readonly mouseCompareObserved: number
+  readonly mouseCompareLow32: number
+  readonly mouseCompareHit: number
+  readonly mouseProcError: string
 }
 
 /** The narrowest client that can read the authoritative record. */
@@ -111,7 +122,7 @@ export interface RecordSource {
    * It is also, for exactly that reason, the one EXISTING control-layer route that produces a
    * real authoritative operator event on demand without weakening anything.
    */
-  raw(path: string): Promise<{ status: number; body: Record<string, unknown> }>
+  raw(path: string, opts?: { method?: string; body?: Record<string, unknown> }): Promise<{ status: number; body: Record<string, unknown> }>
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -151,6 +162,10 @@ export async function readRecord(src: RecordSource): Promise<ControlRecord> {
     livenessProbes: 0,
     livenessProbeHits: 0,
     livenessFailures: 0,
+    mouseCompareObserved: 0,
+    mouseCompareLow32: 0,
+    mouseCompareHit: 0,
+    mouseProcError: '',
   }
 }
 
@@ -193,6 +208,10 @@ export async function readHookDiagnostics(src: RecordSource): Promise<{
       livenessProbes: num(hb.livenessProbes),
       livenessProbeHits: num(hb.livenessProbeHits),
       livenessFailures: num(hb.livenessFailures),
+      mouseCompareObserved: num(hb.mouseCompareObserved),
+      mouseCompareLow32: num(hb.mouseCompareLow32),
+      mouseCompareHit: num(hb.mouseCompareHit),
+      mouseProcError: str(hb.mouseProcError),
     },
   }
 }

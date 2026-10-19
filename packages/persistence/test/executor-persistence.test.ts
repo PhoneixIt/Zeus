@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os'
 import { execute } from '../../mission-engine/executor.ts'
 import type { Tool, ToolContext, Verifier, ToolRouter, ExecuteResult } from '../../mission-engine/executor.ts'
 import type { Mission, Step, Evidence, StepOutcome } from '../../mission-engine/state.ts'
-import { isComplete, isRetryable, uncertainSteps } from '../../mission-engine/state.ts'
+import { isComplete, isMissionSuccessful, isRetryable, uncertainSteps } from '../../mission-engine/state.ts'
 import { DurableStore } from '../store.ts'
 import { StoreRecorder } from '../recorder.ts'
 import { resumeMission } from '../recover.ts'
@@ -109,6 +109,11 @@ function missionOf(id = 'm1'): Mission {
     pendingApprovals: [],
     startedAt: 1_700_000_000_000,
     proposalDigest: 'digest-1',
+    // The objective is "write a summary file", and the verifier independently observes exactly that
+    // file. Declaring it makes this a persistence test about a mission that genuinely met its
+    // objective - otherwise every assertion below would be measuring an unproven mission, and the
+    // suite would quietly stop testing what it was written to test.
+    objectivePostconditions: [{ kind: 'artifact-exists', path: 'C:\\out\\summary.txt' }],
   }
 }
 
@@ -212,6 +217,66 @@ test('the durable record, not the in-memory mission, is what survives - and they
     assert.equal(isComplete(persisted.mission), true, 'completion is re-derived and agrees')
     assert.deepEqual(world.acted, ['write-summary:C:\\out\\summary.txt'], 'exactly one action - no duplicate')
     reopened.close(); store.close()
+  } finally { bestEffortRemove(path) }
+})
+
+// ============================================================================================
+// THE OBJECTIVE, ACROSS A RESTART
+// ============================================================================================
+
+test('the objective postconditions SURVIVE the round trip, so the verdict is re-derivable', async () => {
+  // If they did not survive, every restored mission would compute `unproven` against an empty claim
+  // and a genuinely finished mission would read as unfinished forever. Failing closed in that
+  // direction is not failing closed - it is being wrong in the opposite direction, silently, on
+  // every restart.
+  const path = tmpDb()
+  try {
+    const store = new DurableStore({ path, sessionId: 'S1' })
+    const world = makeWorld()
+    await run({ world, store, recorder: new StoreRecorder(store) })
+    store.close()
+
+    const reopened = new DurableStore({ path, sessionId: 'S2' })
+    const restored = reopened.readMission('m1')!
+    assert.deepEqual(
+      restored.mission.objectivePostconditions,
+      [{ kind: 'artifact-exists', path: 'C:\\out\\summary.txt' }],
+      'the declaration came back exactly as it went in',
+    )
+    assert.equal(
+      isMissionSuccessful(restored.mission, { write: restored.evidence[0]!.evidence }),
+      true,
+      'and the restored mission is still successful, because the same evidence still satisfies it',
+    )
+    reopened.close()
+  } finally { bestEffortRemove(path) }
+})
+
+test('CONTROL: a RESTORED mission whose objective was never declared stays UNPROVEN, not successful', async () => {
+  // The recovery path is a completion-reporting path like any other, and a restart is exactly when a
+  // system is most likely to read "every step is done" as "the job is done". This is that moment.
+  const path = tmpDb()
+  try {
+    const store = new DurableStore({ path, sessionId: 'S1' })
+    const world = makeWorld()
+    const undeclared: Mission = { ...missionOf(), objectivePostconditions: undefined }
+    const res = await run({ world, store, recorder: new StoreRecorder(store), mission: undeclared })
+
+    assert.equal(res.record.complete, false, 'not successful before the restart either')
+    assert.equal(res.record.objective.kind, 'unproven')
+    assert.equal(res.mission.state, 'failed', 'and the terminal state agrees')
+    store.close()
+
+    const reopened = new DurableStore({ path, sessionId: 'S2' })
+    const restored = reopened.readMission('m1')!
+    assert.equal(restored.mission.objectivePostconditions, undefined, 'nothing was claimed, so nothing came back')
+    assert.equal(isComplete(restored.mission), true, 'every step still reads as done - which is the trap')
+    assert.equal(
+      isMissionSuccessful(restored.mission, { write: restored.evidence[0]!.evidence }),
+      false,
+      'and the objective verdict still refuses to call it a success after recovery',
+    )
+    reopened.close()
   } finally { bestEffortRemove(path) }
 })
 

@@ -83,6 +83,15 @@ function semanticForm(p: PlanProposal): Record<string, unknown> {
     objective: p.objective,
     constraints: [...(p.constraints ?? [])],
     expectedResult: p.expectedResult,
+    // The objective's own requirements are part of what "the plan" means.
+    //
+    // Without this line the digest is computed over a projection that DROPS the postconditions, so
+    // deleting every one of them after a reviewer approved the plan yields a byte-identical digest:
+    // `samePlan` reports the weakened plan as the reviewed one, and `execute()`'s proposalDigest
+    // check cannot notice. An attacker who can amend a proposal can then remove every objective
+    // check without invalidating a single approval. This field is in the allowlist precisely
+    // because an absent entry is an invisible permission rather than a missing convenience.
+    objectivePostconditions: [...(p.objectivePostconditions ?? [])],
     steps: (p.steps ?? []).map((s: PlanStep) => {
       const out: Record<string, unknown> = {}
       for (const f of STEP_FIELDS) out[f] = (s as unknown as Record<string, unknown>)[f]

@@ -1,0 +1,233 @@
+AIOS MASTER ROADMAP | $0 SOFTWARE/HOSTING BUDGET
+Page 1
+ AIOS
+ 
+ MASTER ROADMAP
+ A practical route toward a unified, autonomous, cross-platform capability system
+ 
+NON-NEGOTIABLE
+CONSTRAINT
+$0 budget. No paid hosting, subscriptions, API usage, purchases, or potentially
+billable services without explicit approval.
+GOVERNING OBJECTIVE
+Build one coherent system that discovers and integrates capabilities, coordinates
+models and agents, acts across supported platforms, verifies outcomes, recovers
+safely, and improves through tested changes.
+How to use this roadmap
+This is the governing plan for keeping the project and its contributors aligned. It is a baseline based on the stated vision and
+known project context—not a claim that the repository or laptop has already been fully audited. OpenCode must verify the
+current state and update the inventory before implementation.
+Working rule: inspect first, define the architecture, implement in gated stages, and prove each stage with evidence. Do not
+add tools just because they exist; integrate only what serves the target and can run within the $0 constraint.
+Definition of success
+ A documented architecture and integration map, with each subsystem classified as implemented, partial, missing, failing, or
+unverified.
+ A measured laptop/deployment feasibility report comparing local, hybrid, and cloud options while respecting $0.
+ End-to-end workflows across multiple capability types, with independent verification and honest failure reporting.
+ Safe, resumable execution with persistent state, controlled permissions, recovery, and audit trails.
+ A repeatable improvement loop: propose change → review → test → verify → accept or roll back.
+ A final acceptance checklist; completion is never inferred from a plan, installation, or unit tests alone.
+
+AIOS MASTER ROADMAP | $0 SOFTWARE/HOSTING BUDGET
+Page 2
+1. Project principles and hard constraints
+One system, not a pile of tools
+Components use documented interfaces and shared task state, permissions, observability, and verification contracts.
+Model proposes; controls decide
+Model output is untrusted input. Schemas, plan invariants, policy checks, capability permissions, and execution controls govern
+side effects.
+Verification is independent
+A task is complete only when outcome evidence passes explicit checks. A model saying “done” is not proof.
+Autonomy with bounded authority
+Routine safe work can proceed autonomously. Destructive, sensitive, irreversible, credential-bearing, or externally
+consequential actions need appropriate gates.
+Cross-platform by adapters
+Separate the core from OS-specific desktop, browser, filesystem, device, and service adapters. Document unsupported
+platforms.
+$0 by design
+Use free/open-source software and local resources first. Free-tier quotas, licenses, account requirements, resource usage, and
+overage risks are constraints.
+No fake connectivity
+A connector is not integrated until authentication, capability discovery, execution, error handling, and end-to-end verification
+are tested.
+2. Roadmap phases and exit gates
+Phase 0 — Freeze facts and map the current project
+Work: Inspect repository structure, docs, package manifests, tests, dependencies, integrations, scripts, uncommitted changes,
+known failures, and runtime state. Preserve existing work.
+Deliverables: Repository and changed-file inventory; active process/test status; verified baseline commands/results; risk
+register.
+Exit gate: Every subsystem classified implemented, partial, missing, failing, or unverified.
+Phase 1 — Hardware and $0 feasibility
+Work: Measure CPU, RAM/free memory, GPU/VRAM, disk/free space, OS, virtualization support, and practical
+uptime/network limits. Estimate model and workload requirements.
+Deliverables: Compare local-first, hybrid, and cloud-hosted designs. Record quotas, account/credential needs, data exposure,
+resource needs, and charge risks.
+Exit gate: Recommendation is based on measurements. No paid service, paid API, subscription, purchase, or potentially
+billable deployment enabled.
+Phase 2 — Architecture and capability map
+Work: Define system boundaries and contracts for state, events, model/provider interface, planner, policy/governance,
+capability registry, tool router, agents, memory, scheduling, execution, verification, observability, and recovery.
+Deliverables: One source-of-truth architecture document; dependency/integration map; interface schemas; trust boundaries;
+threat model; decision log; prioritized backlog.
+Exit gate: Every subsystem has an interface, dependencies, failure behavior, test strategy, and acceptance criteria;
+contradictory docs are reconciled.
+
+AIOS MASTER ROADMAP | $0 SOFTWARE/HOSTING BUDGET
+Page 3
+Phase 3 — Stabilize execution foundation
+Work: Fix critical correctness/reliability issues before broadening features: persistence, atomic locks, duplicate-task handling,
+verification/reconciliation, deterministic tests, safe shutdown/resume.
+Deliverables: Regression tests and reproducible commands. Distinguish fixture mistakes from product defects; replace
+vacuous assertions with meaningful proof.
+Exit gate: Critical tests pass; crash/restart/resume and duplicate behavior are demonstrated; tasks cannot succeed without
+verified evidence.
+Phase 4 — Secure capability and connector framework
+Work: Create consistent adapters for local tools, browser/desktop control, filesystem, command execution, APIs, tool servers,
+and remote devices/services where suitable.
+Deliverables: Each capability declares inputs/outputs, permissions, preconditions, timeout, cancellation, idempotency, side
+effects, health check, error types, verification, and platforms.
+Exit gate: Multiple adapters register, are discoverable, permission-checked, execute, and report auditable results through the
+same interface.
+Phase 5 — Model and agent orchestration
+Work: Support interchangeable local models and genuinely free/approved providers. Route by task, capability, quality, latency,
+and resources; use bounded delegation.
+Deliverables: Test malformed output, refusal, timeout, unavailable models, context limits, disagreement, retries, fallback, and
+resource exhaustion.
+Exit gate: Provider selection and fallback work without bypassing governance.
+Phase 6 — End-to-end cross-tool workflows
+Work: Build workflows combining at least two capability types and more than one system boundary, with planning, execution,
+persistence, independent verification, recovery, and reporting.
+Deliverables: Benchmark tasks with expected outcomes, allowed actions, evidence, resource/time budgets, and failure
+behavior.
+Exit gate: Repeatable goal-to-evidence demonstrations pass, including interruption/restart and deliberate failure cases.
+Phase 7 — Controlled self-improvement
+Work: Let AIOS inspect its code/docs/tests, propose scoped changes, implement in an isolated branch/worktree, run tests,
+request independent review, and accept or roll back.
+Deliverables: Preserve protected boundaries, provenance, diffs, test logs, review results, rollback plan, resource budgets, and
+human gates.
+Exit gate: At least one full improvement cycle is demonstrated without uncontrolled self-modification, permission escalation, or
+unverified deployment.
+Phase 8 — Reliability, usability, final acceptance
+Work: Test clean setup, connector failure, permission denial, network loss, model crash, stale/corrupt state, timeout, rollback,
+logs, and recovery.
+Deliverables: Operator guide, setup/repair scripts, capability catalog, supported-platform matrix, limitations, zero-cost guide,
+final evidence report.
+Exit gate: All agreed criteria have pass/fail evidence. Gaps are explicit; scope is realistic, not “every tool in the world.”
+
+AIOS MASTER ROADMAP | $0 SOFTWARE/HOSTING BUDGET
+Page 4
+3. Zero-cost infrastructure decision framework
+Area
+Default approach
+Must verify
+Compute
+Use existing laptop first; local execution for suitable
+workloads.
+Measured RAM/CPU/GPU/disk, thermals, concurrency,
+model limits.
+Models
+Local open models first; remote inference only if
+genuinely free and approved.
+License, download size, RAM/VRAM, context, latency,
+privacy, quotas.
+Hosting
+Avoid until persistent remote operation is proven
+necessary; use a free tier only if limits fit.
+Sleep/cold starts, usage caps, retention, payment method,
+overage risk.
+Storage
+Existing local persistence first; free/open-source
+options if needed.
+Backup/restore, encryption, quotas, availability, portability.
+Automation
+Local browser/desktop and open protocols; add
+adapters as needed.
+OS compatibility, permissions, service restrictions,
+reproducibility.
+Connectivity
+Local IPC/network first; remote links only when required
+and secured.
+Authentication, TLS, least privilege, secrets, reconnect
+behavior.
+Monitoring
+Local logs, metrics, traces, health checks and test
+artifacts.
+Useful diagnostics without leaking secrets or private
+content.
+Zero-cost rules
+ Never enter payment details or activate a billable service just to test it.
+ Treat “free tier” as a quota-limited dependency, not guaranteed free infrastructure forever.
+ Do not send secrets, personal data, source code, or customer data to external providers without explicit authorization and a
+suitable data-handling decision.
+ Record licenses and usage restrictions for open-source tools and models.
+ If a requirement cannot be achieved at $0, document the trade-off and keep it out of active deployment unless the user changes
+the budget.
+4. Cross-platform integration target
+AIOS should be platform-agnostic at its core, while recognizing different platform permissions and technical boundaries. The
+first goal is a reliable adapter architecture—not an unsupported claim of universal compatibility.
+Core runtime: Stable task model, state machine, event contracts, configuration, health checks, logs, policy and verification
+APIs.
+Operating systems: Windows first for the current development environment; assess Linux/macOS adapters and test
+availability.
+Browser/web: Navigation, forms, downloads/uploads, page inspection, and supported authenticated workflows while
+respecting site rules.
+Desktop/device: UI automation through explicit, permissioned adapters; handle screen changes, focus, dialogs, and timeouts.
+Files/commands: Scoped filesystem and process adapters with path restrictions, policy checks, cancellation, and evidence.
+External services: API/SDK/plugin adapters with credential isolation, rate limits, retries, pagination, events, and
+disconnect/revoke paths.
+Models/agents: Provider-neutral interface, local model lifecycle, capability-based routing, bounded delegation, validated
+structured outputs.
+Remote machines: Authenticated, encrypted, explicitly enrolled connections with per-device permissions and revocation.
+5. Safety, autonomy and verification requirements
+ Every side-effecting capability declares permissions and expected effects.
+ Separate planning from execution; parse and validate model-generated plans before acting.
+ Use least privilege and scoped workspaces; prompts alone are not a security sandbox.
+
+AIOS MASTER ROADMAP | $0 SOFTWARE/HOSTING BUDGET
+Page 5
+ Treat unknown outcomes as unknown; never report success after timeout or partial execution.
+ Use idempotency keys or state checks to prevent duplicate actions where possible.
+ Persist checkpoints and resume after restart without replaying completed irreversible actions.
+ Use objective evidence such as state diffs, API state, browser state, or test results.
+ High-impact actions—deletion, publishing, purchases, credential/access changes, remote execution—require explicit policy and
+confirmation gates.
+ Self-improvement must be auditable, test-gated, reviewable and reversible.
+ Never claim platform, connector, or workflow support until its integration test passes.
+
+AIOS MASTER ROADMAP | $0 SOFTWARE/HOSTING BUDGET
+Page 6
+6. Definition of done: final acceptance checklist
+Do not declare completion merely because dependencies install, a UI launches, or unit tests pass. Mark each item Pass, Fail,
+Blocked, or Not in scope and attach evidence.
+■ Architecture: One source of truth documents modules, contracts, dependencies, trust boundaries and deployment
+topology.
+■ Feasibility: Laptop/infrastructure report is measured and respects the $0 constraint.
+■ Reproducibility: Clean setup and health-check instructions work.
+■ Capability discovery: Registry distinguishes installed, configured, reachable and permitted capabilities.
+■ Integration: Multiple adapters interoperate through stable contracts, not hard-coded one-offs.
+■ Autonomy: Representative tasks complete within defined policy boundaries.
+■ Verification: Success claims have objective evidence and independent checks.
+■ Recovery: Timeout, refusal, crash, network loss and restart are tested; unsafe retries are prevented.
+■ Persistence: State survives restart, duplicates are prevented, interrupted tasks resume safely.
+■ Security: Secrets are protected, permissions scoped, logs redacted, remote access authenticated.
+■ Cross-platform: Supported platforms are explicit and each claimed platform has evidence.
+■ Cost: No paid dependency or potentially billable service without explicit approval.
+■ Self-improvement: A propose→change→test→review→accept/rollback cycle is demonstrated.
+■ Final report: Limitations, failed tests, unimplemented features, resource limits and evidence are reported.
+7. Operating protocol — to avoid getting lost
+One governing document: Keep a single architecture/roadmap source in the repository. This PDF is the human-readable
+baseline; keep the repository document in sync and versioned.
+One prioritized backlog: Every task links to a phase, acceptance test, dependencies, risk, and evidence.
+No blind implementation: Before coding, inspect relevant code/current diffs, identify affected contracts, and define tests.
+Preserve work: Never reset, clean, stash, overwrite or discard user changes without permission. Avoid concurrent edits while
+OpenCode is working.
+Evidence-based status: Report changes, exact commands, exit codes, passed/failed/skipped tests, and unresolved risks.
+Separate facts from assumptions.
+Small vertical slices: Prefer integrated, testable outcomes over installing a huge stack at once.
+Update roadmap: At each phase end, record status, evidence, blockers, decisions and next priority.
+Autonomous but bounded: Proceed on ordinary zero-cost, reversible work when authorized; pause for payment, external
+data transfer, high-impact actions, or unclear destructive changes.
+Immediate next step
+When the current OpenCode run finishes, review its response and the actual repository state. Produce the verified
+Phase 0 inventory and Phase 1 laptop/zero-cost feasibility report before committing to full-stack implementation.
+Then update the roadmap with repository-specific facts and begin the first incomplete phase.

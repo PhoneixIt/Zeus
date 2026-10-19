@@ -200,6 +200,11 @@ export function compilePlan(proposal: PlanProposal, missionId: string, startedAt
     // reviewed and refuse when the mission does not match - so an amendment is a new plan rather than
     // something that quietly happens beside an already-compiled one.
     proposalDigest: digestOf(proposal),
+    // The objective's own requirements travel with the mission, alongside the digest that says which
+    // proposal this was. Without them the mission carries a goal in prose and no way to check it, and
+    // `isMissionSuccessful` would have nothing but the step record to look at - which is the exact
+    // inference this exists to remove.
+    objectivePostconditions: proposal.objectivePostconditions,
   }
   return { ok: true, mission, warnings }
 }

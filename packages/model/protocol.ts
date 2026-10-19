@@ -23,6 +23,8 @@
  * one it is reported and ignored - the same treatment the M7 digest gives such a field.
  */
 
+import { basename, dirname } from 'node:path'
+
 /** What the model is asked to produce. Deliberately narrower than `PlanProposal`. */
 export interface ModelStep {
   readonly id: string
@@ -90,6 +92,44 @@ export interface ModelRequest {
     readonly task: string
     /** Capabilities the router can serve. The model may only choose from these. */
     readonly mayUse: readonly string[]
+    /**
+     * The REGISTERED TOOL NAMES this mission's router can actually serve.
+     *
+     * MEASURED, and this is the single change that took the model from a plan the router refused to
+     * one it could run. Given `mayUse` but not the tools, the model invented plausible names -
+     * `list-entries`, `read-files` - for steps it correctly understood it needed. The invariant
+     * validator caught both, which is the system working, but a plan that names a tool nobody
+     * registered can never execute, and the model had no way to know that.
+     *
+     * This is FACTS, not instructions: the same category as `mayUse`, drawn from the same router.
+     * It does not widen anything - naming a tool here does not make it permitted, and the router
+     * still refuses an unregistered name. It only tells the model the truth earlier than the router
+     * has to correct it.
+     *
+     * A MAP, not a list, because the tool name alone was not enough. Given the names, the model
+     * picked every one of them correctly and still paired `inspect-folder` with `filesystem.inspect`
+     * - the registry maps that tool to `filesystem.list`, and the invariant check refused the plan.
+     * The pairing IS the registration, so the pairing is what the model is shown.
+     */
+    readonly mayUseTools?: Readonly<Record<string, string>>
+    /**
+     * Each registered tool's OPERANDS: which argument names it reads, which are required, and what
+     * each one MEANS.
+     *
+     * MEASURED, and this closed the last gap in the model-driven mission. A plan that was correct in
+     * every other respect - registered tool, right capability, right dependency, right paths - was
+     * refused at execution because `inspect-folder` reads `args.from` (the id of the preceding step
+     * whose output holds the folder) and the model supplied `args.path`. Nothing told it that "from"
+     * was not a path.
+     *
+     * Carried as data derived from each tool's own `args` metadata, declared beside the `run` that
+     * enforces it. Not a second map: the tool is the source, so a changed operand changes the plan
+     * the model is shown.
+     */
+    readonly toolArgs?: readonly {
+      readonly tool: string
+      readonly args: readonly { readonly name: string; readonly required: boolean; readonly description: string }[]
+    }[]
     /** The output root. Named explicitly so a model does not invent one. */
     readonly mayWriteHere: string
     /** A compact, factual rendering of the observation. NOT prose, NOT interpretation. */
@@ -171,17 +211,35 @@ export const SYSTEM_INSTRUCTIONS = [
 /**
  * THE SHAPE, AS A REAL EXAMPLE RATHER THAN A DESCRIPTION OF ONE - and it is filled in with REAL VALUES.
  *
- * MEASURED, twice, and the second measurement is the interesting one.
+ * ============================================================================================
+ * EVERY TOOL NAME IN HERE MUST BE A REGISTERED ONE
+ * ============================================================================================
+ *
+ * This example used to name `write-summary` for the write step. `write-summary` is not a registered
+ * tool - `folder-tools.ts` registers `write-report` - and a model shown an example copies it. So the
+ * example was not merely unhelpful: it was actively teaching the one mistake the router exists to
+ * catch, and the model duly emitted `write-summary`, which the router then refused. A worked example
+ * is a promise about what is legal, and an example that is not legal makes the model wrong rather
+ * than clear.
+ *
+ * The same applies to `args`. `write-report` re-checks its own containment and refuses to overwrite,
+ * which means it needs `name` and `outputRoot` as well as `path`; the old example showed only `path`
+ * and `from`, so a model copying it faithfully would produce a step the tool rejects for a missing
+ * operand. The example now carries every operand the real tool requires.
+ *
+ * ============================================================================================
+ * MEASURED TWICE, AND THE SECOND MEASUREMENT IS THE INTERESTING ONE
+ * ============================================================================================
  *
  * The first version of this example used the literal placeholder `<the observed root>`. The model
  * returned a plan containing `"path": "<the observed root>"` - the placeholder, verbatim. It was not
  * planning; it was transcribing, and the placeholder was the most copyable string available.
  *
- * So the example now carries the ACTUAL observed root and an ACTUAL output path for this request. That
- * is the whole point of an example: it is a worked case, and a worked case with fake data teaches
- * copying. This is a change to what the model is shown. It changes nothing about what the system
- * accepts - `parse.ts` will reject `<the observed root>` as a path it cannot resolve just as it always
- * did.
+ * So the example now carries the ACTUAL observed root and an ACTUAL output path for this request, and
+ * the ACTUAL file name the caller asked for. That is the whole point of an example: it is a worked
+ * case, and a worked case with fake data teaches copying. This is a change to what the model is shown.
+ * It changes nothing about what the system accepts - `parse.ts` will reject `<the observed root>` as a
+ * path it cannot resolve just as it always did.
  *
  * Two steps rather than four, and COMPRESSED rather than pretty-printed.
  *
@@ -195,15 +253,27 @@ export const SYSTEM_INSTRUCTIONS = [
  * parser has not moved and will not.
  */
 export function buildExample(root: string, outputPath: string): string {
+  // Derived from the real destination rather than written out, so the example's operands are the
+  // operands the tool will actually check.
+  const name = basename(outputPath)
+  const outputRoot = dirname(outputPath)
   return JSON.stringify({
     constraints: ['read-only on the observed folder', 'writes one new file'],
     steps: [
       {
-        id: 'inspect',
+        // The step ids below are NOT free choices. `folder-tools.ts` registers its verifiers against
+        // fixed step ids - `read-folder`, `inspect-folder`, `write-report`, `confirm-report` - and a
+        // step no verifier claims cannot complete.
+        //
+        // MEASURED: this example used `inspect` and `write`. A model that copied it faithfully
+        // produced a plan that passed the schema, passed every registry invariant, COMPILED, and was
+        // handed to the governed executor - where the first step failed because no verifier claimed
+        // an id called `inspect`. The example was teaching ids that cannot pass verification.
+        id: 'read-folder',
         capability: 'filesystem.inspect',
         intent: 'Confirm the folder is readable.',
         mode: 'filesystem',
-        tool: 'inspect-folder',
+        tool: 'read-folder',
         args: { path: root },
         dependsOn: [],
         rationale: 'Unreadable input cannot be summarised.',
@@ -211,20 +281,73 @@ export function buildExample(root: string, outputPath: string): string {
         onFailure: 'replan',
       },
       {
-        id: 'write',
+        id: 'write-report',
         capability: 'filesystem.write',
         intent: 'Write the summary.',
         mode: 'filesystem',
-        tool: 'write-summary',
-        args: { path: outputPath, from: 'inspect' },
-        dependsOn: ['inspect'],
+        // `write-report` is the REGISTERED name. See the note above: the example taught
+        // `write-summary`, and the model emitted it, and the router refused it.
+        tool: 'write-report',
+        // Every operand `write-report` checks for itself: the path, the bare name it refuses to
+        // overwrite with, the root it re-derives containment from, and the step the text comes from.
+        args: { path: outputPath, name, outputRoot, from: 'inspect-folder' },
+        dependsOn: ['read-folder'],
         rationale: 'New file; nothing overwritten.',
         verification: { kind: 'must-read-back', description: 'file reads back' },
         onFailure: 'replan',
       },
+      {
+        // A written file nobody read back is not evidence. This step exists in the example because the
+        // pipeline REQUIRES one: `readBackConfirmedVerifier` claims the step id `confirm-report`, so a
+        // plan that stops at the write leaves the mission unfinished - measured, four of five steps
+        // verified and the last one failed with no verifier claiming it.
+        //
+        // The tool is `read-report`; the STEP ID is `confirm-report`. They are different things and
+        // the example has to show the difference.
+        id: 'confirm-report',
+        capability: 'filesystem.confirm',
+        intent: 'Read the written file back to confirm it saved correctly.',
+        mode: 'filesystem',
+        tool: 'read-report',
+        args: { path: outputPath },
+        dependsOn: ['write-report'],
+        rationale: 'An unverified write is not evidence of anything.',
+        verification: { kind: 'must-read-back', description: 'written file reads back with the composed content' },
+        onFailure: 'abort-mission',
+      },
     ],
-    expectedResult: 'A new summary file exists.',
+    expectedResult: `A new ${name} exists.`,
   })
+}
+
+
+/**
+ * The capability rule the model is shown, DERIVED from the vocabulary.
+ *
+ * =============================================================================
+ * WHY THIS IS A FUNCTION AND NOT A STRING
+ * =============================================================================
+ *
+ * This was a hand-written string literal listing seven capabilities. `CAPABILITIES` in
+ * `planner/plan.ts` now holds nine - `browser.read` and `browser.navigate` were added later and the
+ * literal was never updated.
+ *
+ * That divergence is not cosmetic. Rule 1 of the system prompt says an unknown capability
+ * "is rejected and the whole plan is discarded". So the prompt was telling the model that
+ * `browser.read` did not exist, and a model that obeyed it and planned a browser task would be
+ * rejected by code for using a capability the model was told was invalid. The prompt and the parser
+ * had stopped agreeing about what was legal.
+ *
+ * Deriving it means the two cannot drift again: there is no second place to edit, so there is no
+ * second place to forget. `availableCapabilities` in the request body remains the authoritative
+ * per-mission list - this rule is the human-readable restatement of it, and now it is generated from
+ * the same source rather than transcribed.
+ *
+ * The function form also means a caller that has a narrower set can build a rule for THAT set:
+ * `capabilityRule(['filesystem.read'])`. The default renders the full vocabulary.
+ */
+export function capabilityRule(capabilities: readonly string[] = CAPABILITIES): string {
+  return `Valid capabilities: ${capabilities.join(', ')}. Nothing else exists.`
 }
 
 /**
@@ -234,6 +357,8 @@ export function buildExample(root: string, outputPath: string): string {
  * data - it is the registry's real list - but a list the model has to find three fields down is a list
  * it will not use, and the one thing it must never do is invent a capability.
  */
-export const CAPABILITY_RULE =
-  'Valid capabilities: filesystem.inspect, filesystem.list, filesystem.read, filesystem.confirm, ' +
-  'filesystem.write, filesystem.transform, terminal.run. Nothing else exists.'
+
+// The ONE source of truth for what a plan may name. Imported (not retyped) so the prompt
+// this file renders can never disagree with what the compiler will accept - see `capabilityRule`.
+import { CAPABILITIES } from '../planner/plan.ts'
+export const CAPABILITY_RULE = capabilityRule()

@@ -176,7 +176,13 @@ export function filesystemVerifier(): Verifier {
       return {
         evidence: {
           kind: 'file-exists',
-          path: `${claimed.path} (${st.size} bytes on disk, content "${body.slice(0, 40)}")`,
+          path: claimed.path,
+          // The size and a content preview used to be interpolated INTO `path`, which made the
+          // field unmatchable by any path comparison and so by any objective postcondition. The
+          // preview is genuinely useful, so it moves to the evidence's own `bytes` field and a note
+          // rather than being discarded - but the operand stays an operand.
+          bytes: st.size,
+          note: `read here; first 40 bytes ${JSON.stringify(body.slice(0, 40))}`,
         },
       }
     },

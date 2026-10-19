@@ -941,3 +941,51 @@ proves - reading from the STORE and the DISK, never from the return value:
   `control-core/src/OperatorHost.cs`, which is not modified without an ADR and a human decision.
 - `npm run control:audit-routes` exits **1**: `/show`, `/restore`, `/focus` change machine state without
   `MayInject()`. H5 / ADR 0003 remains open and untouched.
+---
+
+## PHASE 3 — the round-budget exhaustion test is MISSING, not broken (open)
+
+**This is a coverage gap, not a defect.** Recorded because the passing test it currently rests on
+passed for the wrong reason, and that will not hold if the code moves.
+
+`FRESH BUT UNRESOLVABLE findings terminate as a blocker` asserts that a fresh task with
+`maxReviewRounds: 3` runs exactly 3 reviewer rounds. It passes — but it passes because of the
+**terminal guard** (a `done`/`exhausted` task spends no further cycle), not because any test exercises
+the review-budget branch itself. Measured: reverting that guard makes the test run **6** rounds instead
+of 3, so the guard is load-bearing and the budget check is only reached incidentally.
+
+| | status |
+|---|---|
+| A fresh task stops at its configured review budget | **PROVEN**, but indirectly |
+| The `roundCount >= task.maxReviewRounds` branch is directly exercised | **NOT PROVEN** |
+| A task is exhausted at exactly N rounds for N = 1, 2, 3, 5 | **NOT PROVEN** |
+| The budget note and a readable blocker are produced by that branch | **NOT PROVEN** |
+
+Why it matters: the budget is the ceiling that makes the loop *bounded* when the reviewer keeps raising
+genuinely new findings — the case where the repetition guard correctly does not fire. Nothing currently
+pins the boundary itself. A refactor that reordered the status chain, or made the terminal guard
+unreachable, could make every task exhaust at 2 rounds and this suite would still be green.
+
+Follow-up: add a boundary-sweep test — for `maxReviewRounds` in {1, 2, 3, 5}, assert the exact reviewer
+round count, `status === 'exhausted'`, a note matching `/review budget/`, and at least one blocker.
+Assert the count is reached **by the budget**, i.e. that the note says the budget and not repetition,
+so the two exhaustion causes cannot be confused again.
+### RESOLVED — M-a, 2026-10-11
+
+The sweep exists and is mutation-verified. `packages/agent/test/convergence.test.ts` now carries
+`the REVIEW BUDGET is the boundary: N rounds buys exactly N rounds, and the reason says so`, covering
+`maxReviewRounds` in {1, 2, 3, 5}. Each budget asserts the exact reviewer-round count, `exhausted`, a
+`/review budget/` note, `findingsSeen.length === budget`, **both** repetition reasons excluded by name
+(the findings-repetition note and the outcome-repetition note), and a blocker carrying the budget
+reason. The loop runs `budget + 3` cycles, so an unbounded loop overshoots the budget rather than
+matching it.
+
+Mutation evidence: the test fails when the budget branch is disabled (`false && ...`) and on an
+off-by-one (`>=` changed to `>`), which would let every budget overshoot by one round. The N=3
+scenario test above is retained: it proves termination, the sweep proves the boundary.
+
+Gates after M-a: convergence 19/19, agent 36/36, repository unit 684/684, type-check 131 files /
+0 errors. Production code unchanged - `orchestrator.ts` sha256 `f27f3f60a6c3155b` before and after.
+
+The three NOT PROVEN rows in the entry above are now covered. That entry is kept rather than
+rewritten, because what it recorded was true when it was recorded.

@@ -1,0 +1,7 @@
+const { spawn } = require('child_process')
+const fs = require('fs')
+const path = require('path')
+const ping = path.join(process.env.SystemRoot || 'C:\Windows', 'System32', 'ping.exe')
+const c = spawn(ping, ['-t', '127.0.0.1'], { stdio: 'inherit', detached: true })
+fs.writeFileSync("C:\\Users\\Samer\\Projects\\aios\\aios-tool-child-0fc4bba2-6b8a-4f12-9870-89779ae2379e.txt", String(c.pid))
+setTimeout(() => process.exit(0), 3000)

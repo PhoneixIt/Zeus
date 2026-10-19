@@ -1,4 +1,4 @@
-/**
+﻿/**
  * M15 CONTROLS - durable state.
  *
  * =============================================================================
@@ -32,6 +32,7 @@ import { resumeMission, historyIsCurrent } from '../recover.ts'
 import { summariseEvidence, describeStanding, listHistory, missionHistory, summariseMission } from '../query.ts'
 import { MIGRATIONS, SCHEMA_VERSION } from '../schema.ts'
 import type { Mission, Evidence } from '../../mission-engine/state.ts'
+import { isComplete } from '../../mission-engine/state.ts'
 
 // ---------------------------------------------------------------- helpers
 
@@ -345,6 +346,7 @@ test('CONTROL: restored records are counted SEPARATELY from live observations, i
     const standing = describeStanding({
       id: 'm1', objective: 'o', persistedState: 'drafting', stepsTotal: 2,
       stepsByStatus: {}, complete: false, startedAt: 0,
+      objectiveVerdict: { kind: 'unproven', reason: 'this mission declared no objective postcondition' },
       evidence: summary, approvalsOutstanding: 0, invalidatedOnRead: 0,
     })
     assert.match(standing, /ALL restored from disk/)
@@ -555,6 +557,68 @@ test('completion is re-derived from steps, so a half-run mission is never report
     assert.equal(s.complete, false, 'one step is pending, so the mission is not complete')
     assert.equal(s.stepsByStatus.pending, 1)
     assert.equal(s.stepsByStatus.done, 1)
+    b.close()
+  } finally { cleanup(path) }
+})
+
+test('CONTROL: a mission with every step done but NO declared objective is not reported complete on disk', () => {
+  // The persisted summary is a completion-reporting path, and a restart is exactly when a system is
+  // most tempted to read "every step is done" as "the job is done". Re-deriving from steps alone
+  // would report this mission as successful on the strength of one verified step.
+  const path = tmpDb()
+  try {
+    const a = new DurableStore({ path, sessionId: 'session-A' })
+    const m = mission({
+      state: 'complete',
+      plan: [{
+        id: 'inspect', intent: 'read the folder', mode: 'filesystem', tool: 'inspect-folder',
+        rationale: 'r', args: { path: 'C:\\demo\\subject' }, dependsOn: [], status: 'done', attempts: 1,
+        result: { id: 'inspect', durationMs: 12, outcome: { kind: 'verified', evidence: { kind: 'file-exists', path: 'x', bytes: 1 } } },
+      }],
+    })
+    a.saveMission(m)
+    // Evidence is recorded by whoever OBSERVED it, not inferred from a step's claimed result - so the
+    // store has none until it is explicitly written. This test therefore records it, which is what
+    // makes the negative control meaningful: the store holds real evidence and still refuses.
+    a.recordEvidence({
+      missionId: 'm1', stepId: 'inspect',
+      evidence: { kind: 'file-exists', path: 'x', bytes: 1 }, provenance: 'verifier:looked',
+    })
+    a.close()
+    const b = new DurableStore({ path, sessionId: 'session-B' })
+    const r = b.readMission('m1')!
+    assert.equal(isComplete(r.mission), true, 'every step really is done - which is exactly the trap')
+    assert.equal(r.evidence.length, 1, 'and real evidence is on disk')
+    const s = summariseMission(b, 'm1', r)
+    assert.equal(s.complete, false, 'but the objective was never declared, so it is unproven, not done')
+    assert.equal(s.objectiveVerdict.kind, 'unproven', 'and the summary says which kind of not-done this is')
+    b.close()
+  } finally { cleanup(path) }
+})
+
+test('a mission that DID declare its objective reports complete on disk when the evidence satisfies it', () => {
+  const path = tmpDb()
+  try {
+    const a = new DurableStore({ path, sessionId: 'session-A' })
+    const m = mission({
+      state: 'complete',
+      objectivePostconditions: [{ kind: 'artifact-exists', path: 'x' }],
+      plan: [{
+        id: 'inspect', intent: 'read the folder', mode: 'filesystem', tool: 'inspect-folder',
+        rationale: 'r', args: { path: 'C:\\demo\\subject' }, dependsOn: [], status: 'done', attempts: 1,
+        result: { id: 'inspect', durationMs: 12, outcome: { kind: 'verified', evidence: { kind: 'file-exists', path: 'x', bytes: 1 } } },
+      }],
+    })
+    a.saveMission(m)
+    a.recordEvidence({
+      missionId: 'm1', stepId: 'inspect',
+      evidence: { kind: 'file-exists', path: 'x', bytes: 1 }, provenance: 'verifier:looked',
+    })
+    a.close()
+    const b = new DurableStore({ path, sessionId: 'session-B' })
+    const s = summariseMission(b, 'm1', b.readMission('m1')!)
+    assert.equal(s.objectiveVerdict.kind, 'satisfied')
+    assert.equal(s.complete, true, 'a declared and proven objective still reports success - the gate is not a blanket refusal')
     b.close()
   } finally { cleanup(path) }
 })

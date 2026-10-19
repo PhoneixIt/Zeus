@@ -1,0 +1,27 @@
+{
+  "jobId": "job-autonomy-guard-001",
+  "userObjective": "Review and improve the AutonomyGranted() function in Guard.cs with proper error handling",
+  "sessionId": "",
+  "plan": {
+    "reply": "AutonomyGranted() function improved with try/catch error handling",
+    "steps": [
+      {
+        "id": "s1",
+        "intent": "Improve AutonomyGranted() error handling",
+        "tool": "internal"
+      }
+    ]
+  },
+  "result": {
+    "exitCode": 0,
+    "text": "AutonomyGranted() function improved with try/catch error handling",
+    "stderr": ""
+  },
+  "verified": true,
+  "changedFiles": [
+    "packages/control-core/src/Guard.cs"
+  ],
+  "blockers": [],
+  "createdAt": 1791920000000,
+  "completedAt": 1791920000000
+}

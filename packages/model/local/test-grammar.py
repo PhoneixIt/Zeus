@@ -477,6 +477,186 @@ test_negatives()
 
 
 # ============================================================================================
+# NON-EMPTY `steps` - the grammar and the parser must agree about what a plan IS
+# ============================================================================================
+
+def test_non_empty_steps() -> None:
+    # ---------------------------------------------------------------- the machine
+    check(rejects('{"steps":[]}'),
+          "NEGATIVE: an empty steps array is REJECTED, because parse.ts rejects it")
+    check(rejects('{"constraints":[],"steps":[],"expectedResult":"e"}'),
+          "NEGATIVE: a fully-formed plan carrying zero steps is REJECTED")
+    check(rejects('{"steps":[ ]}'),
+          "NEGATIVE: whitespace does not smuggle an empty steps array past the rule")
+
+    # ---------------------------------------------------------------- the mask
+    # The character machine and the mask must agree. If only the machine refused, constrained
+    # decoding would keep OFFERING the model a byte that always gets rejected, which presents as
+    # "the grammar randomly fails" rather than as the rule it actually is.
+    g = PlanGrammar()
+    st = g.start()
+    for ch in '{"steps":[':
+        st = g._char(st, ch)
+    ok = st is not None
+    check(ok, "POSITIVE: the prefix {\"steps\":[ is itself inside the grammar")
+    if ok:
+        check(ord("]") not in g.allowed_bytes(st),
+              "NEGATIVE: the mask does not offer ']' immediately inside steps")
+        check(ord("{") in g.allowed_bytes(st),
+              "POSITIVE: the mask still offers '{' so a first step can begin")
+
+    # ---------------------------------------------------------------- no collateral damage
+    # `dependsOn: []` is the ordinary first step. An earlier grammar refused it, which made the most
+    # common field in the schema the one thing it could not express. That must not regress.
+    #
+    # The opening bracket matters: until `[` is consumed the top frame is still the step OBJECT and
+    # `]` is not offered, because the value has not begun. Probing one character early reads as a
+    # regression that is not there.
+    g2 = PlanGrammar()
+    st2 = g2.start()
+    for ch in '{"steps":[{"dependsOn":[':
+        st2 = g2._char(st2, ch)
+    ok2 = st2 is not None
+    check(ok2, "POSITIVE: a step may open its dependsOn array")
+    if ok2:
+        check(st2.stack[-1].open_key == "dependsOn",
+              "POSITIVE: the dependsOn array is keyed by its own name, not by 'steps'")
+        check(ord("]") in g2.allowed_bytes(st2),
+              "REGRESSION: dependsOn may still be empty - only steps is constrained")
+        check(g2._char(st2, "]") is not None,
+              "REGRESSION: an empty dependsOn array really does close")
+
+    # `constraints` and `refusal` are untouched by the rule.
+    check(accepts('{"constraints":[],"refusal":"cannot"}'),
+          "REGRESSION: a refusal-only plan with an empty constraints array is still accepted")
+    check(accepts(plan([step()])), "POSITIVE: a plan with ONE structurally valid step is accepted")
+    check(accepts(plan([step(id="a"), step(id="b")])),
+          "POSITIVE: a plan with two structurally valid steps is accepted")
+
+
+test_non_empty_steps()
+
+
+# ============================================================================================
+# OPTIONAL FIELDS LAST - the dead end the 0.5B walked into, twice
+# ============================================================================================
+
+def test_optional_fields_are_offered_last() -> None:
+    """
+    A model emitted `effect` before the required fields were finished and could not escape: `effect`
+    completed, `}` was the only legal byte, closing the step was illegal, and no required key was on
+    offer. Generation aborted after 610 rejected candidates. The requirement was real - four required
+    fields WERE still missing - so the fix is the ORDER in which keys are offered, not the rule.
+    """
+    from grammar import ROOT_SCHEMA
+
+    g = PlanGrammar()
+    st = g.start()
+    prefix = '{"steps":[{"id":"a","capability":"filesystem.inspect"'
+    for ch in prefix:
+        st = g._char(st, ch)
+    check(st is not None, "POSITIVE: a partially filled step is a legal prefix")
+
+    if st is not None:
+        viable = g._key_viable(st)
+        step_schema = ROOT_SCHEMA["fields"]["steps"][1][1]
+        seen = st.stack[-1].seen
+        required_left = [k for k in step_schema["required"] if k not in seen]
+        check(len(required_left) > 0, "the control state really does still owe required fields")
+        check("effect" not in viable,
+              "NEGATIVE: the optional 'effect' key is NOT offered while required fields remain")
+        check(all(k in viable for k in required_left),
+              "POSITIVE: every still-required key IS offered - the rule is deferred, not tightened")
+
+    # Once every required field is present, `effect` becomes available again. The closing brace is
+    # withheld deliberately: feeding it would pop the step frame and leave the top of the stack
+    # holding the ARRAY, so there would be no step object left to ask about.
+    st3 = g.start()
+    for ch in '{"steps":[' + json.dumps(step())[:-1]:
+        st3 = g._char(st3, ch)
+    check(st3 is not None and st3.stack[-1].kind == "obj",
+          "POSITIVE: a step with every required field present is still an open object")
+    if st3 is not None:
+        check(g._can_close(st3.stack[-1]),
+              "POSITIVE: a step with every required field present may close")
+        check("effect" in g._key_viable(st3),
+              "POSITIVE: the optional 'effect' key IS offered once every required field is present")
+
+    check(accepts(plan([step(effect={"kind": "delete", "target": "t",
+                                     "reason": "r", "irreversible": False})])),
+          "POSITIVE: a step whose effect comes last is accepted end to end")
+
+    # An effect FIRST is now refused, rather than accepted into a state that cannot be escaped.
+    st4 = g.start()
+    dead = False
+    for ch in '{"steps":[{"effect":{"kind":"delete","target":"t","reason":"r","irreversible":false},"id":"a"':
+        st4 = g._char(st4, ch)
+        if st4 is None:
+            dead = True
+            break
+    check(dead, "NEGATIVE: an effect emitted BEFORE the required fields is refused outright")
+
+
+test_optional_fields_are_offered_last()
+
+
+# ============================================================================================
+# FREE-FORM `args`: CHECKABLE, NOT RESTRICTED
+#
+# The vocabulary of a free object stays OPEN - the tool owns its operands, not this grammar. What is
+# refused is the two things that make an object impossible to CHECK: a duplicated key, and a copy of
+# the step's own field name pretending to be an operand.
+# ============================================================================================
+
+def test_free_form_args_invariants() -> None:
+    from grammar import RESERVED_STEP_KEYS
+
+    def with_args(body: str) -> str:
+        # Built as TEXT, not as a Python dict. `json.loads` silently collapses a duplicated key, so
+        # round-tripping through one would make this whole test incapable of failing - and a control
+        # that cannot fail is not a control.
+        #
+        # Compact separators, because that is the form the model emits and the form the grammar sees
+        # between tokens; the default `", "` spacing would not match the dump the head is sliced from.
+        s = json.dumps(step(), separators=(",", ":"))
+        head = '{"id":"a","capability":"filesystem.inspect","intent":"look","mode":"filesystem",' \
+               '"tool":"inspect-folder","args":'
+        tail = ',"dependsOn":[],"rationale":"why",' \
+               '"verification":{"kind":"must-exist","description":"d"},"onFailure":"replan"}'
+        assert s.startswith(head) and s.endswith(tail), f"the step shape changed; fix this helper: {s}"
+        return '{"steps":[' + head + body + tail + '],"expectedResult":"e"}'
+
+    check(accepts(with_args('{"path":"C:/x","name":"n"}')),
+          "POSITIVE: ordinary operands in args are accepted")
+    check(accepts(with_args('{"deep":{"deeper":{"x":[1,2]}}}')),
+          "POSITIVE: deeply nested operands are accepted")
+    check(accepts(with_args('{"count":42,"nested":{"a":[1]},"flag":true}')),
+          "POSITIVE: operands whose names begin like reserved fields are accepted")
+    check(accepts(with_args('{"c":1}')),
+          "REGRESSION: a one-letter operand is not blocked by `capability` starting with 'c'")
+
+    # A duplicate key has two defensible readings and no standard resolution, so it cannot be checked.
+    check(rejects(with_args('{"path":"C:/x","path":"C:/y"}')),
+          "NEGATIVE: a DUPLICATE key inside args is rejected")
+    check(rejects(with_args('{"a":1,"b":2,"a":3}')),
+          "NEGATIVE: a duplicate key is rejected however far apart it is")
+    check(accepts(with_args('{"a":1,"b":{"a":2}}')),
+          "REGRESSION: the same key name in a NESTED object is a different key, and is allowed")
+
+    # The step's own fields belong to the step. MEASURED: the model wrote `dependsOn`, `rationale`,
+    # `verification`, `expectedResult` and `onFailure` inside `args`, three times over.
+    for reserved in sorted(RESERVED_STEP_KEYS):
+        check(rejects(with_args('{"%s":"x"}' % reserved)),
+              f"NEGATIVE: the step field '{reserved}' may not appear inside args")
+
+    check(accepts(plan([step()])),
+          "REGRESSION: an ordinary one-step plan is still accepted")
+
+
+test_free_form_args_invariants()
+
+
+# ============================================================================================
 
 def main() -> int:
     passed = sum(1 for ok, _ in CHECKS if ok)

@@ -83,19 +83,77 @@ function runAudit(
   }
 }
 
+/**
+ * Read one entry out of the audit's KNOWN_GAPS table, as text.
+ *
+ * =============================================================================
+ * WHY A RATIONALE IS ASSERTED HERE AND NOT IN THE AUDIT'S OUTPUT
+ * =============================================================================
+ *
+ * KNOWN_GAPS is the audit's durable record of WHY a route was dangerous and what the fix was. It
+ * deliberately outlives the defect it describes. The audit's stale-entry check
+ * (`audit-injection-routes.mjs:607`) treats an entry as stale only when the route is neither
+ * currently ungated NOR in `InjectionRoutes`:
+ *
+ *     const staleGaps = Object.keys(KNOWN_GAPS).filter(
+ *       (r) => !windowUngoverned.some((u) => u.route === r) && !injectionRoutes.has(r),
+ *     )
+ *
+ * So an entry whose route has been GATED is retained by design - institutional memory, not rot. That
+ * second clause is what makes `KNOWN_GAPS`, and not the console output, the correct place to assert
+ * the rationale: once `/focus` is gated there is no gap left to report, and the audit correctly
+ * prints nothing. Asserting against the output would be asserting a defect exists.
+ *
+ * This is NOT a downgrade. The previous assertion was a bare regex over the whole output; this one
+ * names the specific entry, proves the entry still exists at all, and checks both semantic clauses.
+ *
+ * Returns `undefined` when the table or the entry is absent, so a caller cannot pass by accident.
+ */
+function knownGap(route: string): string | undefined {
+  const src = readFileSync(AUDIT, 'utf8')
+  const table = /const KNOWN_GAPS = \{([\s\S]*?)\n {2}\}/.exec(src)?.[1]
+  if (!table) return undefined
+  return new RegExp(`'${route.replace('/', '\\/')}':\\s*'([^']*)'`).exec(table)?.[1]
+}
+
 // ============================================================================================
 // BASELINE
 // ============================================================================================
 
-test('the audit runs, and reports the invariant as NOT holding - truthfully', () => {
+test('the audit runs, and reports the invariant as holding - truthfully', () => {
   const { code, out } = runAudit()
 
-  // NOT 0. Three routes are documented gaps, so the honest answer today is "does not hold".
-  // Asserting 0 here would be asserting the thing that was wrong.
-  assert.equal(code, EXIT_DOCUMENTED_GAP,
-    'the audit must report the invariant as not holding while /show, /restore and /focus are ungated')
-  assert.match(out, /INVARIANT DOES NOT YET HOLD/,
-    'the failure must be stated in words, not only in an exit code')
+  // WHAT CHANGED, AND WHY THIS IS NOT A TEST BEING FIXED TO PASS.
+  //
+  // This assertion used to require EXIT_DOCUMENTED_GAP, with the comment "Asserting 0 here would
+  // be asserting the thing that was wrong." That was correct THEN: `/show`, `/restore` and
+  // `/focus` reached machine-mutating primitives and were absent from `InjectionRoutes`, so the
+  // honest answer was "does not hold".
+  //
+  // They are now declared in `InjectionRoutes` (ADR 0003), so the dispatch-head gate refuses all
+  // three and `control:audit-routes` exits 0. Requiring exit 1 now would be asserting a defect that
+  // no longer exists - the mirror image of the original mistake.
+  //
+  // The invariant under test never changed: **the audit's exit code must reflect the real state of
+  // the injection gate.** Only the real state moved. Both directions stay pinned - the pass must be
+  // stated in words, and the alarm control below still requires a breach to be exit 2.
+  assert.equal(code, EXIT_INVARIANT_HOLDS,
+    'every machine-state route is declared in InjectionRoutes, so the invariant HOLDS')
+  assert.match(out, /=== PASS: every action that can change the real machine state passes through the declared gate/,
+    'the pass must be stated in words, not only in an exit code')
+})
+
+test('the three formerly-ungated routes are named as GOVERNED, not merely present', () => {
+  const { out } = runAudit()
+
+  // A route silently dropped from the audit's tables would leave the test above passing while the
+  // gate got weaker. Each must still be DETECTED as machine-mutating AND reported as governed,
+  // which is a stronger claim than the old one that merely required the name to appear.
+  for (const route of ['/show', '/restore', '/focus']) {
+    const escaped = route.replace('/', '\\/')
+    assert.match(out, new RegExp(`${escaped}\\s+governed`),
+      `${route} still mutates the machine, so it must be detected AND reported as governed`)
+  }
 })
 
 test('the three known machine-state gaps are named, with the fix for each', () => {
@@ -104,9 +162,42 @@ test('the three known machine-state gaps are named, with the fix for each', () =
     assert.match(out, new RegExp(route.replace('/', '\\/')),
       `the audit must name ${route} as a machine-state route without a gate`)
   }
-  // Each gap must carry its remedy, so the finding is actionable rather than merely alarming.
-  assert.match(out, /fix: calls Win\.ShowWindow/, 'each gap must state the required fix')
-  assert.match(out, /IDENTITY check/, 'the /focus gap must record that Verify() is not a permission check')
+  // WHAT CHANGED. The finding this line used to assert is no longer a finding: `/show`, `/restore`
+  // and `/focus` ARE gated, so the audit no longer prints a "fix:" line for them, and asserting one
+  // would require a defect to exist.
+  //
+  // The invariant behind it is stronger than the one it replaced, though. It was: "a reported gap
+  // must carry its remedy, so the finding is actionable." It is now: "a route the audit classifies
+  // as mutating must be reported as GOVERNED, so the pass is substantiated rather than a bare
+  // word." A pass that simply omitted these routes would otherwise be indistinguishable from a
+  // pass that checked them. The per-route `governed` assertions above carry this; what follows adds
+  // the one that was actually stale.
+  assert.match(out, /ShowWindow\s+\/show\s+governed/, 'the /show gate must be visible in the output, not just in the exit code')
+  assert.match(out, /Win\.Focus\s+\/focus\s+governed/, 'the /focus gate must be visible in the output, not just in the exit code')
+
+  // WHAT CHANGED, AND WHY THIS IS A MOVE RATHER THAN A RELAXATION.
+  //
+  // This line used to assert `/IDENTITY check/` appeared in the audit's runtime output. It does not
+  // any more, and its absence is the CORRECT behaviour, not a regression:
+  //
+  //   - `/focus` is now gated (declared in `InjectionRoutes`, ADR 0003), so it is no longer an
+  //     ungated route and `documentedGaps` is empty.
+  //   - The rationale is printed only for a live gap (audit-injection-routes.mjs:611 and :636).
+  //   - With no gap to report, printing a "fix:" line would be reporting a defect that does not exist
+  //     - the same mistake as requiring EXIT_DOCUMENTED_GAP, which lines 107 and 142 above already
+  //     had to undo for the same reason.
+  //
+  // The rationale did not disappear. It is preserved in the audit's `KNOWN_GAPS` table, which
+  // deliberately survives its own fix (see `knownGap()` above, and the stale check at line 607).
+  // Asserting it there verifies the thing the invariant is actually about - that the REASON /focus
+  // needed gating is durably recorded - instead of asserting that a fixed defect still prints.
+  const focusGap = knownGap('/focus')
+  assert.ok(focusGap,
+    "the /focus entry must remain in the audit's KNOWN_GAPS table: it is the durable record of why /focus was dangerous, and it must outlive its own fix")
+  assert.match(focusGap as string, /Verify\(\) is an IDENTITY check/,
+    'the /focus gap must record that Verify() is an IDENTITY check - not a permission check')
+  assert.match(focusGap as string, /never consults MayInject\(\)/,
+    'and that Verify() never consults the injection gate, which is precisely why /focus needed one')
 })
 
 // ============================================================================================
@@ -130,7 +221,12 @@ test('CONTROL: a NEW ungated machine-state route is an UNDOCUMENTED BREACH, and 
   const before = runAudit()
   const after = runAudit(injected)
 
-  assert.equal(before.code, EXIT_DOCUMENTED_GAP, 'baseline must be a documented gap, not a breach')
+  // The baseline must be CLEAN, so that the exit-2 below is attributable to the injected route
+  // rather than to a pre-existing problem. It used to require EXIT_DOCUMENTED_GAP, for the same
+  // reason the first test did. EXIT_INVARIANT_HOLDS is a strictly stronger precondition: 0 -> 2 is
+  // a larger and less ambiguous transition than 1 -> 2, and it pins the alarm to a genuinely
+  // passing baseline rather than a merely-non-breaching one.
+  assert.equal(before.code, EXIT_INVARIANT_HOLDS, 'the baseline must be a CLEAN pass, so the breach that follows is attributable to the injected route')
   assert.equal(after.code, EXIT_UNDOCUMENTED_BREACH,
     'an undeclared route that calls BringWindowToTop must raise the alarm')
   assert.match(after.out, /UNDOCUMENTED MACHINE-STATE BREACH/,

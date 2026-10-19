@@ -225,19 +225,53 @@ console.log(`  mouseTaggedSeen     ${post.mouseTaggedSeen}   <- events that carr
 console.log(`  mouseUntaggedSeen   ${post.mouseUntaggedSeen}   <- events that did not`)
 console.log(`  panelInjectedSeen   ${post.panelInjectedSeen}   <- clicks Windows flagged injected`)
 console.log(`  panelTaggedSeen     ${post.panelTaggedSeen}   <- clicks that ALSO carried the sentinel`)
-const mouseVerdict = attribute(
-  { ...post, mouseEventsSeen: post.mouseEventsSeen - 1, mouseTaggedSeen: post.mouseTaggedSeen },
-  post,
-  'mouse',
-)
-console.log(`  attribution verdict ${mouseVerdict.verdict}`)
-console.log(`  basis               ${mouseVerdict.basis}`)
+console.log(`  mouseCompareHit     ${post.mouseCompareHit}   <- times the sentinel comparison itself was true`)
+console.log(`  compare observed    ${post.mouseCompareObserved}   (dwExtraInfo as the hook received it)`)
+console.log(`  compare low32       ${post.mouseCompareLow32}   (the sentinel truncated to 32 bits)`)
+console.log(`  mouseProcError      ${post.mouseProcError === '' ? '(none)' : post.mouseProcError}`)
+
+// The sentinel this host is using, read-only. `/sentinel-probe` reports the value and injects
+// nothing, so the expected low 32 bits can be derived INDEPENDENTLY of what the hook recorded.
+// Deriving it from the host rather than hardcoding it is the point: a hardcoded sentinel would
+// let a regression that silently changed the sentinel still pass.
+const sentinelHex = String((await client.raw('/sentinel-probe')).body.sentinelHex ?? '')
+const expectedLow32 = sentinelHex ? Number(BigInt('0x' + sentinelHex) & 0xffffffffn) : 0
+console.log(`  sentinel            0x${sentinelHex || '(host reported none)'}`)
+console.log(`  expected low32      ${expectedLow32}`)
 console.log('')
-console.log('  RESULT: KNOWN DEFECT, reproduced and measured. dwExtraInfo does not survive the')
-console.log('  Windows mouse path, so mouseTaggedSeen is 0 while untagged events accumulate.')
-console.log('  The control layer classifies an operator mouse click as HUMAN. That is')
-console.log('  conservative - it fails toward halting rather than toward acting - but it is wrong,')
-console.log('  and it is NOT fixed by this milestone. No heuristic guesses the true actor.')
+
+// Was the mouse path actually exercised on THIS host? A fresh host has never seen an operator
+// click, and on such a host every mouse claim below is vacuous. Saying so is the honest result;
+// asserting "no mouse event was ever tagged" (which is trivially true there) is not.
+const mouseExercised = post.mouseTaggedSeen > 0
+console.log(
+  mouseExercised
+    ? '  The mouse path HAS been exercised on this host: operator-tagged events are recorded.'
+    : '  NOT EXERCISED: this host has never seen an operator mouse event, so the mouse claims'
+        + ' below are UNVERIFIED here, not passing. Arm and click once, then re-run.',
+)
+console.log('')
+
+// --- an UNAUTHORIZED click, sent directly, to prove the gate refuses it AND that no input
+// reaches the machine. The mission-level test above proves the control layer refuses to *plan*
+// an action; this proves the host refuses a direct request and that the refusal is not merely
+// cosmetic - the hook's own counters must not move.
+console.log('=== CONTROL E: a direct unauthorized click is refused and injects nothing ===')
+const beforeE = (await readHookDiagnostics(client)).diagnostics
+const refusedE = await client.raw('/click-absolute', { method: 'POST', body: { x: 4, y: 4 } })
+const afterE = (await readHookDiagnostics(client)).diagnostics
+const eRefused = refusedE.body.ok === false && refusedE.body.refused === true && refusedE.body.guard === true
+// NOTE: this compares ONLY the mouse counters. `readHookDiagnostics` calls `/hooks`, which
+// INJECTS the F24 liveness probe and therefore advances `operatorEvents` between the two reads
+// by design - so including `operatorEvents` here would report "input was injected" when the only
+// thing that moved was this audit's own instrument. A refused click can only move mouse counters.
+const eNoInput =
+  afterE.mouseEventsSeen === beforeE.mouseEventsSeen &&
+  afterE.mouseTaggedSeen === beforeE.mouseTaggedSeen &&
+  afterE.mouseUntaggedSeen === beforeE.mouseUntaggedSeen
+console.log(`  refused             ${eRefused} (${String(refusedE.body.error ?? '')})`)
+console.log(`  mouse input moved   ${!eNoInput}  <- must be false: nothing may reach the machine`)
+console.log(`  mouse events        ${beforeE.mouseEventsSeen} -> ${afterE.mouseEventsSeen}`)
 
 // ============================================================ assertions
 
@@ -301,24 +335,79 @@ const checks: Array<[boolean, string]> = [
   [measured.operatorGenerated === true, 'MEASURED: the control layer attributed it to the operator'],
   [measured.humanGenerated === false, 'MEASURED: it was not attributed to the human'],
   [measured.attributionProven === true, 'MEASURED: the attribution is provable, on the keyboard path'],
-  // The structural fact is that NO mouse event has ever carried the sentinel. Whether
-  // untagged events exist depends on whether anyone has moved the mouse since boot, which is
-  // not a property of the code - so requiring them made this a snapshot too.
-  [post.mouseTaggedSeen === 0, 'MEASURED: no mouse event has ever carried the ownership sentinel'],
-  [post.mouseUntaggedSeen === 0
-    ? true
-    : mouseVerdict.verdict === 'attribution-defective',
-  `MEASURED: the mouse path is unattributable (${mouseVerdict.verdict}${post.mouseUntaggedSeen === 0 ? '; no mouse activity this boot, so the defect is unrefuted rather than exercised' : ''})`],
+  // --- the mouse path, measured rather than assumed.
+  //
+  // This block used to assert the DEFECT (`mouseTaggedSeen === 0`, plus a verdict of
+  // `attribution-defective`). The defect is repaired, so those assertions asserted something
+  // false. They were replaced, not inverted: an inverted assertion would still be a statement
+  // about a snapshot the audit did not cause, and the previous version of this measurement
+  // fabricated its "before" to force the answer it wanted.
+  //
+  // The assertions below are ordered so each can fail for its OWN reason. They live in a
+  // SEPARATE list, not in `checks`, because they are only evaluable on a host where the mouse
+  // path has actually been exercised. On a host where it has not, they are UNVERIFIED - which is
+  // a third outcome, distinct from both PASS and FAIL. Reporting them as PASS would assert
+  // something about input this audit never observed; reporting them as FAIL would blame the code
+  // for the absence of a test action. Either way the run must not exit 0.
+  //
+  // --- the unauthorized click, sent directly to the host rather than planned by a mission.
+  [eRefused, 'CONTROL E: a direct unauthorized click was refused by the guard'],
+  [eNoInput, 'CONTROL E: the refused click injected no mouse input at all'],
+]
+
+// Claims that require an operator mouse event to have been observed on THIS host.
+const mouseClaims: Array<[boolean, string]> = [
+  [post.mouseTaggedSeen > 0,
+    `MEASURED MOUSE: the event was attributed to the operator (mouseTaggedSeen ${post.mouseTaggedSeen}, not 0)`],
+  [post.mouseCompareHit > 0,
+    `MEASURED MOUSE: the sentinel comparison itself was true (mouseCompareHit ${post.mouseCompareHit})`],
+  // `mouseCompareLow32`, NOT `mouseCompareObserved`: the latter is a LAST-EVENT register,
+  // overwritten by every event that arrives, so while the physical mouse is used it holds the
+  // human's dwExtraInfo (0) rather than the operator's. Asserting on it would fail every time
+  // someone touched the mouse, and would measure the human rather than the operator.
+  // `mouseCompareLow32` is the hook's own expected truncation - a constant - so comparing it to
+  // the sentinel read from `/sentinel-probe` is a stable check that the hook and an independent
+  // route agree on the value.
+  [post.mouseCompareLow32 === expectedLow32,
+    `MEASURED MOUSE: the hook's expected low 32 bits match the sentinel (${post.mouseCompareLow32} === ${expectedLow32})`],
+  [post.mouseProcError === '',
+    `MEASURED MOUSE: no mouse-hook exception occurred (mouseProcError ${post.mouseProcError === '' ? 'none' : post.mouseProcError})`],
+  // Deliberately NOT asserted: that tagged events outnumber untagged ones. Untagged events are
+  // what a HUMAN moving the mouse looks like and must be untagged, so requiring
+  // `tagged >= untagged` would fail precisely when the human is active - a safety check inverted.
+  [post.mouseTaggedSeen <= post.mouseEventsSeen,
+    `MEASURED MOUSE: tagged events are a subset of observed events (${post.mouseTaggedSeen} <= ${post.mouseEventsSeen})`],
 ]
 
 console.log('')
 console.log('=== ASSERTIONS ===')
 let failed = 0
+let unverified = 0
 for (const [ok, msg] of checks) {
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${msg}`)
   if (!ok) failed++
 }
 
 console.log('')
-console.log(`=== ${failed === 0 ? 'PASS' : failed + ' FAILURE(S)'} ===`)
-process.exit(failed ? 1 : 0)
+if (mouseExercised) {
+  console.log('=== MOUSE ATTRIBUTION (exercised on this host) ===')
+  for (const [ok, msg] of mouseClaims) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${msg}`)
+    if (!ok) failed++
+  }
+} else {
+  // The third outcome. These claims were not evaluated because the precondition was never
+  // met on this host - not because they passed, and not because they failed.
+  unverified = mouseClaims.length
+  console.log('=== MOUSE ATTRIBUTION: UNVERIFIED ===')
+  console.log('  This host has recorded no operator mouse event (mouseTaggedSeen 0), so the')
+  console.log('  repaired mouse path was never exercised here. The claims below are NOT passing')
+  console.log('  and are NOT failing - they were never tested. This run does not exit 0.')
+  console.log('  To verify: press Ctrl+Alt+G, /arm, perform one operator mouse click, then re-run.')
+  for (const [, msg] of mouseClaims) console.log(`  UNVERIFIED  ${msg}`)
+}
+
+console.log('')
+const verdict = failed === 0 && unverified === 0 ? 'PASS' : failed + ' FAILURE(S)' + (unverified ? `, ${unverified} UNVERIFIED` : '')
+console.log(`=== ${verdict} ===`)
+process.exit(failed || unverified ? 1 : 0)

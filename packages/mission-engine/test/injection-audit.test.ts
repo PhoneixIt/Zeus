@@ -26,6 +26,10 @@ const rec = (over: Partial<ControlRecord> = {}): ControlRecord => ({
   mouseEventsSeen: 500, mouseTaggedSeen: 5, mouseUntaggedSeen: 495,
   panelInjectedSeen: 0, panelTaggedSeen: 0,
   livenessProbes: 3, livenessProbeHits: 3, livenessFailures: 0,
+  // The mouse-repair diagnostics. Defaults describe a REPAIRED host: the comparison was true,
+  // the observed value equals the sentinel's low 32 bits, and no exception escaped the handler.
+  // A test that wants the broken shape overrides them explicitly rather than inheriting a zero.
+  mouseCompareObserved: 5, mouseCompareLow32: 5, mouseCompareHit: 5, mouseProcError: '',
   ...over,
 })
 

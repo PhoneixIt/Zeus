@@ -29,7 +29,7 @@
  */
 
 import type { PlanProposal } from '../planner/plan.ts'
-import type { Step } from '../mission-engine/state.ts'
+import type { ObjectivePostcondition, Step } from '../mission-engine/state.ts'
 import type { Change } from './diff.ts'
 import type { DryRunReport, StepReport } from './dry-run.ts'
 
@@ -45,14 +45,46 @@ function operand(v: unknown): string {
   return s.length > 110 ? `${s.slice(0, 110)}...` : s
 }
 
-export function renderProposal(p: PlanProposal, digest: string): string {
-  const L: string[] = []
+/**
+ * A postcondition in the words a reviewer needs, including the thing that makes it meaningful.
+ *
+ * The corroboration clause on `command-exited` is stated rather than hidden, because the difference
+ * between "the command succeeded" and "the command succeeded AND something else confirmed it" is
+ * the difference between a claim and evidence, and a reviewer approving the first is not approving
+ * the second.
+ */
+function describePostcondition(pc: ObjectivePostcondition): string {
+  switch (pc.kind) {
+    case 'artifact-exists': return `${pc.path} exists`
+    case 'artifact-read-back': return `${pc.path} can be read back independently`
+    case 'artifact-byte-count': return `${pc.path} is exactly ${pc.bytes} bytes`
+    case 'artifact-content-matches': return `${pc.path} hashes to ${pc.sha256.slice(0, 16)}... (its exact contents)`
+    case 'directory-entry-count': return `${pc.path} holds exactly ${pc.entries} entries`
+    case 'consequential-deleted': return `${pc.path} was deleted${pc.effect ? ` (${pc.effect})` : ''}, corroborated from outside the tool`
+    case 'command-exited': return `${pc.executable} exited ${pc.exitCode}, corroborated from outside the process`
+  }
+}
+
+export function renderProposal(p: PlanProposal, digest: string): string {  const L: string[] = []
   L.push('')
   L.push('  THE OBJECTIVE')
   L.push(`    ${p.objective}`)
   L.push('')
   L.push('  WHAT "DONE" MEANS   (a claim about the world, not a guarantee)')
   L.push(`    ${p.expectedResult}`)
+  L.push('')
+  // The postconditions are shown because a reviewer is approving the conditions under which the
+  // system will call this work successful. Without them the reviewer approves a prose promise while
+  // the machine enforces something else, which is the gap this section exists to close.
+  L.push('  THE CHECKS THAT MUST PASS BEFORE THIS MAY BE CALLED SUCCESSFUL')
+  if (!p.objectivePostconditions || p.objectivePostconditions.length === 0) {
+    L.push('    (NONE DECLARED - this plan cannot report success, however well every step runs)')
+    L.push('    A mission with no declared checks is UNPROVEN, never satisfied.')
+  } else {
+    for (const pc of p.objectivePostconditions) {
+      L.push(`    - ${describePostcondition(pc)}`)
+    }
+  }
   L.push('')
   L.push('  WHAT IT PROMISES NOT TO DO')
   for (const c of p.constraints) L.push(`    - ${c}`)

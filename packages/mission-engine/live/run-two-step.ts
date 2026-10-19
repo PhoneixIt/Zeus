@@ -29,7 +29,7 @@ import { execute } from '../executor.ts'
 import { summarize } from '../events.ts'
 import {
   liveControl, livePermission, liveUiaVerifier, liveVerifier,
-  observeDesktopTool, surveyAccessibilityTool,
+  observeDesktopTool, surveyAccessibilityTool, blockOnHost, hostAvailability,
 } from './live-control.ts'
 import type { ControlSurface } from '../../governance/contract.ts'
 
@@ -149,6 +149,11 @@ async function run(label: string, breakStep1: boolean) {
 }
 
 // ---------------------------------------------------------------- run both
+
+// `observe-desktop` cannot run without the host. With the host absent, step 1 fails, step 2 is never
+// attempted, and the describe() below dereferences a result that does not exist - a TypeError that
+// looks like a defect in the dependency logic rather than a missing prerequisite. Classify it here.
+blockOnHost(await hostAvailability())
 
 const positive = await run('POSITIVE', false)
 const negative = await run('NEGATIVE (step 1 cannot legitimately complete)', true)

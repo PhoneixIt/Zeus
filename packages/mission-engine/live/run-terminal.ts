@@ -174,7 +174,7 @@ const readBackVerifier = {
     if (!existsSync(full)) return { rejected: `went and looked for "${claimed.path}"; it is not there` }
     const body = readFileSync(full, 'utf8')
     if (body.trim().length === 0) return { rejected: `"${claimed.path}" exists but has no readable content` }
-    return { evidence: { kind: 'file-exists', path: `${full} (${body.length} bytes, content ${JSON.stringify(body.slice(0, 60))})` } as never }
+    return { evidence: { kind: 'file-read-back', path: claimed.path, bytes: Buffer.byteLength(body, 'utf8'), heading: body.split('\n')[0] ?? '', note: 'read here, after the command reported it' } as never }
   },
 }
 

@@ -12,6 +12,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, resolve, extname, relative } from 'node:path'
 import type { Tool, ToolContext, ToolResult, Verifier } from '../executor.ts'
 import type { Evidence, Step } from '../state.ts'
@@ -91,8 +92,14 @@ export function makeInspectVerifier(workspace: string): Verifier {
       walk(claimed.path)
       return {
         evidence: {
-          kind: 'file-exists',
-          path: `${claimed.path} is still readable and contains ${n} file(s), counted independently`,
+          // `directory-present`, not `file-exists`: this walk counted entries, and the evidence kind
+          // whose `entries` field carries a count is the one a count can be compared against.
+          kind: 'directory-present',
+          path: claimed.path,
+          entries: n,
+          // The sentence this used to carry INSIDE `path`, where it made the field unmatchable by
+          // every path comparison. Provenance belongs in a note, not in an operand.
+          note: 'counted here by walking the tree, independently of the tool that listed it',
         } as Evidence,
       }
     },
@@ -354,8 +361,19 @@ export function makeReadBackVerifier(workspace: string): Verifier {
       }
       return {
         evidence: {
-          kind: 'file-exists',
-          path: `${claimed.path} (${body.length} bytes, independently re-read; first line ${JSON.stringify(body.split('\n')[0])})`,
+          kind: 'file-read-back',
+          path: claimed.path,
+          bytes: Buffer.byteLength(body, 'utf8'),
+          heading: body.split('\n')[0] ?? '',
+          // Hashed from the bytes THIS verifier read, never from what the tool reported - that is
+          // the whole point of a read-back, and the reason `sha256` exists on this evidence kind.
+          // `Buffer.byteLength`, not `body.length`: the old field counted UTF-16 code units, so it
+          // disagreed with the on-disk size for any non-ASCII artefact.
+          sha256: createHash('sha256').update(body, 'utf8').digest('hex'),
+          // The sentence this evidence used to carry INSIDE `path`, where it made the field
+          // unmatchable by every path comparison. The size is now `bytes` and the first line is
+          // now `heading`; what genuinely remains is provenance, and provenance is a note.
+          note: 'independently re-read from disk after the tool wrote it',
         } as Evidence,
       }
     },

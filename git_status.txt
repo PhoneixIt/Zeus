@@ -1,0 +1,330 @@
+On branch master
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   docs/EVIDENCE.md
+	modified:   docs/ROADMAP.md
+	modified:   docs/safety/known-defects.md
+	modified:   package.json
+	modified:   packages/control-core/operator.mjs
+	modified:   packages/control-core/src/Guard.cs
+	modified:   packages/control-core/src/Hooks.cs
+	modified:   packages/control-core/start-operator-host.mjs
+	modified:   packages/control-core/test/proof-kit.mjs
+	modified:   packages/control-core/test/prove-no-self-release.mjs
+	modified:   packages/mission-engine/events.ts
+	modified:   packages/mission-engine/executor.ts
+	modified:   packages/mission-engine/live/filesystem-mode.ts
+	modified:   packages/mission-engine/live/folder-tools.ts
+	modified:   packages/mission-engine/live/injection-audit.ts
+	modified:   packages/mission-engine/live/live-control.ts
+	modified:   packages/mission-engine/live/run-approval.ts
+	modified:   packages/mission-engine/live/run-filesystem.ts
+	modified:   packages/mission-engine/live/run-gui-audit.ts
+	modified:   packages/mission-engine/live/run-terminal.ts
+	modified:   packages/mission-engine/live/run-two-step.ts
+	modified:   packages/mission-engine/live/summary-tools.ts
+	modified:   packages/mission-engine/live/terminal-mode.ts
+	modified:   packages/mission-engine/state.ts
+	modified:   packages/mission-engine/test/approval.test.ts
+	modified:   packages/mission-engine/test/audit-widening.test.ts
+	modified:   packages/mission-engine/test/executor.test.ts
+	modified:   packages/mission-engine/test/injection-audit.test.ts
+	modified:   packages/mission-engine/test/model.test.ts
+	modified:   packages/mission-engine/test/recovery.test.ts
+	modified:   packages/mission-engine/test/terminal.test.ts
+	modified:   packages/model/local/__pycache__/grammar.cpython-314.pyc
+	modified:   packages/model/local/grammar.py
+	modified:   packages/model/local/server.py
+	modified:   packages/model/local/test-grammar.py
+	modified:   packages/model/parse.ts
+	modified:   packages/model/protocol.ts
+	modified:   packages/model/provider.ts
+	modified:   packages/persistence/query.ts
+	modified:   packages/persistence/recorder.ts
+	modified:   packages/persistence/schema.ts
+	modified:   packages/persistence/store.ts
+	modified:   packages/persistence/test/executor-persistence.test.ts
+	modified:   packages/persistence/test/persistence.test.ts
+	modified:   packages/planner/compile.ts
+	modified:   packages/planner/deterministic.ts
+	modified:   packages/planner/plan.ts
+	modified:   packages/planner/summarizer.ts
+	modified:   packages/planner/world-aware.ts
+	modified:   packages/review/diff.ts
+	modified:   packages/review/digest.ts
+	modified:   packages/review/render.ts
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.aios/
+	AIOS-AI-WORK-OS-COMPARATIVE-AUDIT-2026-10-12.md
+	AIOS-DELIVERY-DIRECTIVE-2026-10-12.md
+	AUDIT_BASELINE.md
+	CHANGES_SUMMARY.md
+	FIN
+	FINAL_UPDATE.md
+	FINAL_VERIFICATION.md
+	SUMMARY_FOR_USER.txt
+	TASK1_UPDATE.md
+	TASK2_UPDATE.md
+	TASK3_UPDATE.md
+	TASK4_ALT.md
+	TASK4_UPDATE.md
+	TEST_STRUCTURE.md
+	USER_SUMMARY.md
+	VERIFICATION_REPORT.md
+	_append_defect.md
+	_append_defect.py
+	_append_only.py
+	_append_phase3_evidence.md
+	_append_roadmap.md
+	_append_roadmap.py
+	_m_a_diff.py
+	_m_a_doc.py
+	_m_a_doc_add.md
+	_m_a_insert.py
+	_m_a_mutate.py
+	_m_a_mutate2.py
+	_m_b_probe.ts
+	_mc_ap.txt
+	_mc_b.txt
+	_mc_c.txt
+	_mc_c2.txt
+	_mc_cause.ts
+	_mc_dbg.ts
+	_mc_diag.ts
+	_mc_diagnose.ts
+	_mc_e2e.ts
+	_mc_e2e2.ts
+	_mc_e2e3.ts
+	_mc_ec.txt
+	_mc_ec2.txt
+	_mc_ec3.txt
+	_mc_ecx.txt
+	_mc_exec.txt
+	_mc_fin.txt
+	_mc_final.txt
+	_mc_full.txt
+	_mc_harness2.ts
+	_mc_harness_probe.ts
+	_mc_hb.txt
+	_mc_inc2_verify.ts
+	_mc_inventory.ts
+	_mc_mutation.ts
+	_mc_mutation_abc.ts
+	_mc_mutation_content.ts
+	_mc_mutation_evidence.ts
+	_mc_mutation_gate.ts
+	_mc_mutation_host.ts
+	_mc_mutation_review.ts
+	_mc_negative.ts
+	_mc_new.txt
+	_mc_order_probe.ts
+	_mc_p2.txt
+	_mc_pers.txt
+	_mc_predict.ts
+	_mc_pt.txt
+	_mc_r1.txt
+	_mc_r2.txt
+	_mc_r3.txt
+	_mc_r_base.txt
+	_mc_rf.txt
+	_mc_run1.txt
+	_mc_run2.txt
+	_mc_run3.txt
+	_mc_run_harnesses.ts
+	_mc_rz.txt
+	_mc_sweep.ts
+	_mc_term.txt
+	_mc_term_probe.ts
+	_mc_urlprobe.ts
+	_mc_wa.txt
+	_pdf_refs.py
+	_pdf_text.txt
+	_spike_contract.ts
+	_spike_contract2.ts
+	_spike_contract3.ts
+	_spike_contract4.ts
+	_spike_contract5.ts
+	_spike_evidence.py
+	_spike_evidence2.py
+	_spike_harnesses.py
+	_spike_migration.py
+	_spike_recount.py
+	_spike_recount2.py
+	_wb_dump.py
+	_wb_dump.txt
+	add_budget_check.py
+	add_cyclestart.py
+	add_early_return.py
+	analyze_blocks.py
+	apply_reexport.py
+	apply_regressions.py
+	bridge-verdict.test.mjs
+	bridge.js
+	change_regex.py
+	change_regex2.py
+	check-guard.ps1
+	check.py
+	check_missions2.py
+	check_status.py
+	complicated_fix.py
+	convergence_status_report.txt
+	count_missions.py
+	diag_fp.mjs
+	diag_fp2.mjs
+	diag_resume.mjs
+	docs/decisions/0004-authorized-control-core-scope.md
+	docs/model-provider-contract.md
+	final_checks.py
+	final_diff.py
+	fix-dup-fp.cjs
+	fix-orchestrator.js
+	fix.py
+	fix2.py
+	fix_budget_order.py
+	fix_cmd.py
+	fix_dup.py
+	fix_dup2.py
+	fix_early.py
+	fix_early2.py
+	fix_line255.py
+	fix_line82.py
+	fix_lock_test.py
+	fix_normalizer.py
+	fix_regex.py
+	fix_regex2.py
+	fix_stale_lock.py
+	fix_stale_lock2.py
+	fix_stale_lock3.py
+	fix_template.py
+	fix_test.py
+	fix_test_line.py
+	fix_verified.py
+	git_checkout.py
+	git_status.txt
+	inspect_code.py
+	investigate_mission.py
+	investigate_missions.py
+	launch-aos.ps1
+	launch-chat.js
+	model-plan-failure.txt
+	orchestrator_fix.py
+	orchestrator_ts_backup_1791671954.ts
+	orchestrator_ts_pre_repair_1791683044.ts
+	packages/agent/
+	packages/control-core/autonomy.json
+	packages/control-core/cdp.d.mts
+	packages/control-core/cdp.mjs
+	packages/control-core/operator.d.mts
+	packages/control-core/syntax-check.mjs
+	packages/control-core/test/authorization-invariants.test.ts
+	packages/control-core/test/browser-smoke.mjs
+	packages/control-core/test/cdp.test.ts
+	packages/control-core/test/verify-gate.test.ts
+	packages/mission-engine/live/agent/
+	packages/mission-engine/live/browser-interaction.ts
+	packages/mission-engine/live/browser-tools.ts
+	packages/mission-engine/live/company-brief.ts
+	packages/mission-engine/live/edit-tools.ts
+	packages/mission-engine/live/file-tools.ts
+	packages/mission-engine/live/navigation-policy.ts
+	packages/mission-engine/live/ops-tools.ts
+	packages/mission-engine/live/reject-unsafe-plans.ts
+	packages/mission-engine/live/research-app.ts
+	packages/mission-engine/live/research-engine.ts
+	packages/mission-engine/live/rollback-recovery.ts
+	packages/mission-engine/live/rollback-tools.ts
+	packages/mission-engine/live/run-aios-chat.ts
+	packages/mission-engine/live/run-auto-recovery.ts
+	packages/mission-engine/live/run-browser-mission.ts
+	packages/mission-engine/live/run-company-brief.ts
+	packages/mission-engine/live/run-cross-tool-mission.ts
+	packages/mission-engine/live/run-dev-mission.ts
+	packages/mission-engine/live/run-dev-recovery.ts
+	packages/mission-engine/live/run-durability-probe.ts
+	packages/mission-engine/live/run-folder-summary.ts
+	packages/mission-engine/live/run-fs-ops-mission.ts
+	packages/mission-engine/live/run-gui-mission.ts
+	packages/mission-engine/live/run-interact-mission.ts
+	packages/mission-engine/live/run-model-folder-mission.ts
+	packages/mission-engine/live/run-navigation-mission.ts
+	packages/mission-engine/live/run-repo-mission.ts
+	packages/mission-engine/live/run-research-desk.ts
+	packages/mission-engine/live/run-summary-mission.ts
+	packages/mission-engine/live/run-web-research.ts
+	packages/mission-engine/live/verify-brief.ts
+	packages/mission-engine/live/verify-company-brief.ts
+	packages/mission-engine/live/verify-research-state.ts
+	packages/mission-engine/live/web-extract.ts
+	packages/mission-engine/live/web-research.ts
+	packages/mission-engine/live/web-verify.ts
+	packages/mission-engine/recovery.ts
+	packages/mission-engine/test/agent-loop.test.ts
+	packages/mission-engine/test/browser-interaction.test.ts
+	packages/mission-engine/test/browser-tools.test.ts
+	packages/mission-engine/test/classification-evidence.test.ts
+	packages/mission-engine/test/company-brief.test.ts
+	packages/mission-engine/test/edit-tools.test.ts
+	packages/mission-engine/test/evidence-contract.test.ts
+	packages/mission-engine/test/file-summary.test.ts
+	packages/mission-engine/test/folder-label.test.ts
+	packages/mission-engine/test/host-blocked.test.ts
+	packages/mission-engine/test/navigation-governance.test.ts
+	packages/mission-engine/test/navigation-policy.test.ts
+	packages/mission-engine/test/objective.test.ts
+	packages/mission-engine/test/ops-tools.test.ts
+	packages/mission-engine/test/regression_node_version.test.ts
+	packages/mission-engine/test/repo-mission.test.ts
+	packages/mission-engine/test/rollback-tools.test.ts
+	packages/mission-engine/test/site-chrome.test.ts
+	packages/mission-engine/test/web-research.test.ts
+	packages/model/local/__pycache__/server.cpython-314.pyc
+	packages/model/local/__pycache__/test-grammar.cpython-314.pyc
+	packages/model/local/test-server-eos.py
+	packages/model/opencode-planner.ts
+	packages/model/plan-invariants.ts
+	packages/model/test/
+	packages/persistence/test/durability-defects.test.ts
+	packages/planner/expected-content.ts
+	packages/planner/test/
+	packages/review/test/
+	process-list.txt
+	regression_tests.ts
+	regrid_regex.py
+	reorder_blocks.py
+	reorder_checks.py
+	reorder_status.py
+	reorder_status2.py
+	repair_test.py
+	restore_file.py
+	revert_lock.py
+	roadmap_validation_report.txt
+	run-convergence.cjs
+	run-test-py.py
+	run-test.cjs
+	run-test.py
+	run_convergence.py
+	run_test.bat
+	simple_budget_check.py
+	swap_blocks.py
+	swap_status_order.py
+	test_norm.py
+	trace_mission.py
+	trace_norm.py
+	typecheck.txt
+	typecheck_final.txt
+	typecheck_out.txt
+	typecheck_out2.txt
+	typecheck_ps.txt
+	verify-gate.mjs
+	verify_regressions.py
+	verify_regressions2.py
+	verify_regressions3.py
+	verify_regressions4.py
+	verify_regressions5.py
+	verify_regressions6.py
+	verify_regressions7.py
+
+no changes added to commit (use "git add" and/or "git commit -a")

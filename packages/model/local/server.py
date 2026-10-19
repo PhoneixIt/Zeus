@@ -128,12 +128,106 @@ class GrammarExhausted(RuntimeError):
     """
 
 
+def resolve_stop_ids(config: dict, tokenizer=None) -> tuple[set, str]:
+    """
+    The tokens generation may stop on, read from the MODEL'S OWN CONFIGURATION.
+
+    Returns `(ids, source)`. An empty `ids` means the server must not start.
+
+    WHY THIS REPLACED A HARDCODED LITERAL
+    -------------------------------------
+    This file used to resolve EOS by asking the tokenizer for two special-token strings written
+    into the source. Those strings were EMPTY. `tokenizer_config.json` for this model family has
+    `"eos_token": ""` and its `added_tokens_decoder` entries for the three Qwen control tokens also
+    have empty `content` - the special-token text is simply absent from these files.
+
+    So `tokenizer.token_to_id("")` did not fail loudly. It returned a plausible integer (151643, the
+    BOS ``) and the server started up reporting an EOS that was never the chat stop token. A
+    generation loop keyed on that stops on the wrong event, and the evidence of the mistake - a
+    `/describe` reporting `eos: null`, and output that rambled past every turn boundary - looked
+    exactly like "the model is too weak". It was a configuration bug the whole time.
+
+    The model CONFIGURATION is the authority, and it is not affected: `config.json` states
+    `"eos_token_id": 151645` (````). A scalar or a list are both accepted, because models differ.
+
+    Nothing here hardcodes a token id. The ids come from `config.json`, and the one string lookup
+    performed is a lookup THROUGH the tokenizer, using the tokenizer's own declared `eos_token` -
+    which is skipped when that declaration is blank, because a blank declaration is not a token.
+
+    A blank or absent declaration is a REFUSAL, not a default. Silently falling back to "the first
+    special token" is what produced the wrong-EOS server in the first place.
+    """
+    declared = config.get("eos_token_id")
+    candidates: list = []
+    if isinstance(declared, bool):
+        candidates = []                      # a bool is not a token id, whatever it looks like
+    elif isinstance(declared, int):
+        candidates = [declared]
+    elif isinstance(declared, list):
+        candidates = [d for d in declared if isinstance(d, int) and not isinstance(d, bool)]
+
+    source = "config.json:eos_token_id" if candidates else ""
+
+    # The tokenizer's own declaration, consulted ONLY when it is a non-empty string, and resolved
+    # through the tokenizer rather than assumed to be an id.
+    if tokenizer is not None:
+        try:
+            name = None
+            if isinstance(declared_name := config.get("_tokenizer_eos_token"), str):
+                name = declared_name
+            if name:
+                tid = tokenizer.token_to_id(name)
+                if isinstance(tid, int) and not isinstance(tid, bool):
+                    candidates.append(tid)
+                    source = (source + "+tokenizer").strip("+")
+        except Exception:
+            pass
+
+    # Every candidate must be a real, in-range id. An id at or beyond the vocabulary is a corrupt
+    # configuration, and accepting it would produce a stop token the model can never emit - which is
+    # the same class of bug as no stop token at all, wearing a more convincing disguise.
+    vocab = config.get("vocab_size")
+    vocab = vocab if isinstance(vocab, int) and not isinstance(vocab, bool) and vocab > 0 else None
+    valid = set()
+    for c in candidates:
+        if not isinstance(c, int) or isinstance(c, bool) or c < 0:
+            continue
+        if vocab is not None and c >= vocab:
+            continue
+        valid.add(int(c))
+
+    return valid, (source or "none")
+
+
+def resolve_stop_ids_from_dir(model_dir: str, tokenizer=None) -> tuple[set, str]:
+    """`resolve_stop_ids` with the tokenizer's declared eos name read from disk."""
+    cfg = {}
+    try:
+        with open(os.path.join(model_dir, "config.json"), "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    if tokenizer is not None:
+        try:
+            with open(os.path.join(model_dir, "tokenizer_config.json"), "r", encoding="utf-8") as f:
+                tc = json.load(f)
+            name = tc.get("eos_token")
+            if isinstance(name, dict):
+                name = name.get("content")
+            if isinstance(name, str) and name:
+                cfg["_tokenizer_eos_token"] = name
+        except Exception:
+            pass
+    return resolve_stop_ids(cfg, tokenizer)
+
+
 class Inference:
     """The model, its tokenizer, and a decoding loop. Nothing else exists in this file."""
 
     def __init__(self, model_dir: str, threads: int, log_level: str = "3",
                  max_wall_seconds: float = MAX_WALL_SECONDS, grammar: bool = False,
                  string_cap: int = PlanGrammar.__init__.__defaults__[0]):
+        self.model_dir = model_dir
         self.model_path = os.path.join(model_dir, "model.onnx")
         tok_path = os.path.join(model_dir, "tokenizer.json")
         for p in (self.model_path, tok_path):
@@ -206,6 +300,8 @@ class Inference:
         self._mask_seconds = 0.0
         if self.grammar is not None:
             self._build_vocab_index()
+        # self.eos is resolved from the tokenizer EOS token, visible to the caller
+        self.eos = next(iter(self.eos_ids)) if self.eos_ids else None
 
     def _build_vocab_index(self) -> None:
         """
@@ -243,23 +339,20 @@ class Inference:
             first = ord(piece[0])
             self.by_first_byte.setdefault(first, []).append(int(tid))
         self.vocab_unsafe = unsafe
-        for piece in ("<|im_end|>", "<|endoftext|>"):
-            tid = self.tokenizer.token_to_id(piece)
-            if isinstance(tid, int):
-                self.eos_ids.add(tid)
-        # `self.eos` is resolved by the caller AFTER this runs, so it is looked up from the tokenizer
-        # directly rather than read - reading it raised AttributeError, which is a reminder that the
-        # index build happens before the rest of the constructor finishes.
-
-        # Qwen2.5 chat special tokens. Written out rather than pulled from a template library so the
-        # exact wire format is visible in the file that depends on it.
-        self.eos = self._token_id("<|im_end|>")
-        if self.eos is None:
-            self.eos = self._token_id("<|endoftext|>")
-        if self.eos is None:
-            # No known EOS: generation would run to MAX_NEW_TOKENS every time. Refusing to start is
-            # better than silently generating to the ceiling and reporting the result as a plan.
-            raise SystemExit("no EOS token found; refusing to start, because generation could not stop")
+        # The stop tokens, resolved from the MODEL CONFIGURATION rather than from a literal
+        # written into this file. See `resolve_stop_ids` for why that matters.
+        self.eos_ids, self.eos_source = resolve_stop_ids_from_dir(self.model_dir, self.tokenizer)
+        if not self.eos_ids:
+            # No usable EOS: generation would run to MAX_NEW_TOKENS every time and the result
+            # would be reported as though it were a considered plan. Refusing to start is the
+            # honest move, and it is a REFUSAL rather than a crash - the process exits before
+            # it ever binds a port, so nothing can connect to a half-configured server.
+            raise SystemExit(
+                "no usable eos_token_id in the model configuration and no resolvable "
+                "eos_token in tokenizer_config.json; refusing to start, because generation "
+                "could not stop"
+            )
+        self.eos = min(self.eos_ids)
 
     def _token_id(self, piece: str):
         try:
@@ -558,6 +651,14 @@ class Inference:
             "pastTensors": self.n_past,
             "kvGeometry": {"layers": self.n_layers, "kvHeads": self.n_kv_heads, "headDim": self.head_dim},
             "eos": self.eos,
+            # The stop tokens AND where they came from. A reader that sees an EOS but cannot see
+            # its provenance has no way to tell a correct one from an accidental one - which is
+            # precisely the confusion this whole check exists to remove.
+            "eosIds": sorted(self.eos_ids),
+            "eosSource": self.eos_source,
+            # Readiness. A server that reports `true` has loaded a model AND resolved a usable stop
+            # token; anything else is a state this server refuses to be in at all.
+            "ready": bool(self.eos_ids) and self.eos is not None,
             "providers": self.session.get_providers(),
         }
 

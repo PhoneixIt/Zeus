@@ -471,12 +471,17 @@ export function makeTerminalTool(cfg: TerminalConfig): Tool & { preview: (step: 
  */
 export function registerTerminal(
   cfg: TerminalConfig,
-): { registrations: Array<{ tool: ReturnType<typeof makeTerminalTool>; effectOf: (s: Step) => DeclaredEffect | undefined; preflight: (s: Step) => { blocked: string; needsHuman: boolean } | undefined }> } {
+): { registrations: Array<{ tool: ReturnType<typeof makeTerminalTool>; capabilities: string[]; effectOf: (s: Step) => DeclaredEffect | undefined; preflight: (s: Step) => { blocked: string; needsHuman: boolean } | undefined }> } {
   const tool = makeTerminalTool(cfg)
   return {
     registrations: [
       {
         tool,
+        // `terminal.run` is declared in the capability vocabulary and this tool is the only thing
+        // that serves it. Without the entry the router cannot resolve the capability at all, and a
+        // plan that correctly asks for `terminal.run` is rejected as a plan defect - the same
+        // vocabulary/registration drift that has bitten this repository before.
+        capabilities: ['terminal.run'],
         effectOf: (s) => {
           const v = tool.preview(s)
           return v.kind === 'consequential' ? v.effect : undefined

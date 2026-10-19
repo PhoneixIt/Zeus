@@ -120,6 +120,7 @@ export async function connect({ statePath = join(STATE_DIR, 'host.json') } = {})
     release: () => post('/release', {}),
     emergencyStop: () => post('/emergency-stop', {}),
     rearm: () => post('/rearm', {}),
+    autoRearm: () => post('/auto-rearm', {}),
     drain: () => post('/drain', {}),
     // Exposed so governance tests can reach a route the typed helpers deliberately do not
     // offer - for example to prove that /release REFUSES, which is impossible to test

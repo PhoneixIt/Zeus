@@ -135,6 +135,26 @@ export function diffPlans(before: PlanProposal, after: PlanProposal): Change[] {
   }
 
   // Proposal-level changes, which are not attached to any step.
+  //
+  // The objective postconditions are diffed FIRST and marked 'behavioural', because removing one is
+  // the single most consequential amendment available: it deletes a condition the mission's success
+  // was being judged against, and the diff has to say so rather than fold it into a count. An
+  // amendment that quietly drops every postcondition would otherwise read as a tidy summary.
+  const bPC = before.objectivePostconditions ?? []
+  const aPC = after.objectivePostconditions ?? []
+  if (canonicalise(bPC) !== canonicalise(aPC)) {
+    const removed = bPC.filter((p) => !aPC.some((q) => canonicalise(q) === canonicalise(p)))
+    const added = aPC.filter((p) => !bPC.some((q) => canonicalise(q) === canonicalise(p)))
+    out.push({
+      kind: 'changed', stepId: '(proposal)', field: 'objectivePostconditions', significance: 'behavioural',
+      from: show(bPC), to: show(aPC),
+      note: removed.length
+        ? `THE OBJECTIVE'S OWN CHECKS CHANGED and ${removed.length} were REMOVED (${removed.map((p) => p.kind).join(', ')}).\n` +
+          '      Every removed condition is one the mission no longer has to satisfy to call itself successful.\n' +
+          '      This invalidates any approval given to the previous plan.'
+        : `the objective's checks changed (${added.map((p) => p.kind).join(', ')} added). This changes what counts as done.`,
+    })
+  }
   if (canonicalise(before.expectedResult) !== canonicalise(after.expectedResult)) {
     out.push({
       kind: 'changed', stepId: '(proposal)', field: 'expectedResult', significance: 'behavioural',

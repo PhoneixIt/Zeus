@@ -77,7 +77,27 @@ export class StructuredSummarizer implements Summarizer {
   readonly name = 'structured-deterministic'
 
   async generate(input: SummaryInput): Promise<SummaryResult> {
-    const entries = input.entries
+    // CANONICAL ORDER, APPLIED HERE RATHER THAN BY ANY CALLER.
+    //
+    // The output must be a function of the SET of entries, never of the order they arrived in. Two
+    // orderings leaked through before this line: `largest` is sorted by size only, so files tied on
+    // size kept their INPUT order, and the `## Folders` section was simply iterated in input order.
+    // `readdirSync` decides that order, and it is not stable across machines or filesystems.
+    //
+    // This matters beyond tidiness. A planner that wants to state "the artefact must contain
+    // exactly this text" has to reproduce the composer's output from the same entry SET. If the
+    // composer depended on input order, that prediction would depend on a filesystem detail the
+    // planner cannot know - so the honest options would both be bad: predict wrongly and fail
+    // correct missions, or omit the check and leave the objective unverified.
+    //
+    // Sorting here is what makes the content reproducible, and it puts the ordering rule in ONE
+    // place - the generator that owns the formatting - instead of asking every caller to sort
+    // correctly first. A caller that pre-sorts is now harmless rather than load-bearing.
+    //
+    // Name is the sort key, with directory-ness as the tiebreak so a file and a directory that
+    // share a name cannot swap places between runs.
+    const entries = [...input.entries].sort((a, b) =>
+      a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind))
     const files = entries.filter((e) => e.kind === 'file')
     const dirs = entries.filter((e) => e.kind === 'directory')
 
@@ -90,7 +110,10 @@ export class StructuredSummarizer implements Summarizer {
 
     const largest = [...files]
       .filter((f) => typeof f.bytes === 'number')
-      .sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0))
+      // Size first, then name. The name tiebreak is what makes the "five largest" reproducible:
+      // `Array.sort` is stable, so without it equal-sized files would be ordered by whatever order
+      // the input happened to arrive in.
+      .sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0) || a.name.localeCompare(b.name))
       .slice(0, 5)
 
     const lines: string[] = []

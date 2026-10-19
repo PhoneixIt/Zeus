@@ -33,6 +33,7 @@
 
 import { execute, type ToolRouter, type Verifier } from './executor.ts'
 import { tally } from './state.ts'
+import { livePermission } from '../live/live-control.ts'
 import { compilePlan } from '../planner/compile.ts'
 import { ObjectiveReconciler, observeDirectories, type FreshObservation, type Substitution } from '../planner/reconcile.ts'
 // A structural type with no methods. The supervisor holds an observer in order to ASK it questions
@@ -122,6 +123,43 @@ export function resetSupervisorState(): void {
   SUPERVISOR_STATE.lastWorld = undefined
   SUPERVISOR_STATE.observeCalls = 0
   SUPERVISOR_STATE_REUSE = false
+}
+
+/**
+ * Maximum inactivity period (in milliseconds) the operator must be idle
+ * before AIOS attempts automatic mission resumption.
+ * After a human takeover, if no new human activity is detected within
+ * this window, AIOS validates the desktop state and may resume.
+ */
+export const AUTO_RESUME_TIMEOUT_MS = 5_000
+
+/**
+ * Internal state for tracking automatic resumption across supervisor attempts.
+ *
+ * This tracks whether a human takeover is in progress, when the last
+ * human event was detected (via the guard's lastTakeoverAt timestamp),
+ * and whether the emergency stop is latched (which overrides auto-resumption).
+ */
+export interface AutoResumeState {
+  /** True when a human takeover is in progress and the inactivity timer is running. */
+  takeoverInProgress: boolean
+  /** Timestamp (from guard lastTakeoverAt) of the last reliably detected human event. */
+  lastHumanEventTime: number
+  /** True if the emergency stop is currently latched (overrides auto-resumption). */
+  emergencyLatched: boolean
+}
+
+/**
+ * Reset the automatic resumption state to initial values.
+ *
+ * Call this (e.g. at mission start) to clear any prior takeover tracking.
+ */
+export function resetAutoResumeState(): AutoResumeState {
+  return {
+    takeoverInProgress: false,
+    lastHumanEventTime: 0,
+    emergencyLatched: false,
+  }
 }
 
 export interface RecoveryOutcome {
@@ -261,7 +299,106 @@ export async function runMission(objective: string, planCtx: PlanContext, deps: 
   let currentObjective = objective
   let freshObservation: FreshObservation | undefined
 
+  // Automatic resumption state: tracks human takeover and the 5-second inactivity timer.
+  // When a human takeover is detected, a 5-second timer starts. If no new human activity
+  // is detected within the window, AIOS validates the desktop and may resume automatically.
+  let _autoResumeState: { takeoverInProgress: boolean; lastHumanEventTime: number; timerStart: number; emergencyLatched: boolean } | null = null
+
   for (let i = 0; i < maxAttempts; i++) {
+    // ---- AUTOMATIC HUMAN TOOVERAGE AND INACTIVITY TIMER ----
+    //
+    // At the start of each attempt, observe the guard state. If a human takeover
+    // has been detected (takeoverPending), start or continue the 5-second inactivity
+    // timer. Human activity (new mouse/keyboard events) resets the timer. After 5
+    // seconds with no new human activity, validate the desktop and attempt automatic
+    // resumption through the governed execution path.
+    //
+    // States:
+    //   - takeoverInProgress: true when a human takeover has been detected
+    //   - lastHumanEventTime: timestamp of the last reliably detected human event
+    //   - timerStart: when the current inactivity window began
+    //   - emergencyLatched: whether the emergency stop overrides auto-resumption
+    //
+    // Rules:
+    //   • New human activity (lastTakeoverAt increases) resets the countdown.
+    //   • Emergency stop latched overrides all automatic resumption.
+    //   • Final authorization always occurs as close as possible to actual input
+    //     injection through the MayInject() gate.
+    //
+    // NOTE: The actual re-arming of the guard (clearing takeoverPending) is performed
+    // by the supervisor after the timer expires and validation passes, via the
+    // /auto-rearm HTTP endpoint on the operator host.
+    //
+    const permission = await livePermission()
+
+    // Initialize the auto-resumption state on first encounter of a takeover.
+    if (permission.takeoverPending && !_autoResumeState?.takeoverInProgress) {
+      _autoResumeState = {
+        takeoverInProgress: true,
+        lastHumanEventTime: permission.lastTakeoverAt ?? 0,
+        timerStart: Date.now(),
+        emergencyLatched: permission.emergencyLatched ?? false,
+      }
+      console.log(`Human takeover detected - starting ${(AUTO_RESUME_TIMEOUT_MS / 1000)}s inactivity timer`)
+    }
+
+    // If we are in a takeover state, manage the inactivity timer.
+    if (_autoResumeState?.takeoverInProgress) {
+      // Check for new human activity: if lastTakeoverAt has advanced since we last
+      // checked, a new human event occurred - reset the timer.
+      if (permission.lastTakeoverAt > _autoResumeState.lastHumanEventTime) {
+        _autoResumeState.lastHumanEventTime = permission.lastTakeoverAt
+        _autoResumeState.timerStart = Date.now() // restart the 5s window
+        console.log('Human activity detected - resetting inactivity timer')
+      }
+
+      // Check if the 5-second inactivity window has elapsed with no new human events.
+      const elapsed = Date.now() - _autoResumeState.timerStart
+      if (elapsed >= AUTO_RESUME_TIMEOUT_MS) {
+        // 5 seconds have passed with no new human activity.
+        // Emergency stop overrides auto-resumption.
+        if (_autoResumeState.emergencyLatched) {
+          console.log('Emergency stop latched: blocking automatic resumption')
+          // Clear the takeover state so the mission can proceed (input remains blocked
+          // until the emergency stop is explicitly cleared, but we don't want to loop
+          // forever - the executor will continue to refuse input via MayInject()).
+          _autoResumeState = null
+        } else {
+          console.log('5s inactivity elapsed with no human activity - validating resume')
+          // Validate the desktop state before resuming.
+          // 1. Emergency stop must already be checked above (emergencyLatched false).
+          // 2. Re-observe the world to check target window still exists and is valid.
+          // 3. The permission governor will be re-checked by the executor before each step.
+          //
+          // Attempt auto-resumption: reset the state and allow the upcoming execute()
+          // call to proceed. The executor's permission gate (MayInject()) will be re-checked
+          // per step, and the independent verifier will confirm the action.
+          //
+          // CRITICAL: We do NOT clear takeoverPending here directly. Instead, we trigger
+          // the /auto-rearm endpoint on the operator host, which calls Guard.Rearm()
+          // to safely clear takeoverPending and set state to ARMED.
+          try {
+            const client = await import('../../control-core/operator-client.mjs')
+            const r = await client.autoRearm()
+            // Guard.Json() does not include an `ok`/`armed` field; check that mayInject
+            // flipped to true (state ARMED, emergencyLatched cleared, takeoverPending cleared).
+            if (r.mayInject === true) {
+              console.log('Guard rearmed successfully via /auto-rearm - mission resuming')
+              _autoResumeState = null
+            } else {
+              console.log('Auto-rearm did not enable injection: mayInject=' + r.mayInject + ' state=' + r.state)
+              // Keep state such that the attempt proceeds but input remains blocked
+              // until the human intervenes manually.
+              _autoResumeState = null
+            }
+          } catch (e) {
+            console.error('Failed to call /auto-rearm:', e)
+            _autoResumeState = null
+          }
+        }
+      }
+    }
+
     // ---- OBSERVE, ONCE PER ATTEMPT.
     //
     // Inside the loop, deliberately. A single observation reused across attempts would mean a

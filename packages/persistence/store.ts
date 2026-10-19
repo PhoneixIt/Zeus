@@ -223,17 +223,20 @@ export class DurableStore {
   saveMission(m: Mission): void {
     this.tx(() => {
       this.db.prepare(`
-        INSERT INTO missions (id, objective, constraints, state, proposal_digest, basis, invalidated_by, started_at, finished_at, persisted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO missions (id, objective, constraints, state, proposal_digest, basis, invalidated_by, objective_postconditions, started_at, finished_at, persisted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           objective=excluded.objective, constraints=excluded.constraints, state=excluded.state,
           proposal_digest=excluded.proposal_digest, basis=excluded.basis,
-          invalidated_by=excluded.invalidated_by, started_at=excluded.started_at,
+          invalidated_by=excluded.invalidated_by,
+          objective_postconditions=excluded.objective_postconditions,
+          started_at=excluded.started_at,
           finished_at=excluded.finished_at, persisted_at=excluded.persisted_at
       `).run(
         m.id, m.objective, JSON.stringify(m.constraints ?? []), m.state,
         m.proposalDigest ?? null, m.basis ? JSON.stringify(m.basis) : null,
         m.invalidatedBy ? JSON.stringify(m.invalidatedBy) : null,
+        m.objectivePostconditions ? JSON.stringify(m.objectivePostconditions) : null,
         m.startedAt, m.finishedAt ?? null, this.now(),
       )
 
@@ -395,8 +398,19 @@ export class DurableStore {
    * Step 2 is also why this is not a pure query: recovery mutates what it reads. That is intentional
    * and is written back, so a second read agrees with the first.
    */
-  readMission(missionId: string): RecoveredMission | undefined {
-    const invalidatedApprovals = this.invalidateForeignApprovals()
+  readMission(missionId: string, opts?: { readonly?: boolean }): RecoveredMission | undefined {
+    // `readonly` suppresses the RECOVERY SIDE EFFECT, not the reading.
+    //
+    // A normal read deliberately consumes recovery: it rewrites `running` to `pending`, records the
+    // step as recovered, and writes that back so a second read agrees. That is correct for a
+    // resuming reader and catastrophic for a live writer. `StoreRecorder` builds every write on a
+    // read of the current row; routing that through recovery meant the first recorder call after
+    // `attemptBegin` performed a recovery the live process had no business performing, wrote
+    // `pending` over its own `running` write-ahead, and appended a history row claiming the step
+    // "was in flight when the process ended" while the process was still running it. An
+    // interrupted step then became indistinguishable from one that had never started.
+    const suppressed = opts?.readonly === true
+    const invalidatedApprovals = suppressed ? [] : this.invalidateForeignApprovals()
     const h = this.db.prepare('SELECT * FROM missions WHERE id = ?').get(missionId) as
       | Record<string, unknown> | undefined
     if (!h) return undefined
@@ -407,7 +421,9 @@ export class DurableStore {
     const recoveredSteps: string[] = []
     const steps: Step[] = stepRows.map((r) => {
       let status = String(r.status) as Step['status']
-      if (status === 'running') {
+      // Under `readonly`, an in-flight step stays `running`. It is still running: this process is
+      // running it. Calling it recovered here is the defect that `StoreRecorder` was tripping over.
+      if (status === 'running' && !suppressed) {
         status = 'pending'
         recoveredSteps.push(String(r.step_id))
       }
@@ -444,6 +460,12 @@ export class DurableStore {
       finishedAt: h.finished_at === null ? undefined : Number(h.finished_at),
       basis: h.basis ? JSON.parse(String(h.basis)) : undefined,
       proposalDigest: h.proposal_digest === null ? undefined : String(h.proposal_digest),
+      // Restored so the objective verdict is re-derived from the SAME declaration the mission was
+      // compiled with. Dropping it here would make every restored mission UNPROVEN regardless of what
+      // its evidence shows - fail-closed, but wrong in the direction of never being satisfied.
+      objectivePostconditions: h.objective_postconditions === null || h.objective_postconditions === undefined
+        ? undefined
+        : JSON.parse(String(h.objective_postconditions)),
     }
 
     const approvals = this.readApprovals(missionId)
@@ -479,7 +501,7 @@ export class DurableStore {
 
     // Write the recovery back, so a second read agrees with the first and the record on disk is not
     // left claiming a mission is executing when it is not.
-    if (recoveredSteps.length || mission.state !== String(h.state)) {
+    if (!suppressed && (recoveredSteps.length || mission.state !== String(h.state))) {
       this.saveMission(mission)
       for (const sid of recoveredSteps) {
         this.appendHistory(missionId, {
@@ -523,6 +545,41 @@ export class DurableStore {
       }
     }
     return undefined
+  }
+
+  /**
+   * The mission as it is PERSISTED, with raw step statuses.
+   *
+   * `readMission` deliberately rewrites a persisted `running` step to `pending` and records it
+   * in `recovery.recoveredSteps`, because a mission that was mid-flight when the process died is
+   * not executing now. That is the right answer for a RESUMING reader.
+   *
+   * It is the wrong answer for a WRITER, and using it as one silently destroyed the write-ahead.
+   * `StoreRecorder` builds every write on top of `currentMissionRow`; after `attemptBegin`
+   * persisted `running`, the very next recorder call read the mission back through
+   * `readMission`, received `pending`, and wrote `pending` over it. The step looked interrupted
+   * in the moment and then, after one more transition, looked like it had never started - so no
+   * recovery obligation was ever produced.
+   *
+   * This accessor exists so a writer can see what is on disk without inheriting the recovery
+   * reading. It performs no normalisation, so it must not be used to decide what may resume.
+   */
+  readMissionForWrite(missionId: string): Mission | undefined {
+    const recovered = this.readMission(missionId, { readonly: true })
+    if (!recovered) return undefined
+    return recovered.mission
+  }
+
+  /**
+   * The RAW persisted status of each step, in plan order, with no recovery normalisation.
+   *
+   * Exists so a test can assert what is actually ON DISK. `readMission` deliberately rewrites
+   * `running` to `pending` for resuming readers, so it cannot answer "what was written".
+   */
+  persistedStepStatuses(missionId: string): string[] {
+    return (this.db
+      .prepare('SELECT status FROM steps WHERE mission_id = ? ORDER BY seq')
+      .all(missionId) as Array<{ status: string }>).map((r) => r.status)
   }
 
   readHistory(missionId: string): HistoryEntry[] {

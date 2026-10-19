@@ -33,7 +33,7 @@
  * declare success, which is the one thing this whole system exists to prevent.
  */
 
-import type { ExecutionMode } from '../mission-engine/state.ts'
+import type { ExecutionMode, ObjectivePostcondition } from '../mission-engine/state.ts'
 // A structural type with no methods. Importing the world's SHAPE is not importing a way to reach the
 // world: there is no provider here, no observer, and no function that could re-read the machine.
 import type { WorldState } from '../observation/world.ts'
@@ -160,6 +160,119 @@ export const CAPABILITIES = [
   'filesystem.write',     // create a file the plan specifies
   'filesystem.transform', // process a folder's observed contents into summary text
   'terminal.run',         // launch an allowlisted program
+  'gui',                  // visual interaction with the Windows desktop through the control core
+  /**
+   * Read what the browser has ALREADY rendered. Read-only, and deliberately the ONLY browser
+   * capability: navigation, clicking and typing each change something outside the process and each
+   * needs its own governance argument. Adding them here would be a claim, not an implementation.
+   *
+   * The name is `browser.read` rather than `browser.navigate` for the same reason - a plan that can
+   * only look cannot decide to go somewhere.
+   */
+  'browser.read',
+  /**
+   * Direct the browser to an EXPLICITLY PERMITTED destination.
+   *
+   * Separate from `browser.read` because it is a different kind of act: reading cannot move the
+   * machine, navigating can. Naming it separately is what lets the governance layer attach a
+   * destination policy and an approval requirement to navigation alone, instead of to the read that
+   * usually follows it.
+   *
+   * The capability is a REQUEST to be governed, not a grant. Where the browser may go is decided by
+   * `navigation-policy.ts`, which a plan cannot widen - so possessing this capability never implies
+   * permission to reach anywhere in particular.
+   */
+  'browser.navigate',
+  /**
+   * Activate ONE element on the current page, by selector.
+   *
+   * The step names a TARGET and nothing else. There is no `browser.eval`, and the absence is the
+   * governance: a tool running JavaScript supplied by a step could do anything a browser can do, and
+   * nothing after the fact could bound it. The in-page code is fixed inside the tool.
+   *
+   * Requires approval, and that approval is bound to browser + selector + the page's URL at the moment
+   * of declaration - so it cannot be spent on a different element, a different browser, or the same
+   * element after the page navigated.
+   */
+  'browser.click',
+  /**
+   * Set the value of ONE field on the current page, by selector.
+   *
+   * Separate from `browser.click` because typing is not activating: filling a field transmits nothing
+   * by itself. It still requires approval, because a field may well be the last step before something
+   * that does - and over-approximating costs a click, while under-approximating costs a disclosure.
+   */
+  'browser.fill',
+  /**
+   * Submit ONE form on the current page, by selector.
+   *
+   * The step where data can actually leave the machine, and so the one that most needs a human to have
+   * said yes. Deliberately NOT `browser.click` on a submit button: clicking a button that happens to
+   * submit is an accident of markup, while submitting a form is the act itself.
+   */
+  'browser.submit',
+  /**
+   * Modify the contents of a file that ALREADY EXISTS.
+   *
+   * Separate from `filesystem.write` because it is a different kind of act: writing creates
+   * something that was not there, editing DISCARDS something that was. That is why it declares its
+   * own effect and requires its own approval, and why `write` refusing to overwrite is not a
+   * limitation to work around - it is the correct behaviour for the wrong capability.
+   *
+   * Without this, no software-development mission is possible: observe -> change -> execute ->
+   * verify has no middle step.
+   */
+  'filesystem.edit',
+  /**
+   * Restore a file to the content it had before the last edit, from the backup `filesystem.edit`
+   * wrote.
+   *
+   * Separate from `filesystem.edit` because restoring OVERWRITES whatever is there now - possibly a
+   * change this mission never made. That is a different consequence from "replace a string I told
+   * you about", and folding it into the edit capability would let that capability destroy work it had
+   * not seen. It declares its own effect and its own approval.
+   */
+  'filesystem.rollback',
+  /**
+   * Write content produced by an EARLIER STEP of this same mission into a file.
+   *
+   * Separate from `filesystem.write` because the CONTENT comes from a different place. `write` takes
+   * its bytes from the plan; this takes them from `ctx.prior` - from what an observation actually
+   * found. That is the difference between "record what the page said" and "record what you believe the
+   * page said", and the second is not a capability difference but a correctness one.
+   *
+   * Two registrations cannot both claim `filesystem.write`: the executor refuses an ambiguous
+   * capability rather than guessing, which is why this exists rather than one of them over-claiming.
+   * Like `write`, it creates something that was not there and refuses to overwrite, so it declares no
+   * effect and needs no approval.
+   */
+  'filesystem.stage',
+  /**
+   * Find files by name or by content, under the workspace root.
+   *
+   * The one READ-ONLY capability here that has no effect at all. It is listed separately because
+   * without it there is no way to express "find the config" - every other capability needs a path,
+   * and a plan cannot invent one. Reading a filename does not change the world, so it requires no
+   * approval, and saying so here is what stops a search being treated as consequential.
+   */
+  'filesystem.search',
+  /**
+   * Duplicate a file to a destination that must NOT already exist.
+   *
+   * Additive, and therefore effect-free: the source is not modified and an existing destination is
+   * refused rather than overwritten. That refusal is not a gap to work around - overwriting is the
+   * job of `filesystem.edit`, which has a backup, a `delete` effect and its own approval.
+   */
+  'filesystem.copy',
+  /**
+   * Relocate a file: the destination gains it and the source location no longer has it.
+   *
+   * The only one of the four operations that can DESTROY something existing, and so the only one that
+   * declares a `delete` effect on the source and requires a human approval. Rename is this capability
+   * with a destination in the same folder, not a separate one - two capabilities for one act would
+   * mean two approval paths for the same consequence.
+   */
+  'filesystem.move',
 ] as const
 
 export type Capability = (typeof CAPABILITIES)[number]
@@ -190,7 +303,34 @@ export interface PlanProposal {
    * emitted a fixed recipe with no basis, which is a plan that happens to be right.
    */
   readonly basis: PlanBasis
+  /**
+   * WHAT THE OBJECTIVE REQUIRES, CHECKABLY.
+   *
+   * `expectedResult` above says what "done" means in the user's words. These say it in a form a
+   * deterministic evaluator can decide, by naming conditions that existing `Evidence` kinds can
+   * establish.
+   *
+   * Required in the sense that matters: a proposal that omits it compiles to a mission that cannot
+   * report success, because an objective nobody stated in checkable terms is an objective nobody
+   * checked. That is the intended behaviour, not a defect to be worked around, and it is why this
+   * is optional at the type level - so that the refusal lands at `isMissionSuccessful` as
+   * `unproven` rather than as a compiler error that would be bypassed by a hand-built mission.
+   *
+   * A planner that cannot express its objective in this vocabulary MUST refuse via `no(...)`
+   * rather than emit a plan with an empty list. Declaring `[]` is the same as declaring nothing, and
+   * that is the point: an absent claim must not be expressible as a satisfied one.
+   */
+  readonly objectivePostconditions?: readonly ObjectivePostcondition[]
 }
+
+/**
+ * Re-exported rather than redeclared, for one definition of the objective's requirements.
+ *
+ * Two structurally-identical postcondition types would be two things to keep in step, and the drift
+ * failure is a proposal that declares one thing while the mission checks another - which would make
+ * the verdict depend on which file a reader happened to open.
+ */
+export type { ObjectivePostcondition } from '../mission-engine/state.ts'
 
 /**
  * Re-exported so the compiler and the mission state can share ONE definition of the basis.
@@ -270,6 +410,8 @@ export type PlanResult =
  */
 export type PlanFailure =
   | 'not-understood'
+  /** A refusal whose reason is a template placeholder, not prose. See `parse.ts`. */
+  | 'meaningless-refusal'
   | 'unsupported'
   | 'insufficient-info'
   | 'observation-missing'
@@ -293,6 +435,23 @@ export interface PlanContext {
    * constraint, it is a preference.
    */
   readonly outputRoot: string
+
+  /**
+   * An EXPLICIT output FILE NAME, when the caller has already decided what the artefact is called.
+   *
+   * `outputRoot` says WHERE; this says WHAT IT IS CALLED, and it is a separate field for the same
+   * reason `outputRoot` exists: a name the recipe invents from the objective is a guess, and a
+   * mission that quietly writes `contents.txt` when the caller asked for `my-notes.txt` has answered
+   * a question nobody asked.
+   *
+   * Optional, and honoured ONLY by recipes that read it. Absent it, every recipe behaves exactly as
+   * it did before, which is what keeps this from becoming a change to the general planner rather
+   * than to one workflow.
+   *
+   * Supplying one does not widen anything. The value is still a BARE NAME validated at the recipe,
+   * still re-validated by the tool that writes, and still constrained to lie inside `outputRoot`.
+   */
+  readonly outputFileName?: string
   /** Injected so a planner can be deterministic in tests and dated later. */
   readonly now: () => number
 

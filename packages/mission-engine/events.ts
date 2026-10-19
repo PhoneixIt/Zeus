@@ -15,7 +15,7 @@
  * across processes is guesswork.
  */
 
-import type { Evidence, ExecutionMode, MissionState, StepOutcome, PlanInvalidation } from './state.ts'
+import type { Evidence, ExecutionMode, MissionState, ObjectiveVerdict, StepOutcome, PlanInvalidation } from './state.ts'
 
 export type ExecutionEvent =
   /** The executor began. Carries the resolved plan shape so the trail starts complete. */
@@ -261,7 +261,22 @@ export interface ExecutionRecord {
   readonly finishedAt?: number
   readonly events: readonly ExecutionEvent[]
   readonly finalState: MissionState
+  /**
+   * Did the mission achieve the USER'S OBJECTIVE.
+   *
+   * Not "did every step run" - that is `isComplete`, and conflating the two is how a mission that
+   * summarised one file out of ten reported success. Both conditions must hold, and this field is
+   * the conjunction.
+   */
   readonly complete: boolean
+  /**
+   * WHAT THE EVIDENCE SAID ABOUT THE OBJECTIVE, kept beside `complete` rather than inside it.
+   *
+   * A single boolean cannot distinguish "we checked and it is false" from "we had no way to check",
+   * and a reader who cannot tell those apart will eventually read the second as the first - or worse,
+   * as a pass. The verdict is retained so the difference survives into every report.
+   */
+  readonly objective: ObjectiveVerdict
   /** Convenience index: every step id that reached a verified outcome, with its evidence. */
   readonly verified: Readonly<Record<string, Evidence>>
 }
@@ -272,6 +287,18 @@ export interface ExecutionSummary {
   objective: string
   finalState: MissionState
   complete: boolean
+  /**
+   * The objective verdict, carried into the summary.
+   *
+   * Named `objectiveVerdict` rather than `objective` because `objective` above is the prose goal, and
+   * overloading one name with "what was asked" and "whether it was achieved" is the confusion this
+   * contract exists to end.
+   *
+   * An audit view that shows only `complete: false` cannot answer the question an auditor actually
+   * has, which is whether the system KNEW it had failed or merely had nothing to check. Both render
+   * identically as `false` and they are not the same.
+   */
+  objectiveVerdict: ObjectiveVerdict
   stepsRun: number
   toolsUsed: readonly string[]
   results: readonly { stepId: string; ok: boolean; summary: string }[]
@@ -315,6 +342,7 @@ export function summarize(r: ExecutionRecord): ExecutionSummary {
     objective: started && started.type === 'mission-started' ? started.objective : '(unknown)',
     finalState: r.finalState,
     complete: r.complete,
+    objectiveVerdict: r.objective,
     stepsRun: pick((e) => e.type === 'step-started').length,
     toolsUsed: pick((e) => e.type === 'tool-selected').map((e) => (e as { selected: string }).selected),
     results: pick((e) => e.type === 'tool-returned').map((e) => ({

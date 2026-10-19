@@ -50,9 +50,62 @@ namespace PortAiOperator
 
         public static IntPtr Handle { get { return form == null ? IntPtr.Zero : form.Handle; } }
 
-        public static void Start()
+public static void Start() { Start(false); }
+
+        /// <summary>
+        /// Start the panel, ignoring the display preference.
+        ///
+        /// THE ESCAPE HATCH MUST EXIST WHEN IT IS NEEDED.
+        ///
+        /// The panel is suppressed by default because a permanently visible overlay reports
+        /// nothing on an ordinary day. But the interface tells a person to "click RELEASE" when
+        /// the guard is holding input, and a button that is not on screen at that moment is not
+        /// a button. Two tests guard exactly this: "the release control is a real, visible, fixed
+        /// region" and "the indicator publishes a visible, clickable control". Both failed the first
+        /// time the panel was simply switched off, which is the correct outcome - the fix is not to
+        /// restore the permanent overlay, it is to summon the panel exactly when a human has to
+        /// act.
+        /// </summary>
+        public static void EnsureStarted() { Start(true); }
+
+        static void Start(bool force)
         {
             if (form != null) return;
+            // THE ON-SCREEN PANEL IS OPTIONAL; THE GUARD IS NOT.
+            //
+            // This panel is a diagnostic surface, not a safety one. It reported the guard's state
+            // while sitting permanently on top of the user's screen, showing a paused state on an
+            // ordinary day when nothing was paused and input was permitted. It was asked to stop
+            // appearing, and that is a reasonable request: an overlay that is always on screen is
+            // not reporting anything.
+            //
+            // What is deliberately NOT removed is the guard itself, the indicator's data, or the
+            // ability to bring the panel back. A person can decide they want no overlay; nobody
+            // should be able to decide the takeover detection does not exist, because that is the
+            // mechanism which stops this system typing into a window someone is using.
+            //
+            // So the default is hidden and AIOS_INDICATOR=1 brings it straight back. Hiding it
+            // costs the at-a-glance state; the state is still read live by the interface and is
+            // surfaced in the chat the moment it actually blocks something, which is the only time
+            // it needed to be unmissable.
+            // SHOWN ONLY WHEN EXPLICITLY ASKED FOR. Inverting the sense of this check matters: the
+            // first version read "show unless the variable is 0", which meant the default depended on
+            // whether a launcher script happened to set the variable. Started any other way, the gold
+            // bar came straight back - which was observed, not theorised.
+            //
+            // "No preference means hidden" has to be the default HERE rather than in a wrapper,
+            // because the operator host is started from several places and only one of them is the
+            // launcher. AIOS_INDICATOR=1 brings the panel back.
+            string show = Environment.GetEnvironmentVariable("AIOS_INDICATOR");
+            bool wanted = string.Equals(show, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(show, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(show, "on", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(show, "yes", StringComparison.OrdinalIgnoreCase);
+            if (!force && !wanted)
+            {
+                Step = "hidden by default; set AIOS_INDICATOR=1 to show it";
+                return;
+            }
             var t = new Thread(Run);
             t.IsBackground = true;
             t.Name = "operator-indicator";

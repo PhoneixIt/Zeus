@@ -265,6 +265,35 @@ namespace PortAiOperator
         public static long MouseUntaggedSeen = 0;
         public static long LastMouseExtra = 0;
         public static long SentinelValue = 0;
+
+        // ---------------------------------------------------------------------------------
+        // A2 DIAGNOSTIC - M19, ADR 0004. OBSERVATION ONLY. IT CHANGES NO BEHAVIOUR.
+        //
+        // WHY THIS EXISTS
+        //
+        // After the low-32 comparison was added, a real operator click produced
+        // LastMouseExtra == (uint)Guard.Sentinel while MouseTaggedSeen stayed 0 - which is
+        // self-contradictory, because that equality IS the comparison. Two readings of those
+        // numbers lead to opposite conclusions: either the running host is not executing the
+        // code in this file, or the cast does not produce what it appears to. Reading them
+        // off /hooks and guessing which is true is exactly the mistake this repository has
+        // been burned by before, so both operands are recorded AT THE COMPARISON SITE.
+        //
+        // The comparison itself is untouched. If it is true, `MouseCompareHit` increments.
+        // If `MouseCompareHit` stays 0 while MouseCompareObserved == MouseCompareLow32, then
+        // the source is not what is running, which is a different defect with a different fix.
+        // ---------------------------------------------------------------------------------
+
+        /// The left operand of the sentinel comparison, captured at the comparison site.
+        public static long MouseCompareObserved = 0;
+        /// The right operand (the sentinel truncated to 32 bits), captured at the same point.
+        public static long MouseCompareLow32 = 0;
+        /// How many times the comparison itself evaluated true.
+        public static long MouseCompareHit = 0;
+        /// A2 DIAGNOSTIC: incremented as the FIRST statement of MouseProc, before anything else.
+        public static long MouseProcEntry = 0;
+        /// A2 DIAGNOSTIC: the exception that ended the last MouseProc invocation, if any.
+        public static volatile string MouseProcError = "";
         public static int LastMouseX = 0;
         public static int LastMouseY = 0;
         public static long PanelReleaseSeen = 0;      // a click landed in the region
@@ -310,6 +339,44 @@ namespace PortAiOperator
         public static int ProbeSent = 0;
         public static int ProbeLastError = 0;
         public static int ProbeStructSize = 0;
+
+        // ---------------------------------------------------------------------------------
+        // A1 DIAGNOSTIC - M19, ADR 0004. OBSERVATION ONLY. IT CHANGES NO BEHAVIOUR.
+        //
+        // WHAT THIS MEASURES
+        //
+        // Whether `dwExtraInfo` survives SendInput on the KEYBOARD path. The mouse path is
+        // already known to lose it: `GOVERNANCE-CONTRACT.md` records 0 tagged vs 5,476
+        // untagged, and the M19 experiment reproduced 0 tagged of 3,802 mouse events with the
+        // value arriving as the low 32 bits only. Whether the keyboard loses it too is
+        // UNKNOWN, and the two possibilities have opposite consequences - so it is measured
+        // rather than assumed.
+        //
+        // WHY THE EXISTING PROBE IS THE RIGHT INSTRUMENT
+        //
+        // SendProbe() already emits VK_F24 down+up carrying `dwExtraInfo = Guard.Sentinel`, on
+        // every `/hooks` call. VK_F24 is used by no application and no chord. The probe branch
+        // below swallows it at the early return, so it reaches no app and cannot reach
+        // HumanTakeover. This measurement therefore introduces NO new input of any kind - it
+        // only records a value the hook was already receiving and discarding.
+        //
+        // WHY A NEW FIELD AND NOT THE EXISTING COUNTERS
+        //
+        // There is no keyboard tagged counter. `Guard.NoteOperatorEvent()` at the sentinel
+        // comparison cannot be used: the injector increments the same counter directly, so it
+        // cannot distinguish "the hook recognised the sentinel" from "the injector counted its
+        // own send". And `LastMouseExtra` is a last-EVENT register - it is overwritten by every
+        // event, which is exactly why the earlier mouse reading is weaker evidence than it
+        // looked. This records the value AT THE POINT OF RECOGNITION instead.
+        //
+        // This changes no comparison, no counter, no gate and no state machine. It is
+        // instrumentation, and it is removable in a single revert.
+        // ---------------------------------------------------------------------------------
+
+        /// The `dwExtraInfo` value the hook actually received on the last liveness probe event.
+        public static long ProbeExtraSeen = 0;
+        /// Whether that received value was exactly `Guard.Sentinel`.
+        public static volatile bool ProbeExtraMatchesSentinel = false;
 
         /// Detach the keyboard hook while LEAVING KeyboardHookInstalled true.
         ///
@@ -601,7 +668,14 @@ namespace PortAiOperator
              .Append(",\"probeSent\":").Append(ProbeSent)
              .Append(",\"probeLastError\":").Append(ProbeLastError)
              .Append(",\"probeStructSize\":").Append(ProbeStructSize)
+             .Append(",\"probeExtraSeen\":").Append(ProbeExtraSeen)
+             .Append(",\"probeExtraMatchesSentinel\":").Append(ProbeExtraMatchesSentinel ? "true" : "false")
              .Append(",\"lastMouseExtra\":").Append(LastMouseExtra)
+             .Append(",\"mouseCompareObserved\":").Append(MouseCompareObserved)
+             .Append(",\"mouseCompareLow32\":").Append(MouseCompareLow32)
+             .Append(",\"mouseCompareHit\":").Append(MouseCompareHit)
+             .Append(",\"mouseProcEntry\":").Append(MouseProcEntry)
+             .Append(",\"mouseProcError\":\"").Append(MouseProcError.Replace("\"", "'")).Append("\"")
              .Append(",\"sentinelValue\":").Append(SentinelValue)
              .Append(",\"mouseEventsSeen\":").Append(MouseEventsSeen)
              .Append(",\"mouseTaggedSeen\":").Append(MouseTaggedSeen)
@@ -690,6 +764,12 @@ namespace PortAiOperator
                     if (probeOutstanding && k.vkCode == VK_F24)
                     {
                         probeOutstanding = false;
+                        // A1 DIAGNOSTIC (ADR 0004). Record what arrived, BEFORE the early return,
+                        // because the return is what has been hiding this from every counter so far:
+                        // the probe is swallowed here and so never reached the sentinel comparison
+                        // below. Observation only - the next line is unchanged.
+                        ProbeExtraSeen = k.dwExtraInfo.ToInt64();
+                        ProbeExtraMatchesSentinel = (k.dwExtraInfo == Guard.Sentinel);
                         return new IntPtr(1);   // swallowed: the probe must never reach an app
                     }
                     bool isDown = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
@@ -858,11 +938,47 @@ namespace PortAiOperator
                     int msg = (int)wParam;
                     MSLLHOOKSTRUCT m = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
 
+                    Interlocked.Increment(ref MouseProcEntry);
                     Interlocked.Increment(ref MouseEventsSeen);
                     LastMouseX = m.x; LastMouseY = m.y;
                     LastMouseExtra = m.dwExtraInfo.ToInt64();
-                    if (m.dwExtraInfo == Guard.Sentinel)
+
+                    // THE MOUSE PATH COMPARES THE LOW 32 BITS. THE SENTINEL ITSELF IS UNCHANGED.
+                    //
+                    // SendInput truncates MOUSEINPUT.dwExtraInfo to 32 bits on the way to
+                    // MSLLHOOKSTRUCT, but delivers the full 64-bit KEYBDINPUT.dwExtraInfo to
+                    // KBDLLHOOKSTRUCT. Measured on this host with two independent sentinels:
+                    //
+                    //   sent 0x41494F534C4C434B -> mouse hook saw 0x4C4C434B (low 32 bits)
+                    //   sent 0x11223344AABBCCDD -> mouse hook saw 0xAABBCCDD (low 32 bits)
+                    //
+                    // So the full 64-bit comparison below could never be true, and every operator
+                    // click fell through to the human branch - crediting SYNTHESIZED input to the
+                    // HUMAN and raising a false HUMAN_TAKEOVER that halted the operator's own action.
+                    //
+                    // The sentinel is NOT weakened: it stays 64-bit. Only the comparison acknowledges
+                    // what Windows actually delivers. The keyboard path is untouched and still compares
+                    // the full value.
+                    //
+                    // This comparison FAILS SAFE: if the truncation ever behaved differently, our own
+                    // injection would simply not match - which is the current safe state, not a new one.
+                    long observedExtra = m.dwExtraInfo.ToInt64();
+                    // `(uint)Guard.Sentinel` is NOT the truncation it looks like: `Sentinel` is an IntPtr,
+                    // so that cast invokes IntPtr's user-defined explicit conversion, whose own
+                    // overflow context this `unchecked` does not govern - it throws
+                    // OverflowException on a 64-bit sentinel. That exception unwound the whole
+                    // handler from this line down, so the sentinel comparison never ran AND neither
+                    // did the human-takeover branch beneath it: the hook was silently deaf to every
+                    // mouse event after the counters. `(long)` first (never throws), then a plain
+                    // arithmetic truncation that `unchecked` really does govern.
+                    long sentinelLow32 = unchecked((uint)(long)Guard.Sentinel);
+                    // A2 DIAGNOSTIC (ADR 0004): record both operands AT the comparison, and
+                    // count the comparison's own result. The next line is unchanged.
+                    MouseCompareObserved = observedExtra;
+                    MouseCompareLow32 = sentinelLow32;
+                    if (observedExtra == Guard.Sentinel.ToInt64() || observedExtra == sentinelLow32)
                     {
+                        MouseCompareHit++;
                         Interlocked.Increment(ref MouseTaggedSeen);
                         Guard.NoteOperatorEvent();
                         // An operator-OWNED click in the release region is refused explicitly.
@@ -905,25 +1021,69 @@ namespace PortAiOperator
                             LastChordOutcome = LastPanelOutcome;
                             LastChordAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                             Guard.releasePending = true;
+                            // ACT ON IT HERE, NOW.
+                            //
+                            // This used to only set `releasePending` and wait for
+                            // `DrainPending()`, which runs when an HTTP request arrives. That is
+                            // circular: while a takeover is pending every input route is refused
+                            // BECAUSE permission is blocked, so the request that would drain the
+                            // release never arrives. The human did the one thing only a human can do
+                            // - clicked a control with real hardware, proven by the absence of
+                            // LLMHF_INJECTED above - and the system declined to act on it. 196 chord
+                            // presses were observed on this host and none of them took effect.
+                            //
+                            // Releasing here does NOT grant the operator permission: `Guard.Release`
+                            // clears the takeover and moves to RESUMING, which is not a state that
+                            // may inject, so the operator must still be armed explicitly afterwards.
+                            // The synthetic-click refusal above is untouched, so nothing here can be
+                            // reached without real hardware.
+                            Guard.Release("release panel: genuine hardware click in the release region");
                             return new IntPtr(1);
                         }
 
-                        if ((m.flags & LLMHF_INJECTED) != 0) Guard.NoteOtherInjected();
+                        bool isInjected = (m.flags & LLMHF_INJECTED) != 0;
+                        if (isInjected) Guard.NoteOtherInjected();
                         bool isButton = msg != WM_MOUSEMOVE;
                         if (isButton)
                         {
-                            Guard.NoteHumanEvent();
-                            Guard.HumanTakeover("human mouse button event (msg=0x" + msg.ToString("X") + ")");
+                            if (isInjected)
+                            {
+                                Guard.HumanTakeover("injected mouse button event that is not the operator's sentinel - untrusted input, mission halted");
+                            }
+                            else
+                            {
+                                Guard.NoteHumanEvent();
+                                Guard.HumanTakeover("human mouse button event (msg=0x" + msg.ToString("X") + ")");
+                            }
                         }
                         else
                         {
                             Interlocked.Increment(ref MouseUntaggedSeen);
                         // Movement: only a displacement beyond the jitter threshold
-                            // counts, measured from where the operator last put the
-                            // cursor. Drift below it is a hand at rest.
-                            if (lastX < 0) { lastX = m.x; lastY = m.y; }
+                            // The baseline is WHERE THE MOUSE WAS, and it advances on every
+                            // untagged event.
+                            //
+                            // `lastX/lastY` used to advance ONLY in `MoveAbsolute` - that is, only
+                            // when the OPERATOR moved the cursor. That made the jitter threshold
+                            // meaningless for a human: once the human had moved the mouse at all, every
+                            // later movement was measured against a baseline describing somewhere
+                            // the mouse had not been. It broke the one workflow that is supposed to
+                            // work. Releasing a takeover requires the human to CLICK the panel, which
+                            // requires MOVING the mouse there; the baseline was still wherever the
+                            // operator last put the cursor, so the next twitch read as a huge
+                            // displacement, fired HumanTakeover, and re-latched the takeover just
+                            // released. Measured on this host: the cursor sat at (517,817) while the
+                            // release panel is at (1463,112).
+                            //
+                            // The threshold distinguishes "a hand at rest" from "the human took the
+                            // wheel", and that is only meaningful relative to the PREVIOUS position, so
+                            // the baseline has to move with the mouse. This does not weaken the check:
+                            // the first movement after the operator positions the cursor is still
+                            // measured against that position and still trips the threshold. It only
+                            // stops a later movement being judged against a stale one.
                             int dx = m.x - lastX, dy = m.y - lastY;
-                            if (dx * dx + dy * dy > JITTER_PX * JITTER_PX)
+                            lastX = m.x; lastY = m.y;
+                            if (!isInjected && dx * dx + dy * dy > JITTER_PX * JITTER_PX)
                             {
                                 Guard.NoteHumanEvent();
                                 Guard.HumanTakeover("human mouse moved " + (int)Math.Sqrt(dx * dx + dy * dy) + "px from the operator's cursor");
@@ -931,7 +1091,11 @@ namespace PortAiOperator
                         }
                     }
                 }
-                catch { }
+                // A2 DIAGNOSTIC (ADR 0004). This handler silently swallowed every exception for its
+                // entire life, which is why a fault between the counters and the sentinel comparison
+                // looked exactly like "the comparison is false". The swallow itself is NOT changed -
+                // a low-level hook must never propagate - but the fact is now visible, not inferred.
+                catch (Exception ex) { MouseProcError = ex.GetType().Name + ": " + ex.Message; }
             }
             return CallNextHookEx(mouseHook, nCode, wParam, lParam);
         }

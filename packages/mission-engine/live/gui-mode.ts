@@ -52,10 +52,17 @@ export function latestAudit(): ActionAudit | null {
  * control core makes internally, made here so the refusal is RECORDED as an outcome rather
  * than appearing as a mysterious failure.
  */
-export async function performAuditedClick(src: RecordSource, ids: {
+export interface PerformAuditedClickOptions {
   missionId: string
   stepId: string
-}): Promise<GuiOutcome> {
+  /** Optional target coordinates. Falls back to CONTROLLED_TARGET if omitted. */
+  targetX?: number
+  targetY?: number
+}
+
+export async function performAuditedClick(src: RecordSource, ids: PerformAuditedClickOptions): Promise<GuiOutcome> {
+  const x = ids.targetX ?? CONTROLLED_TARGET.x
+  const y = ids.targetY ?? CONTROLLED_TARGET.y
   const audit = await auditAction(
     src,
     {
@@ -63,14 +70,12 @@ export async function performAuditedClick(src: RecordSource, ids: {
       stepId: ids.stepId,
       executionMode: 'gui',
       actionType: 'click-absolute',
-      target: `screen(${CONTROLLED_TARGET.x},${CONTROLLED_TARGET.y})`,
+      target: `screen(${x},${y})`,
       path: 'mouse',
       settleMs: 400,
     },
     async () => {
-      // Unwrap the HTTP envelope: the audit must record what the control layer SAID, not the
-      // transport it arrived in.
-      const r = await src.raw('/click-absolute')
+      const r = await src.raw('/click-absolute', { body: { x, y } })
       return r.body ?? {}
     },
   )
@@ -80,7 +85,7 @@ export async function performAuditedClick(src: RecordSource, ids: {
     audit,
     said: audit.result === 'refused-by-guard'
       ? `the control layer refused: ${audit.blockingReason ?? 'no reason given'}`
-      : `the control layer returned ok for a click at screen(${CONTROLLED_TARGET.x},${CONTROLLED_TARGET.y})`,
+      : `the control layer returned ok for a click at screen(${x},${y})`,
   }
 }
 
@@ -330,10 +335,14 @@ export function guiTool(src: RecordSource): Tool {
   return {
     name: 'controlled-click',
     mode: 'gui',
-    async run(ctx: ToolContext): Promise<ToolResult> {
+    async run(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+      const targetX = args.x as number | undefined
+      const targetY = args.y as number | undefined
       const out = await performAuditedClick(src, {
         missionId: ctx.missionId,
         stepId: ctx.stepId,
+        targetX,
+        targetY,
       })
       const a = out.audit
 

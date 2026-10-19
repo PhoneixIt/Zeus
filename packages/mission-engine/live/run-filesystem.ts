@@ -1,4 +1,4 @@
-/**
+﻿/**
  * The filesystem mission, with three negative controls.
  *
  *   step 1  cli         observe the real desktop, establishing that the machine is real
@@ -24,6 +24,7 @@ import {
   WORKSPACE, ensureWorkspace, filesystemVerifier, lyingFilesystemTool,
   teardownWorkspace, writeProbeTool,
 } from './filesystem-mode.ts'
+import { blockOnHost, hostAvailability } from './live-control.ts'
 import type { ControlSurface } from '../../governance/contract.ts'
 
 const INJECTION = ['type', 'click', 'doubleClick', 'move', 'key', 'pressKey', 'drag', 'scroll']
@@ -126,6 +127,12 @@ async function run(label: string, opts: {
 }
 
 // ---------------------------------------------------------------- runs
+
+// A missing prerequisite is not a failing control, and has to be said before anything runs. Without
+// this, an absent host fails the `observe-desktop` step, step 2 is never attempted, and the
+// assertions below throw a TypeError on a step with no result - which reads as a defect in the
+// filesystem path when nothing of the sort has happened.
+blockOnHost(await hostAvailability())
 
 const positive = await run('POSITIVE', {})
 const controlA = await run('CONTROL A: no verifier', { verifier: { verifies: () => false, async verify() { return { rejected: 'x' } } } as never })

@@ -50,6 +50,12 @@ export interface Permission {
    * relying on the emergency stop working.
    */
   readonly infrastructureHealthy: boolean
+  /** The UTC epoch millisecond timestamp of the last reliably detected human input event. */
+  readonly lastTakeoverAt?: number
+  /** True when a human takeover has been detected and input is suspended. */
+  readonly takeoverPending?: boolean
+  /** True when the emergency stop is latched and cannot be auto-cleared. */
+  readonly emergencyLatched?: boolean
 }
 
 export interface TargetIdentity {

@@ -30,6 +30,21 @@ const mission = (plan: Step[], over: Partial<Mission> = {}): Mission => ({
 
 const ok = { now, maxAttempts: 2 }
 
+/**
+ * The objective these unit missions actually declare.
+ *
+ * `existenceVerifier(['a'])` proves `file-exists` for path `a`, so "the artefact each step was
+ * responsible for is on disk" is the strongest thing this evidence honestly supports - and it is
+ * exactly what these missions were built to test (ordering, retries, fallback, halting). Declaring
+ * it states the real claim instead of leaving the objective unsaid, which would make every mission
+ * below unproven and would prove nothing about the executor at all.
+ *
+ * It is deliberately the weakest claim the evidence supports rather than the strongest one it could
+ * be stretched into: a stronger declaration here would be a declaration the fake verifier cannot
+ * actually establish, which is the same defect at one remove.
+ */
+const EXISTS_ALL = (ids: readonly string[]) => ids.map((id) => ({ kind: 'artifact-exists', path: id }) as const)
+
 // ================================================================ CANNOT MANUFACTURE
 
 test('NEGATIVE: a tool that ran and returned data, with NO verification, does NOT complete', async () => {
@@ -64,7 +79,17 @@ test('NEGATIVE: empty output does NOT become success', async () => {
   )
   const o = r.mission.plan[0].result!.outcome
   assert.equal(o.kind, 'legitimately-empty', 'it is a distinct outcome, not a success and not a failure')
-  assert.equal(r.record.complete, true, 'a genuinely empty result IS a legitimate completion')
+  // The STEP completed, honestly and without pretending anything was produced.
+  assert.equal(isComplete(r.mission), true, 'the step reached a legitimately-empty outcome, which is completion')
+  // The MISSION did not, and this is the assertion that carries the weight.
+  //
+  // A legitimately-empty step contributes no evidence - there is nothing to observe - so there is
+  // nothing from which an objective could be verified. Reporting success here would mean inferring
+  // the objective from the absence of a failure, which is precisely the inference this contract
+  // removes. The mission ran, did nothing, and is therefore UNPROVEN rather than successful.
+  assert.equal(r.record.complete, false, 'no evidence means the objective cannot be verified')
+  assert.equal(r.record.objective.kind, 'unproven', 'and it says which kind of not-successful this is')
+  assert.equal(r.record.finalState, 'failed', 'a mission that achieved nothing is not left in a terminal success state')
   // The distinction that matters: it must never read as "verified".
   assert.notEqual(o.kind, 'verified')
 })
@@ -162,7 +187,7 @@ test('NEGATIVE: the executor cannot inject - every input method refuses and is n
 
 test('happy path: ordered multi-step mission completes with evidence for each', async () => {
   const r = await execute(
-    mission([step('a'), step('b'), step('c')]),
+    mission([step('a'), step('b'), step('c')], { objectivePostconditions: EXISTS_ALL(['a', 'b', 'c']) }),
     {
       tools: router({ a: dataTool('a'), b: dataTool('b'), c: dataTool('c') }),
       verifier: existenceVerifier(['a', 'b', 'c']),
@@ -170,6 +195,7 @@ test('happy path: ordered multi-step mission completes with evidence for each', 
     },
   )
   assert.equal(r.record.complete, true)
+  assert.equal(r.record.objective.kind, 'satisfied', 'the objective was checked, not assumed from the steps')
   assert.equal(r.mission.state, 'complete')
   assert.deepEqual(Object.keys(r.record.verified).sort(), ['a', 'b', 'c'])
   const started = r.events.filter((e) => e.type === 'step-started').map((e) => (e as { stepId: string }).stepId)
@@ -220,7 +246,9 @@ test('an unknown dependency is detected BEFORE anything runs', async () => {
 
 test('dependencies on satisfied steps do not block', async () => {
   const r = await execute(
-    mission([step('a'), step('b', { dependsOn: ['a'] }), step('c', { dependsOn: ['a', 'b'] })]),
+    mission([step('a'), step('b', { dependsOn: ['a'] }), step('c', { dependsOn: ['a', 'b'] })], {
+      objectivePostconditions: EXISTS_ALL(['a', 'b', 'c']),
+    }),
     {
       tools: router({ a: dataTool('a'), b: dataTool('b'), c: dataTool('c') }),
       verifier: existenceVerifier(['a', 'b', 'c']),
@@ -234,7 +262,7 @@ test('dependencies on satisfied steps do not block', async () => {
 
 test('a transient failure is RETRIED and can then succeed', async () => {
   const r = await execute(
-    mission([step('a')]),
+    mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }),
     {
       tools: router({ a: failingTool('transient', 1) }),
       verifier: existenceVerifier(['a']),
@@ -242,6 +270,7 @@ test('a transient failure is RETRIED and can then succeed', async () => {
     },
   )
   assert.equal(r.record.complete, true, 'the second attempt succeeded')
+  assert.equal(r.record.objective.kind, 'satisfied', 'and the objective was verified from the evidence, not the attempt count')
   const retries = r.events.filter((e) => e.type === 'retry')
   assert.equal(retries.length, 1, 'and the retry is recorded')
 })
@@ -277,7 +306,7 @@ test('maxAttempts 1 means NO retry', async () => {
 test('emergency stop HALTS before the next step and is not overridable by a normal result', async () => {
   let stopped = false
   const r = await execute(
-    mission([step('a'), step('b')]),
+    mission([step('a'), step('b')], { objectivePostconditions: EXISTS_ALL(['a', 'b']) }),
     {
       tools: router({ a: dataTool(), b: dataTool() }),
       verifier: existenceVerifier(['a', 'b']),
@@ -349,10 +378,10 @@ test('an unavailable tool fails the step and does NOT silently fall through', as
 
 test('a declared fallback is used AND recorded as a fallback', async () => {
   const r = await execute(
-    mission([step('a', { tool: 'missing' })]),
+    mission([step('a', { tool: 'missing' })], { objectivePostconditions: EXISTS_ALL(['a']) }),
     { tools: router({}, dataTool('fallback')), verifier: existenceVerifier(['a']), control: fakeControl(), config: ok },
   )
-  assert.equal(r.record.complete, true)
+  assert.equal(r.record.complete, true, 'the fallback satisfied the declared objective, which the verifier then confirmed')
   const sel = r.events.find((e) => e.type === 'tool-selected')! as { fellBack: boolean; selected: string }
   assert.equal(sel.fellBack, true)
   assert.equal(sel.selected, 'fallback')
@@ -409,10 +438,29 @@ test('events are deterministic for identical inputs', async () => {
 
 test('the executor self-check agrees with the completion contract', async () => {
   const r = await execute(
-    mission([step('a')]),
+    mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }),
     { tools: router({ a: dataTool() }), verifier: existenceVerifier(['a']), control: fakeControl(), config: ok },
   )
   const violations = r.events.filter((e) => e.type === 'integrity-violation')
   assert.deepEqual(violations, [], 'no disagreement between executor belief and the contract')
   assert.equal(r.record.complete, isComplete(r.mission), 'record and mission agree')
+  assert.equal(r.record.objective.kind, 'satisfied', 'and the objective was independently verified')
+})
+
+test('CONTROL: the step record and the objective verdict are genuinely SEPARATE questions', async () => {
+  // If these two ever collapse back into one another, the original defect returns silently. The
+  // pair below differs only in what the plan declared about its objective, and produces different
+  // answers to "was this successful?" while producing identical step records.
+  const identical = { tools: router({ a: dataTool('a') }), verifier: existenceVerifier(['a']), control: fakeControl(), config: ok }
+  const declared = await execute(mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }), identical)
+  const undeclared = await execute(mission([step('a')]), identical)
+
+  assert.deepEqual(
+    Object.keys(declared.record.verified).sort(), Object.keys(undeclared.record.verified).sort(),
+    'the same evidence was produced either way',
+  )
+  assert.equal(declared.record.complete, true, 'declared and proven -> success')
+  assert.equal(undeclared.record.complete, false, 'undeclared -> not success, on identical evidence')
+  assert.equal(undeclared.record.objective.kind, 'unproven')
+  assert.equal(undeclared.record.finalState, 'failed', 'and the terminal state agrees')
 })

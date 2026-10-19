@@ -134,14 +134,60 @@ def _step_schema() -> dict:
 
 ROOT_SCHEMA = {
     "required": (),
-    "optional": ("constraints", "steps", "expectedResult", "refusal"),
+    # `steps` is declared FIRST on purpose.
+    #
+    # Key order in JSON carries no meaning - `parse.ts` does not read it, and the compiler does not
+    # depend on it - so this is purely about what the decoder is OFFERED first, and `_key_viable`
+    # iterates these keys in order. With `constraints` first, MEASURED, the model spent its entire
+    # budget on it: `["read-only","write-only","read-only","write-only",...]` until ARRAY_CAP, then a
+    # trailing comma the grammar could not continue past, and the run ended in `mode=AFTER_VALUE` with
+    # no plan at all. Offering the work before the commentary is a change to what the model is SHOWN
+    # and to nothing else.
+    "optional": ("steps", "expectedResult", "constraints", "refusal"),
     "fields": {
-        "constraints": (ARR, (STR,)),
         "steps": (ARR, (OBJ, _step_schema())),
         "expectedResult": (STR,),
+        "constraints": (ARR, (STR,)),
         "refusal": (STR,),
     },
 }
+
+# Schema arrays that may NOT be emitted empty.
+#
+# WHY THIS EXISTS, AND WHY IT IS A LIST RATHER THAN A SCHEMA FLAG
+#
+# `parse.ts` rejects `steps: []` outright - "the plan has zero steps, which is not a plan" - and it
+# does so BEFORE anything executes. That is the right behaviour. But the grammar permitted the empty
+# array, so constrained generation could spend a whole plan budget producing output the parser was
+# always going to discard: the model is steered away from a legal document for reasons of its own,
+# then the result is rejected for a reason it could not have known. Constrained decoding is only
+# worth having when the constraint it enforces is one the system actually holds.
+#
+# `steps` is named here rather than carrying a `min_items` in its schema tuple because `_Frame`
+# stores the array's ELEMENT spec (`elem`), not the tuple, so a third tuple element would never reach
+# the frame without widening `_Frame.__slots__` and its clone. The frame already knows the key its
+# array belongs to (`open_key`), so that is what this checks - and only for schema-driven arrays,
+# never for the free-form ones inside `args`.
+#
+# `steps` is deliberately NOT made a required key. A plan that refuses rather than plans is a valid
+# outcome the parser understands, and requiring `steps` would make `{"refusal": "..."}` inexpressible
+# - turning a correctness improvement into a new refusal.
+#
+# `dependsOn` stays freely empty-able: `"dependsOn": []` is the normal first step, and an earlier
+# version of this grammar refused it, which made the most common field in the schema the one the
+# grammar could not express.
+# Field names that belong to the STEP object and may never appear inside a free-form object.
+#
+# MEASURED: the model wrote `dependsOn`, `rationale`, `verification`, `expectedResult` and
+# `onFailure` INSIDE `args`, three times over, because `args` is free-form and nothing said otherwise.
+# A duplicate key is equally unrepresentable in well-formed JSON that a parser will read the way a
+# human reads it - `{"a":1,"a":2}` has two defensible meanings and no standard resolution - so a plan
+# carrying one is not a plan anybody can check.
+#
+# The list is the STEP schema's own key set, so it cannot drift from the schema it protects.
+RESERVED_STEP_KEYS = frozenset(_step_schema()["required"]) | frozenset(_step_schema()["optional"])
+
+NON_EMPTY_ARRAY_KEYS = frozenset({"steps"})
 
 WS = (0x20, 0x09, 0x0A, 0x0D)
 _HEX = "0123456789abcdefABCDEF"
@@ -367,7 +413,7 @@ class PlanGrammar:
             out.add(0x3A)
         elif m == "VALUE":
             top = s.stack[-1]
-            if top.kind in ("arr", "free_arr") and top.count == 0:
+            if top.kind in ("arr", "free_arr") and self._array_may_close(top):
                 out.add(0x5D)
             if top.kind == "free_obj" and not top.seen:
                 out.add(0x7D)
@@ -397,11 +443,36 @@ class PlanGrammar:
     # ---------------------------------------------------------------- key viability
 
     def _key_viable(self, s: State) -> list:
-        """Field names this object could still accept, given what has already been used."""
+        """
+        Field names this object could still accept, given what has already been used.
+
+        AN OPTIONAL FIELD IS ONLY OFFERED ONCE EVERY REQUIRED ONE IS PRESENT.
+
+        MEASURED, and this was a real dead end rather than a style point. A step carries one optional
+        key, `effect`. The model emitted `effect` early - before `dependsOn`, `rationale`,
+        `verification` and `onFailure` - and then could not escape: `effect` completed, so the only
+        byte the grammar would take was `}`, but closing the STEP object is illegal while required
+        fields are missing, and no required key was offered because the grammar was waiting inside a
+        nested object it had already finished. Generation aborted with "every permitted token was
+        rejected", 610 candidates tried. The plan was unterminated and the parser refused it.
+
+        Nothing about the model was wrong in the sense that mattered here, and nothing about the
+        requirement was wrong either: the step really did still owe four required fields. The defect
+        was that the grammar let it commit to the optional one first and offered no way back. Ordering
+        optional fields last removes the trap without removing the requirement - a required key is
+        offered at EVERY position, so this can never withhold one, and `_can_close` still refuses to
+        close an object whose required fields are absent.
+        """
         f = s.stack[-1]
         if f.kind not in ("obj", "root") or f.schema is None:
             return []
-        return [k for k in f.schema["fields"] if k not in f.seen]
+        required = f.schema.get("required") or ()
+        fields = f.schema["fields"]
+        required_done = all(k in f.seen for k in required)
+        return [
+            k for k in fields
+            if k not in f.seen and (k in required or required_done)
+        ]
 
     def _key_chars(self, s: State) -> set:
         """
@@ -413,6 +484,22 @@ class PlanGrammar:
         """
         buf = s.key_buf
         out = set()
+        f = s.stack[-1]
+        if f.kind == "free_obj":
+            # A free-form object's vocabulary is OPEN, so a prefix cannot be filtered down to the
+            # names that are still available - almost every letter begins some plausible name. What
+            # CAN be decided is the exact-match case, and it is the same rule the schema branch
+            # applies: once `buf` IS a name that may not be used here, the key has to be closed.
+            # `allowed_bytes` always offers the closing quote in IN_KEY, so this narrows the mask
+            # without ever dead-ending the decoder.
+            #
+            # An earlier version filtered every character whose PREFIX appeared among the reserved
+            # names, and blocked `deep`, `count` and `nested` because `d`, `c` and `n` also begin
+            # `dependsOn`, `capability` and `intent`. Restricting the vocabulary of a free-form
+            # object is not this grammar's job - the tool decides what its operands are.
+            if buf and (buf in f.seen or buf in RESERVED_STEP_KEYS):
+                return set()
+            return set(_KEY_CHARS)
         for name in self._key_viable(s):
             if name.startswith(buf) and len(name) > len(buf):
                 out.add(name[len(buf)])
@@ -476,8 +563,23 @@ class PlanGrammar:
                 key = s.key_buf
                 top = s.stack[-1]
                 if top.kind == "free_obj":
-                    # A FREE-FORM object takes ANY key. This is the branch that lets `args` carry a
-                    # tool's operands - and it is why a tool's expectations are not encoded here.
+                    # A FREE-FORM object takes any key, but not EVERY key.
+                    #
+                    # Two rules, both about the object being CHECKABLE rather than about the plan
+                    # being valid:
+                    #   - a key may not repeat. A duplicate has two defensible readings and no
+                    #     standard resolution, so a plan carrying one cannot be verified.
+                    #   - a key may not be one of the STEP's own field names. Those belong to the
+                    #     step object; a copy of `verification` sitting inside `args` is not an
+                    #     operand, and MEASURED the model emitted exactly that.
+                    #
+                    # The real key is recorded in `seen` while `pending_key` stays the FREE sentinel,
+                    # so `_expected` still treats every value here as unconstrained. Only the KEY is
+                    # constrained; the operands themselves remain the tool's business, which is the
+                    # property the module docstring depends on and which this does not touch.
+                    if key in RESERVED_STEP_KEYS or key in top.seen:
+                        return None
+                    top.seen.add(key)
                     s.pending_key = FREE_KEY
                 else:
                     if top.kind not in ("obj", "root"):
@@ -494,6 +596,8 @@ class PlanGrammar:
             # grammar ends up advertising a character and then refusing it.
             if s.stack[-1].kind != "free_obj" and ch not in self._key_chars(s):
                 return None
+            if s.stack[-1].kind == "free_obj" and ch not in self._key_chars(s):
+                return None
             s.key_buf += ch
             return s
 
@@ -508,7 +612,7 @@ class PlanGrammar:
             # element has been read. Without this, `"dependsOn": []` was rejected - which is how the
             # most common field in the schema turned out to be the one the grammar could not express.
             top = s.stack[-1]
-            if ch == "]" and top.kind in ("arr", "free_arr") and top.count == 0:
+            if ch == "]" and top.kind in ("arr", "free_arr") and self._array_may_close(top):
                 return self._close_container(s, top.open_key)
             if ch == "}" and top.kind == "free_obj" and not top.seen:
                 return self._close_container(s, top.open_key)
@@ -557,6 +661,20 @@ class PlanGrammar:
         return None
 
     # ---------------------------------------------------------------- values
+
+    def _array_may_close(self, top) -> bool:
+        """
+        Whether this array is allowed to close with nothing in it.
+
+        Split out because the mask and the character machine must agree. Measured before: they did
+        not, and the disagreement presented as "the grammar randomly rejects valid plans". Only
+        schema arrays are constrained here - a free-form array inside `args` is the model's to shape.
+        """
+        if top.kind != "arr":
+            return True
+        if top.count > 0:
+            return True
+        return top.open_key not in NON_EMPTY_ARRAY_KEYS
 
     def _expected(self, s: State):
         top = s.stack[-1]

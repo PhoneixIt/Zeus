@@ -246,6 +246,23 @@ export class StoreRecorder implements Recorder {
         summary: `verified by ${e.verifier}: ${(e.evidence as { kind?: string }).kind ?? 'evidence'}`,
         detail: { stepId: e.stepId, evidence: e.evidence },
       })
+      // Settle the step. `verified` used to record proof that the step had completed and then
+      // leave its persisted status at `running` - so the store simultaneously held independent
+      // evidence that the action was DONE and a status saying it was still in flight. On the
+      // next resume, `readMission` classified that `running` as an interrupted step and issued
+      // a `recover-step` obligation, which is the instruction to go and perform an action that
+      // had already been independently proved. Repeated proved work is not a safe default.
+      //
+      // Only a step that is currently `running` is settled. A step that is already `done` or
+      // `failed` keeps its status, so this can never resurrect or overwrite a settled outcome.
+      const current = this.currentMissionRow(e.missionId)
+      const step = current.plan.find((s) => s.id === e.stepId)
+      if (step && step.status === 'running') {
+        this.store.saveMission({
+          ...current,
+          plan: current.plan.map((s) => (s.id === e.stepId ? { ...s, status: 'done' as const } : s)),
+        } as Mission)
+      }
     })
   }
 
@@ -285,11 +302,18 @@ export class StoreRecorder implements Recorder {
   // ---------------------------------------------------------------- helpers
 
   private currentMissionRow(missionId: string): Mission {
-    const r = this.store.readMission(missionId)
-    if (!r) {
+    // `readMissionForWrite`, not `readMission`, and the difference is load-bearing.
+    // `readMission` rewrites a persisted `running` step to `pending`, because a RESUMING reader
+    // must not believe a dead process is still executing it. A writer that read through that
+    // would write `pending` back over its own write-ahead: `attemptBegin`'s `running` survived
+    // only until the next recorder call, and an interrupted step was then reported as never
+    // having started - so no recovery obligation was ever produced. See
+    // `DurableStore.readMissionForWrite`.
+    const m = this.store.readMissionForWrite(missionId)
+    if (!m) {
       throw new PersistenceFailure('readMission', missionId, undefined, 'the mission is not in the durable store')
     }
-    return r.mission
+    return m
   }
 
   private withStep(missionId: string, stepId: string, patch: Partial<Step>): Step[] {

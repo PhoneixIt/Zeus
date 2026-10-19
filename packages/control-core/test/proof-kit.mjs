@@ -46,11 +46,53 @@ export const EXIT_CLAIM_FAILED = 1
 export const EXIT_INCONCLUSIVE = 3
 
 /**
+ * Start a fresh operator host so each proof begins from a clean precondition.
+ *
+ * =============================================================================
+ * WHY THIS EXISTS - AND WHY IT IS NOT A CONVENIENCE
+ * =============================================================================
+ *
+ * `Guard.emergencyLatched` is an in-memory `static bool` (`Guard.cs:112`). It is cleared ONLY by a
+ * human pressing Ctrl+Alt+R, which is exactly right for the product and exactly wrong for a test
+ * harness: once any proof exercises the latched stop, every LATER proof in the same gate runs
+ * against a host that is permanently fail-closed.
+ *
+ * The consequence was measured, not guessed. `prove-chord-swallow` failed 4 claims with
+ * `swallowed +0` and `release +0` - which read exactly like a broken hook. On a freshly started
+ * host the same proof passes. Those 4 failures were cross-proof contamination, not a defect. A
+ * red signal that means "the previous proof left the machine stopped" is worse than no signal,
+ * because the next step is to go and debug a hook that is fine.
+ *
+ * So the gate restarts the host before each proof. That is the ONLY way to give each proof the
+ * precondition it needs, because no automation on this machine can clear the latch.
+ *
+ * The restart is not free: it costs a compile and a launch per proof. That is the price of an
+ * honest verdict. `AIOS_PROOF_NO_RESTART=1` restores the old shared-host behaviour for
+ * COMPARISON ONLY - it must never be how the gate is run for a verdict, because that is the
+ * configuration that produced four false failures.
+ */
+function restartHost() {
+  if (process.env.AIOS_PROOF_NO_RESTART === '1') return true
+  const script = join(HERE, '..', 'start-operator-host.mjs')
+  const r = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 240_000, env: { ...process.env } })
+  if (r.status !== 0) {
+    console.log(`  !! could not start a fresh host (exit ${r.status}); the proof may report a precondition failure`)
+    console.log(`     ${(r.stdout ?? '').trim().split('\n').slice(-3).join('\n     ')}`)
+    return false
+  }
+  // Each proof is its own process, so it re-reads host.json on connect. The delay is only to let
+  // the hook finish installing before the first query.
+  spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},900)'], { encoding: 'utf8', timeout: 10_000 })
+  return true
+}
+
+/**
  * Run one proof harness and classify the outcome.
  *
  * `name` is used in the summary so a failure names itself without the reader cross-referencing.
  */
 export function runProof(name, { requiresHost = true } = {}) {
+  if (requiresHost) restartHost()
   const file = join(HERE, `${name}.mjs`)
   const r = spawnSync(process.execPath, [file], {
     encoding: 'utf8',

@@ -78,9 +78,47 @@ export interface ProviderDeps {
   readonly endpoint: ModelEndpoint
   /** Which capabilities the router can serve. The model may only choose from these. */
   readonly availableCapabilities?: readonly string[]
+  /**
+   * The tool names the router for THIS mission actually registered.
+   *
+   * Sent to the model as `mayUseTools`. Without it the model invents plausible tool names, and the
+   * router refuses the plan for a reason the model could not have known.
+   */
+  readonly availableTools?: Readonly<Record<string, string>>
+  /**
+   * Each registered tool's operands, taken from the tool's own `args` metadata.
+   *
+   * Declared beside the `run` that reads them, so this cannot become a second hardcoded copy that
+   * silently drifts when a tool changes its operands.
+   */
+  readonly toolArgs?: readonly {
+    readonly tool: string
+    readonly args: readonly { readonly name: string; readonly required: boolean; readonly description: string }[]
+  }[]
   readonly options?: ProviderOptions
   /** Injected for tests; defaults to global fetch. */
   readonly fetchImpl?: typeof fetch
+  /**
+   * The exact output FILE NAME the caller asked for, so the worked example can name it.
+   *
+   * Derived from `PlanContext.outputFileName` at the call site. This is what the model is SHOWN; the
+   * write-target guard in the mission runner is what actually enforces it, and a plan that disagrees
+   * is refused before a tool runs.
+   */
+  readonly outputFileName?: string
+  /**
+   * ONE bounded corrective attempt.
+   *
+   * The exact validation error from a rejected proposal, shown to the model on the retry. This is
+   * validation feedback rather than prompt rewording: the reason string is produced by `parse.ts`,
+   * naming a concrete defect (`step "inspect" depends on itself`), so the model is told what was
+   * actually wrong rather than being asked to try harder.
+   *
+   * Bounded deliberately. This is a SINGLE retry, supplied by the caller who builds a provider with
+   * it; the provider itself never retries, so no code path can loop. And it changes nothing about what
+   * is accepted - a corrected reply goes through exactly the same parser.
+   */
+  readonly correction?: string
 }
 
 /**
@@ -186,7 +224,7 @@ export class ModelPlanProvider implements PlanProvider {
     }
 
     // ---- 2. Build the request. Facts, not interpretation.
-    const request = buildRequest(objective, world, ctx.outputRoot, this.deps.availableCapabilities ?? CAPABILITIES)
+    const request = buildRequest(objective, world, ctx.outputRoot, this.deps.availableCapabilities ?? CAPABILITIES, this.deps.availableTools, this.deps.toolArgs)
 
     // ---- 3. Send it.
     let text: string
@@ -262,7 +300,13 @@ export class ModelPlanProvider implements PlanProvider {
         // not to what the system accepts. The 0.5B model scored 0/4 against a schema described in
         // English, and returned my descriptions as data. An example is unambiguous where a description
         // was not. `parse.ts` is byte-for-byte unchanged and still refuses every malformed shape.
-        { role: 'system', content: `${SYSTEM_INSTRUCTIONS}\n\n${CAPABILITY_RULE}\n\nEXAMPLE, using THIS request's real folder and output path:\n${buildExample(request.input.observed.root, join(request.input.mayWriteHere, 'summary.txt'))}` },
+        //
+        // The output file name is the caller's ACTUAL request, not a fixed example name. It used to
+        // be the literal `summary.txt`, which meant the example taught the model to write
+        // `summary.txt` for every mission - and MEASURED, it did exactly that, ignoring a requested
+        // name and writing somewhere the caller's own pre-execution guard then had to refuse. A
+        // worked example that names the wrong file is a promise that the answer will be wrong.
+        { role: 'system', content: `${SYSTEM_INSTRUCTIONS}\n\n${CAPABILITY_RULE}\n\nEXAMPLE, using THIS request's real folder and output path:\n${buildExample(request.input.observed.root, join(request.input.mayWriteHere, this.deps.outputFileName ?? 'summary.txt'))}` },
         // COMPACT, not pretty-printed.
         //
         // Measured: the pretty-printed 1672-token request took 26s of prefill and produced echoed
@@ -270,6 +314,13 @@ export class ModelPlanProvider implements PlanProvider {
         // start of a document that continues - which is exactly the wrong cue for a completion model
         // that is about to be asked for an object of its own.
         { role: 'user', content: JSON.stringify(request) },
+        // The corrective turn, appended ONLY when a previous proposal was rejected and the reason is
+        // known. It carries the defect the parser actually reported, not a paraphrase of it.
+        ...(this.deps.correction
+          ? [{ role: 'user' as const, content:
+              `Your previous plan was REJECTED. The exact reason was: ${this.deps.correction}\n` +
+              `Produce a corrected plan. Do not repeat that mistake. Reply with one JSON object only.` }]
+          : []),
       ],
     }
     const res = await f(this.deps.endpoint.url, {
@@ -309,6 +360,11 @@ export function buildRequest(
   world: WorldState,
   outputRoot: string,
   availableCapabilities: readonly string[],
+  availableTools?: Readonly<Record<string, string>>,
+  toolArgs?: readonly {
+    readonly tool: string
+    readonly args: readonly { readonly name: string; readonly required: boolean; readonly description: string }[]
+  }[],
 ): ModelRequest {
   return {
     // NESTED UNDER ONE KEY, and this is the third and final attempt at the same problem.
@@ -328,6 +384,10 @@ export function buildRequest(
     input: {
       task: objective,
       mayUse: [...availableCapabilities],
+      // Present only when the caller supplied a real registry list. Inventing an empty list here
+      // would be worse than omitting it: the model would read "no tools" and refuse.
+      ...(availableTools && Object.keys(availableTools).length ? { mayUseTools: { ...availableTools } } : {}),
+      ...(toolArgs && toolArgs.length ? { toolArgs: toolArgs.map((t) => ({ tool: t.tool, args: t.args })) } : {}),
       mayWriteHere: outputRoot,
       observed: {
         root: world.scope.root,

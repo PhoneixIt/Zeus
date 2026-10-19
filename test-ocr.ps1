@@ -1,0 +1,2 @@
+param([string]$Helper = 'packages/control-core/ocr-helper.ps1')
+& powershell -NoProfile -ExecutionPolicy Bypass -File $Helper -X 0 -Y 0 -W 500 -H 300 -VirtW 1536 -VirtH 864 2>&1 | Select-Object -First 6

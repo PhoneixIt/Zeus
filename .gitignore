@@ -13,3 +13,17 @@ services/local/state/
 # Runtime state written by the control host: it contains a live port and an
 # auth token. Committing it would leak a credential and confuse rollbacks.
 packages/control-core/host.json
+
+# Repo-local runtime state. The orchestrator lock is a live mutex file: it is empty, it is held
+# open while a run is in progress, and committing it invites a checkout that appears to hold a lock
+# nobody holds. The state beside it is a machine-local snapshot - it records which runs happened on
+# THIS laptop, and restoring it onto another machine would resurrect results that never occurred
+# there. Both were untracked and unignored; an audit on 2026-10-19 found no credential in either,
+# and they are excluded so that stays true as they grow.
+.aios/
+*.lock
+
+# The live chat server writes its own port and bearer token here. Same reasoning as host.json.
+server.json
+launcher.out.log
+launcher.err.log

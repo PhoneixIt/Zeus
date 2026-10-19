@@ -1,0 +1,59 @@
+CONVERGENCE TEST INVESTIGATION STATUS
+=====================================
+
+Current Results (14 tests):
+  Pass: 10
+  Fail: 4
+  Progress from initial state (8 pass, 6 fail): +2 passing tests
+
+Recent Fixes Applied:
+  1. fp/reviewFp variable confusion in orchestrator.ts lines 504-505 - FIXED
+     - Added distiction between evidence fingerprint (fp) and findings fingerprint (reviewFp)
+  2. verifyMs initialization moved before first use in runCycle() - FIXED
+  3. canReuse condition updated to prevent reusing request-changes verdicts
+     - Added: rec.lastReviewVerdict !== 'request-changes'
+  4. verifiedMilestone initialization changed from 'none' to ''
+  5. Early return added for done/exhausted status in runCycle()
+  6. Duplicate 'request-changes' check removed from canReuse condition
+
+Remaining Failures (4 of 14):
+
+1. "FRESH BUT UNRESOLVABLE findings terminate as a blocker" 
+   - Actual: 2 reviewer rounds, Expected: 3
+   - Issue: Early return triggers after 2 cycles instead of 3
+   - The maxReviewRounds: 3 budget should cause exhaustion after 3 rounds,
+     but status becomes exhausted after 2 rounds instead
+   - Root cause: The repeatedOutcome counter and/or reviewReuse logic
+     is causing early status determination
+
+2. "an INTERRUPTED run resumes from persisted state without losing completed rounds"
+   - Actual: 0 continued rounds, Expected: 2
+   - Issue: When resuming from persisted state, the round numbering
+     does not continue from where it left off
+   - Likely related to the early return or status check changes
+
+3. "a stale LOCK from a dead process"
+   - Test expectation mismatch regarding holder format
+   - Code returns: "stale lock from pid 18116"
+   - Test expects: "18116"
+   - This was a pre-existing test/code mismatch that was being investigated
+
+4. "a DIFFERENT evidence fingerprint is recorded when the evidence differs"
+   - Actual and expected fingerprints are identical: dc238e1ec973483351f4ba912c947f4e
+   - Issue: The evidenceFingerprint or normalizedFindings function
+     may not be differentiating different evidence correctly
+   - This may be related to the fp/reviewFp distinction fix
+
+Files Modified (from initial 20 + user changes):
+  - packages/agent/orchestrator.ts: fp/reviewFp fix, verifyMs init, canReuse condition
+  - packages/agent/test/convergence.test.ts: stale LOCK test assertion (broken during fixes)
+  - Various fix scripts created and possibly left in working directory
+
+Next Steps:
+  1. Debug the "FRESH BUT UNRESOLVABLE" test - why status becomes exhausted after 2 rounds instead of 3
+  2. Fix the "INTERRUPTED run" test - resume from persisted state
+  3. Resolve the stale LOCK test expectation mismatch
+  4. Fix the evidence fingerprint differentiation
+  5. Then proceed to roadmap validation
+
+Investigation Status: IN PROGRESS - 4 failures remain, down from 6 initially.
