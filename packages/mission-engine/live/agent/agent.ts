@@ -48,6 +48,7 @@ import {
   buildArtifactContract, contentLooksWrongFor, registerContract, forgetContract,
   type ArtifactContract,
 } from './artifacts.ts'
+import { auditNumbers, removedClaimsNote, measuredNumbersFrom } from './numbers.ts'
 import { wantsQuietReport, classifyGoal, interactionMode } from './goal-intent.ts'
 import { assessCompletion, correctionMessage } from './plan-completion.ts'
 import {
@@ -2686,7 +2687,37 @@ export async function runGoal(goal: string, emit: Emit, opts?: InterpretOptions)
       })
     }
 
-    appendConversation({ role: 'assistant', text: `${plan.reply}\n\n${text}`, at: Date.now(), missionId, ok })
+    // ---- AUDIT THE MODEL'S OWN NARRATION BEFORE IT REACHES THE PERSON.
+  //
+  // The mission's verdict is computed here and is trustworthy. The paragraph above it is the MODEL'S
+  // description of its own work, and it was being prepended unexamined - which is how
+  // "296 files" reached a reader on a run that produced 413.
+  //
+  // Every count it states must now be one the mission measured. Anything else is removed and the
+  // removal is announced, because a sentence that quietly loses its number reads like a rendering
+  // bug and teaches a reader to distrust the parts that are true. See numbers.ts for the full
+  // reasoning and for what this deliberately does NOT check.
+  const measured = measuredNumbersFrom(allStepsOut)
+  const narration = auditNumbers(plan.reply, measured)
+  const claimsNote = removedClaimsNote(narration.removed, measured)
+
+  if (narration.removed.length > 0) {
+    emit({
+      kind: 'status',
+      text: `The model's description claimed ${narration.removed.map((r) => `"${r}"`).join(', ')}, `
+        + 'which no step measured. Those figures have been removed from the report rather than '
+        + 'passed on as fact.',
+    })
+  }
+
+  const replyBlock = narration.text.trim()
+  const assistantText = [
+    ...(replyBlock.length > 0 ? [replyBlock] : []),
+    text,
+    ...(claimsNote.length > 0 ? [claimsNote.trim()] : []),
+  ].join('\n\n')
+
+  appendConversation({ role: 'assistant', text: assistantText, at: Date.now(), missionId, ok })
     // EVERY attempt's steps, not just the last.
     //
     // The record used to be written from `stepsOutList`, which the loop reassigns on each attempt,
