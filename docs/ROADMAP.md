@@ -1,921 +1,252 @@
-# AIOS ROADMAP
+# Zeus V1.0 — Capability Roadmap to the Full Vision
 
-Autonomously maintained. The agent selects the next milestone from this file plus the evidence
-ledger; it does not ask.
-
-Status vocabulary: `PROVEN` · `PARTIAL` · `NOT STARTED` · `BLOCKED` · `DECISION REQUIRED`
-
----
-
-## Definition of Done (the finish line)
-
-Not "tests pass". The system is genuinely usable by a real person for meaningful computer
-missions. Concretely, all of the following with evidence:
-
-- [ ] A desktop application a person opens
-- [ ] Natural-language mission entry
-- [ ] An AI layer that understands the objective and emits a structured plan
-- [ ] Tool routing across GUI / UIA / browser / filesystem / terminal / API
-- [ ] Real application, browser, file and terminal operation
-- [ ] Governance enforced on every action
-- [ ] Human takeover, immediately effective
-- [ ] Emergency stop
-- [ ] **Explicit, trustworthy release/resume** ← currently the hardest blocker
-- [ ] Re-observation and replanning after an interruption
-- [ ] Authentication boundaries respected (never bypassed)
-- [ ] Independent verification of meaningful results
-- [ ] Recovery from ordinary failures
-- [ ] Multi-step missions with retained state
-- [ ] Auditable history
-- [ ] Missions long enough to be substantial
-- [ ] An accurate completion report
-
-Broad practical capability across: Windows applications, browser workflows, files, terminal,
-software projects, research, multi-step business/productivity tasks. Universal compatibility is
-**not** required; strong adaptive capability with safe failure on the unsupported is.
+**Status:** plan for approval. Nothing here is built yet.
+**Date:** 2026-10-19 · **Repo:** `aios` @ `616b541` → `03995f6` (mirrored to GitHub)
+**Hardware (measured 2026-10-19, not assumed):** i3-1115G4, 2 cores / 4 threads, **7.8 GB RAM**, Intel UHD (no dedicated GPU), 86 GB free disk, Windows 11 Home.
+**Budget:** $0. No paid APIs, no subscriptions, no billable infrastructure.
 
 ---
 
-## Capability ledger
+## 0. The constraint, measured and corrected
 
-| # | capability | status | evidence |
-|---|---|---|---|
-| 1 | Windows observation (windows, screen, UIA tree) | **PROVEN** | `mission:live`, `mission:two-step` |
-| 2 | Keyboard injection, sentinel-tagged | **PROVEN** | `mission:gui-accept` accept path |
-| 3 | Human takeover | **PROVEN** | `mission:gui-audit` control D |
-| 4 | Emergency stop (latched, no self-release) | **PROVEN** | `control-core` Guard.cs |
-| 5 | Structural injection gate, all routes | **PROVEN** | `control:audit-routes` |
-| 6 | Independent verification | **PROVEN** | executor gate + 5 folder verifiers |
-| 7 | Mission engine (deps, gating, replan, audit) | **PROVEN** | 116 unit tests + 6 live missions |
-| 8 | Filesystem execution mode | **PROVEN** | `mission:filesystem` |
-| 9 | UI Automation (read) | **PROVEN** | `mission:two-step` |
-| 10 | Injection audit, keyboard attribution | **PROVEN** | `mission:gui-accept` |
-| 11 | Passive vs active hook observation | **PROVEN** | `/hooks-passive`, delta 0 vs N |
-| 12 | Tool router (generic, refuses substitution) | **PROVEN** | `tool-router`, 6 tests |
-| 13 | Plan contract (`PlanProposal`) | **PROVEN** | `planner/plan.ts` |
-| 14 | Planner boundary (`PlanProvider`) | **PROVEN** | `planner/provider.ts` + import test |
-| 15 | Deterministic planner | **PROVEN** | `mission:folder` |
-| 16 | **User-driven end-to-end mission** | **PROVEN** | `mission:folder` |
-| 17 | Plan inspection ("what I intend to do") | **PROVEN** | `planner/inspect-plan.ts` |
-| 18 | Step-to-step data flow (`ctx.prior`) | **PROVEN** | compose → write |
-| 19 | Governance contract | **PROVEN** | governance/approval.ts, exact 5-part key |
-| 19b | Consequential-action approval, enforced | **PROVEN** | mission:approval, 6 controls both layers |
-| 19c | Approval ≠ verification | **PROVEN** | control F |
-| 19d | Approval does not survive a replan | **PROVEN** | plan epoch, control E |
-| 19e | Emergency stop outranks approval | **PROVEN** | control G |
-| 33 | Terminal: allowlisted programs, no shell | **PROVEN** | 36 live checks, 2 refusal layers |
-| 34 | Terminal: workspace boundary, junction-proof | **PROVEN** | controls E, E2; a junction test that FAILS if it cannot set up |
-| 35 | Terminal: bounded lifetime, tree reaped | **PROVEN** | control D — grandchild wrote nothing |
-| 36 | Terminal: exit code 0 is not evidence | **PROVEN** | controls A, A2 |
-| 37 | Terminal: consequence from ARGS, not a flag | **PROVEN** | `effectOf`; git status vs git push |
-| 38 | Terminal: environment reduced | **PARTIAL** | 7 requested, 8 injected by the loader |
-| 39 | Terminal: OS-level isolation | **ABSENT** | no Job Object / AppContainer / restricted token |
-| 40 | Terminal: child processes governed | **ABSENT** | reaped on timeout, not validated |
-| 41 | ObservationProvider, read-only by construction | **PROVEN** | import-graph test; control D |
-| 42 | WorldState: known vs assumed, no methods | **PROVEN** | deep structural walk |
-| 43 | Plan must name its observation | **PROVEN** | compiler refuses 4 broken bases |
-| 44 | Freshness: age AND re-observation | **PROVEN** | `too-old` / `world-changed` / `cannot-verify` |
-| 45 | Plan changes when the world changes | **PROVEN** | scenario C: same folder, different plan |
-| 46 | Stale plan cannot complete | **PROVEN** | control G |
-| 47 | Abstract capabilities, one tool each | **PROVEN** | router refuses ambiguity |
-| 48 | Unavailable capability, no substitution | **PROVEN** | compiler + router, two layers |
-| 49 | Distinct planning failure codes | **PROVEN** | 8 codes, asserted by name |
-| 50 | Planner cannot read or write | **PROVEN** | one `realpathSync`, asserted |
-| 51 | Fingerprint detects same-size edits | **ABSENT** | listing metadata only; documented |
-| 52 | Junction containment in the observer | **ABSENT** | a junction is followed; tools re-check |
-| 53 | PlanProposal inspected before execution | **PROVEN** | `renderProposal` names every field a reviewer needs |
-| 54 | Amendment yields a NEW proposal | **PROVEN** | original byte-identical; arrays not aliased |
-| 55 | Superseded mission refused at execution | **PROVEN** | `proposalDigest`; control B |
-| 56 | Dry run: zero side effects | **PROVEN** | byte-identical world; a control that acts IS caught |
-| 57 | Stale world blocks execution | **PROVEN** | `too-old` / `world-changed` / `cannot-verify` |
-| 58 | Diff classifies behavioural vs cosmetic | **PROVEN** | `materialChanges` |
-| 59 | Review ≠ authorisation | **PROVEN** | no `approvePlan`; approval events still raised |
-| 60 | Injected approval fields are inert | **PROVEN** | digest unchanged; compiler ignores them |
-| 61 | Compiler carries the declared effect | **PROVEN** | **repaired in M7** — see below |
-| 62 | Defensive clone in `amend` | **REDUNDANT** | control showed every path already maps |
-| 20 | Mouse injection + attribution | **BLOCKED** | P0: `dwExtraInfo` lost on mouse path |
-| 21 | GUI, mission-chosen action | **BLOCKED** | needs 20, and an arming decision |
-| 22 | **Release / resume after takeover** | **BLOCKED** | NOT PROVEN, no trustworthy mechanism |
-| 23 | Window management governance | **PARTIAL** | `/show`,`/focus` ungated (no injection needed) |
-| 24 | Recovery / replanning, live | **PROVEN** | mission:recovery, genuine divergence, 2 attempts |
-| 24b | Recovery bounded, no inherited evidence | **PROVEN** | 
-ecovery.test.ts, 3 unresolvable-world cases |
-| 24c | Objective reconciliation | **PROVEN** | planner/reconcile.ts, refuses ambiguity |
-| 25 | Browser mode | **NOT STARTED** | package empty |
-| 26 | API mode | **NOT STARTED** | no tool |
-| 27 | **Model / provider layer** | **PROVEN (boundary)** | `packages/model/` — HTTP transport, strict accept-or-reject parsing, zero import routes to anything actionable. A real local model now runs behind it. |
-| 27a | Model output parsed without repair | **PROVEN** | `model/parse.ts`, one named normalisation; 44 unit controls |
-| 27b | Untrusted-reasoner boundary, live | **PROVEN** | 24 adversarial scenarios over a real socket, each stopped at a declared layer |
-| 27c | Model cannot grant authority | **PROVEN** | approval-shaped fields produce a **byte-identical digest** |
-| 27d | **Local inference runtime** | **PROVEN** | `packages/model/local/`: ONNX Runtime + HF tokenizers, local weights, no egress. Blocked once by WDAC unsigned-binary policy; onnxruntime is signed and loads. |
-| 27e | Real model connected to the planner | **PROVEN** | Qwen2.5-0.5B and 1.5B, 127.0.0.1, zero changes to any boundary |
-| 27f | **A model that produces valid plans** | **NOT PROVEN** | **0 of 15 attempts across two model sizes.** Rejected correctly every time. See M10 — this is the binding constraint on being useful. |
-| 28 | Desktop application | **NOT STARTED** | |
-| 29 | Integrated chat | **NOT STARTED** | |
-| 30 | Long-running missions | **NOT STARTED** | |
-| 31 | Tool discovery / install | **NOT STARTED** | |
-| 32 | Authentication handling | **NOT STARTED** | |
+**This machine has 7.8 GB RAM. Measured breakdown:**
 
----
-
-## Blocked on a human decision
-
-These cannot be resolved by engineering judgement. Each needs a person.
-
-| id | decision | why it cannot be inferred |
-|---|---|---|
-| **H1** | Arm the operator for real injection | Arming means the automation may act on the user's live desktop. The automation arming itself is the failure mode this project exists to prevent. Every real-injection milestone needs a human to arm, deliberately. |
-| **H2** | Release/resume design | Blocked behind H1. A human cannot currently return control to the operator after a takeover, so no real mission can be interrupted and resumed. |
-| **H3** | Model provider | **RESOLVED IN PART by M8.** The instruction was to use an available zero-new-spend provider; measurement showed **none is available** — no runtime, no weights, no credentials. So the provider *boundary* was built and proven against an out-of-process adversarial peer, and the remaining choice is now **H5** (install local weights vs. use a hosted free tier). H3 remains open in the sense that no provider is connected. |
-| **H4** | Whether to fix the mouse sentinel by changing injection internals | It is in the injection layer, deliberately untouched so far, and the fix weakens nothing but does change a proven component. |
-| **H5** | **How to obtain a real reasoner** (new, from M8) | Installing a third-party runtime plus several hundred MB of weights, or sending prompts and folder contents to a third party. Both are human-authority decisions: supply chain, disk, network, and data leaving the machine. The code is done and the seam is one URL; nothing here is an engineering problem. |
-
-**H5 in one line:** do you want AIOS to run a model locally (nothing leaves the machine, needs a
-~0.5–4 GB download and a Python/llama.cpp runtime), or call a hosted free-tier API (no local
-footprint, better plans, but the user's objective and folder contents leave the machine)?
-
----
-
-## Milestone queue
-
-Ordered by the autonomous prioritisation rule: safety-critical blockers → architectural
-prerequisites → capability gaps → integration → reliability → product.
-
-### M1 — Planner and the first user-driven mission ✅ COMPLETE
-Plan contract, planner boundary, deterministic planner, tool router, operand safety,
-summarizer boundary, plan inspection, step data flow, 7 negative controls, real end-to-end run.
-
-### M2 — Recovery and replanning, exercised for real ✅ COMPLETE
-A genuine mid-mission environmental change, detected from observation, reconciled against a fresh
-observation, replanned, recompiled and re-executed to verified completion. Plus two scenarios
-built specifically so the negative controls could bite: a world that moves twice, and a correct
-replan whose retry then fails. Supervisor added, bounded at 3 attempts, carrying nothing forward
-without evidence.
-
-### M3 — Governance depth: consequential-action approval ✅ COMPLETE
-
-Selected over M5 on evidence: recovery exposed that a mission can now plan, recover and write a file
-while the governance contract is still a single 123-line file with no approval path for consequential
-actions. The Purchase/Delete/ExternalSend/CredentialUse evidence kinds exist and NOTHING
-produces them, so a mission has no way to require authorisation even in principle. That is a
-gap between what the engine claims to model and what it can enforce, and it is load-bearing for every
-capability added after it.
-
-Delivered: an exact five-part approval key (mission, step, kind, target, plan epoch), an
-executor gate placed before the tool is even SELECTED, an approval store that refuses any key
-never requested, a disposable consequence simulator that travels the same gate, and six negative
-controls biting in both the unit suite and on real hardware. A governance hole was found
-while building it: the gate keyed only on the plan's DECLARATION, so omitting it would have
-acted unapproved. Registrations now carry consequential and a mismatch is a plan defect.
-
-### M5 — Terminal mode ✅ COMPLETE
-
-`run-process`: an allowlisted program, an explicit argument vector, captured output, bounded
-lifetime, a reaped process tree, and a reduced environment. Classified **PARTIALLY PROVEN** — see
-the isolation section below for exactly what is and is not enforced.
-
-**It is not a sandbox.** Four boundaries, kept apart:
-
-| | enforced? | what it actually does |
-|---|---|---|
-| executable allowlist | **yes, real** | absolute paths only, so PATH cannot substitute a program |
-| argv / path validation | **yes, real** | resolved through `realpath` (a junction cannot smuggle a path out) |
-| working directory | set, **weak** | controls where relative paths resolve; restricts nothing else |
-| OS-level isolation | **absent** | no Job Object, AppContainer, restricted token, or container |
-
-Not restricted, because nothing here can restrict it: reading or writing any file the user can
-reach, network egress, spawning children, the registry, services, scheduled tasks, DLL loading.
-The allowlist bounds **which program runs**, not **what that program then does** — so running a
-workspace script is classified consequential and requires authorisation rather than treated as
-routine.
-
-Env scrubbing measured, not assumed: with a 7-name allowlist the child received those **plus 8 the
-Windows loader injects** and the parent cannot suppress. A secret in the parent environment did not
-arrive. It is a real reduction, not a sealed set.
-
-`taskkill /T /F` genuinely reaps grandchildren — measured on a live tree, after an earlier probe
-gave a false negative by letting the parent exit first.
-
-### M6 — World-aware planning ✅ COMPLETE
-
-`DeterministicWorldAwarePlanProvider` plans from an observed `WorldState` and **refuses to produce a
-plan without one**. The compiler rejects any proposal that names no observation, no fingerprint, no
-observed facts, or an incomplete one — so "the planner is world-aware" is enforced at the boundary
-rather than asserted in a comment.
-
-`ObservationProvider` is read-only by construction: it imports `node:fs` and nothing that can act,
-which the tests check by reading the import graph. A `WorldState` is plain data with no methods.
-
-**Three scenarios on the real machine, one objective:**
-
-| | folder | plan chose | completed |
-|---|---|---|---|
-| A | 5 files, nested 2 deep, 4 extensions | `terminal.run` (node observed present) | yes |
-| B | 2 files, no nesting, different extensions | `terminal.run` | yes |
-| C | **the same folder as A**, node reported absent | `filesystem.transform` | yes |
-
-A and B differ in their plan text (file counts, extensions, depth, output name) while the phrase
-planner emits **byte-identical step intents and expected results** for both. C is the load-bearing
-one: identical objective, identical folder, different observation, **different plan**.
-
-### M7 — Plan review, amendment, and dry run ✅ COMPLETE
-
-A `PlanProposal` is **reviewable data**, not executable authority. `packages/review/` shows it,
-amends it, diffs it, dry-runs it, and compiles the result — and imports no executor, no
-`child_process`, no filesystem (in the dry run) and no governance, which the tests check by reading
-the import graph.
-
-**Amendment is a new plan, never an in-place mutation.** `compilePlan` stamps a `proposalDigest` on
-the mission; `execute()` re-checks it against whatever the caller says the user reviewed. Amend,
-then run the mission that was already compiled, and the executor refuses with
-`amended after compilation`.
-
-**The dry run has a real no-action boundary.** It is not "execute and ignore": the module cannot
-reach a tool's `run` at all, and it says nothing about whether a step would *succeed* — only whether
-it could be dispatched. A control writes the same report through an implementation that *does* call
-the tool, to show the check is load-bearing.
-
-### M8 — The first AI planning provider ✅ BOUNDARY COMPLETE · WEIGHTS NOT CONNECTED
-
-Selected on evidence, not on milestone number. AIOS could plan, execute, recover, verify and govern
-consequences, but every plan came from hand-written logic, so the capability was only reachable if a
-human anticipated the phrasing.
-
-**What is proven.** A reasoner can be introduced with **zero changes** to the compiler, the executor,
-the governance contract, the router, the verifiers or a single tool. `packages/model/` is a
-`PlanProvider` that sends an observation over HTTP and returns a `PlanProposal`. Its output is parsed
-**strictly: accepted or rejected, never repaired.** It imports no executor, no governance, no
-`ControlSurface`, no tool, no `child_process` and no `node:fs` — so "the model cannot act" is a
-property of the import graph, checked by reading it.
-
-The real proof is an **out-of-process adversarial peer** on a real socket
-(`packages/model/adversarial-peer.ts`), driven through 24 scenarios. Each declares the layer that must
-stop it, so a scenario stopped for the wrong reason is reported as a failure rather than counted as a
-pass. 24/24 stopped where intended; 42 live checks pass; 43 new unit tests; 270 total, 0 fail.
-
-Required controls, and where each is actually proven:
-
-| Control | Stopped at |
+| Process family | Memory |
 |---|---|
-| malformed output | parser |
-| unknown tool | **router**, not the parser |
-| missing verifier | parser/compiler |
-| dangling + forward dependency | parser |
-| consequential plan | **approval gate** |
-| fake approval in output | digest whitelist — produces a **byte-identical digest** |
-| direct tool invocation | **import graph**, machine-checked |
-| stale target | tool containment + freshness contract |
-| model claims success | compiles to `pending`; verifiers are the only route to `verified` |
+| Edge (browser) | 1,527 MB |
+| OpenCode desktop (CLI service + app) | ~860 MB |
+| ChatGPT desktop | 348 MB |
+| Windows services + Defender + VPN | ~1,200 MB |
+| **Zeus (harness + server + host)** | **56 MB** |
 
-**Two controls were built specifically so they could fail.** A `lawful-terminal` scenario proves the
-policy discriminates rather than refusing everything — it passes preflight and stops at the approval
-gate. And suppressing the verifiers fails the *first* step, so every dependent is **skipped**: an
-unproven step is not a usable one, which is stronger than "produced but unverified". The same plan
-with real verifiers completes, so suppression is demonstrably what changed the answer.
+**Correction to an earlier finding.** I initially reported a 420 MB "leaked" `opencode-cli` process and treated it as P0. On inspection that is wrong on both counts:
 
-**What is NOT proven, and is not claimed.** No language model ran. This machine has **no model
-runtime, no weights and no credentials** — measured, not assumed (`EVIDENCE.md` §M8). The peer is
-adversarial and deterministic; it defeats far less than a real model would find. Whether a real
-model's output distribution is *usable* — well-formed often enough to be worth having — is
-untested. Connecting weights is a change to **one URL**.
+- It is `opencode-cli **serve --service**` — the OpenCode **desktop app's** background backend, not a Zeus process. Zeus's planner spawns `run`, never `serve` (`opencode-planner.ts:208`).
+- **Zeus's total footprint is 56 MB.** It is not the memory problem.
 
-### M9 — A REAL LOCAL MODEL ✅ ARCHITECTURE HELD · **THE MODEL WAS NOT GOOD ENOUGH**
+Killing it would break your OpenCode desktop app for no benefit. **I did not kill it**, and the roadmap no longer calls for it.
 
-H5 resolved: **local inference only**. Nothing leaves the machine.
+**What is true and still binding:** with 7.8 GB shared between a browser, a desktop IDE-agent, and Windows, the machine runs at roughly 1 GB free. That is enough for Zeus today but leaves little margin, and it is why long planning calls are slow (15–180 s measured). Two consequences for the plan:
 
-**The chain is unchanged.** `ModelPlanProvider` → `PlanProposal` → review/digest → compiler →
-governance → executor → tools → independent verification. Zero changes to the compiler, the executor,
-the governance contract, the router, the verifiers, or any tool. The only new thing is a peer at the
-far end of the same HTTP seam: `packages/model/local/server.py`, a Python process that does text in and
-text out and has no route to a tool, an approval, a status, or the machine.
-
-**The answer to the milestone's question, measured: no, not at this size.**
-
-| model | params | throughput | plans produced that survived the parser |
-|---|---|---|---|
-| Qwen2.5-0.5B-Instruct | 0.5B | ~7 tok/s | **0 / 9** attempts |
-| Qwen2.5-1.5B-Instruct | 1.5B | ~0.8 tok/s | **0 / 6** attempts |
-
-Both are locally coherent — the 0.5B answers "capital of France" correctly, which is what proves the
-decode loop is sound rather than the harness. Neither produces a plan.
-
-**What each actually did, which is more useful than the rate:**
-
-- **0.5B — echoed the request.** With request keys `objective`/`availableCapabilities`/`outputRoot`/
-  `world`, it returned an object with *those keys*. It was transcribing.
-- **1.5B — copied the example.** It emitted `"path": "<the observed root>"` — the placeholder, verbatim.
-- **1.5B, after three measured prompt fixes — got close.** Structurally correct steps, real capability
-  names, real paths, proper `verification` objects. It failed on *truncation* at the token ceiling, and
-  once on emitting a step where the plan envelope belonged.
-
-**Three model-facing changes were made, each forced by a measurement, and none touched acceptance:**
-
-1. **Request keys renamed, then nested under one key.** Measured twice: v1 keys were echoed back; v2's
-   `task` key was adopted as the container for its own *answer*. One top-level key cannot be mistaken for
-   a three-key response, so the mechanism is gone rather than an instance of it. A unit control asserts
-   the request has *exactly one* top-level key, because this failed twice and will fail again silently.
-2. **The schema description became a real, filled-in example.** The old "schema" put English
-   descriptions in the *key position*, so the model copied them as data.
-3. **The example was compressed** from ~450 to ~254 tokens. The 1.5B copied the example's verbosity and
-   ran out of tokens mid-JSON.
-
-`parse.ts` is byte-for-byte unchanged and still has exactly one normalisation. A prompt that produces
-better plans is legitimate; a parser that accepts worse plans is not, and no validity rate justifies it.
-
-**What this milestone did prove, which is the part that matters:**
-
-Every single model output — across 15 attempts, two model sizes, five request renderings, and a dozen
-truncation and echo modes — was **rejected at the correct layer with a precise reason**, and **nothing
-unsafe reached execution, the compiler, or a tool**. The architecture did its job on every input,
-including hostile and malformed ones. A reasoner was introduced and no property weakened.
-
-**Honest conclusion:** AIOS now has a real local model and it is not yet good enough to plan with. The
-next step is a model that is, or a genuinely different approach to structured output — not a weaker
-parser. Recorded as a defect, not smoothed over.
-
-### M10 — A larger local model, or a structured-output mechanism
-
-Options, in order of preference:
-
-- **A 3B–4B local model.** The 1.5B failed on truncation and envelope discipline, not on reasoning.
-  7B-class models emit correct plans routinely. Cost: 3–8 GB download and roughly 0.1–0.2 tok/s on this
-  2-core machine, which is a 20–40 minute plan. **A machine that cannot generate a plan in reasonable
-  time is itself the binding constraint** — so this is gated on hardware, not just on appetite.
-- **Constrained decoding (grammar/JSON-schema-guided generation).** llama.cpp and GGML support it, and it
-  makes malformed output impossible. It would change the threat model: the validator would no longer be
-  the thing that rejects bad structure, the grammar would be. That may be a fine trade *provided* the
-  grammar is itself treated as a security boundary and the adversarial suite is rerun against it. It is
-  explicitly **not** a way to make the validity rate look good.
-- **A hosted provider.** Better models, no local footprint, but data leaves the machine — a human
-  decision, and H5 chose local.
-
-### M11 — Read-only browser observation (was M4)
-`packages/browser` is empty. Enumerate tabs, read the DOM, extract text — no injection, no arming.
-Interaction comes later, behind H1.
-
-*Unblocked for the read-only half. Interaction needs H1.*
-
-### M12 — Desktop application
-Only once the execution foundation is trustworthy — which is now the case for a bounded, supervised
-subset. Per the specification: no decorative UI before the underlying capability is ready.
-
-### M13 — Long-running missions, history, completion reporting
-
-### M14 — Tool discovery and safe installation
-Provenance, version, licence, purpose, dependencies, security implications, rollback — all
-established before any install.
+- **Zeus must stay small.** A capability that costs hundreds of MB (a headless browser, a local model) is a different architecture, not a new tool.
+- **Memory discipline belongs in the test plan** (P1.6), not in a kill-the-process action.
 
 ---
 
-## Superseded, kept so the numbering does not drift
+## 1. Current state, honestly labelled
 
-- **M4** read-only browser observation → **M10**.
-- **M5** terminal mode → **complete**.
-- **M6** release/resume → still blocked on H1 + H2 (unchanged).
-- **M7** mouse attribution → still blocked on H4 (unchanged).
-- **M8** model layer → **boundary complete**, weights → **M9**.
+Four different labels, because conflating them is what produced every false success so far.
 
-**Release/resume (H1 + H2) remains the single largest blocker to the Definition of Done**, and mouse
-attribution (H4) remains the largest *correctness* defect. Neither is worked on without its human
-decision.
+### DEMONSTRATED — proven by a live run with observable evidence
 
----
+| Capability | Evidence |
+|---|---|
+| Visible GUI mission (Chrome, OCR, write, read-back) | mission `ed2e2073`, 5/5 steps verified, 31.4 s |
+| NAKIVO recursive inventory + independent verification | `nakivo-inventory-2026-10-19-R3.csv`, 413 rows, byte totals match exactly |
+| Artifact protection against a failed mission | proof script: 3 scenarios, protected file byte-identical |
+| Planner reaches execution | `job-mveo99eg` `createdAt === completedAt`, exit 0 |
+| Host identity rebinding | 6 tests, live restart scenario |
+| Launcher stale-server recovery | live test: stale PID detected, ended, rebound |
 
-## Standing rules
+### IMPLEMENTED, NOT DEMONSTRATED
 
-1. A milestone is complete only with implementation, passing tests, **biting** negative
-   controls, real verification where appropriate, and documented defects.
-2. Every negative control must be shown to fail when its protection is removed.
-3. Never convert a failed proof into a success by weakening the test.
-4. Never claim `PROVEN` without evidence on the real system.
-5. Report as status, not as a request for instructions.
+- 11 registered capabilities (`web-research`, `write-file`, `spreadsheet`, `list-windows`, `survey-window`, `ocr`, `launch-app`, `read-file`, `terminal`, `desktop-input`, `screen-diff`)
+- SQLite persistence layer (`packages/persistence`) — **not wired into the agent loop** (no `MissionRecorder` passed, so all write-ahead guarantees are inert)
+- Recovery engine (`recovery.ts`) — policy only, never imported by the executor
+- Approval flow (`run-approval.ts`)
+- Model pool rotation across ~11 free models
 
+### PARTIAL / BLOCKED
 
----
+- **`terminal` escapes the artifact contract.** A live mission wrote 407 rows to a new file via the shell while every check believed the plan was refused. Highest-severity correctness gap.
+- **The model fabricates counts.** Claimed "296 files" when 407 were written. The false-success guard now catches the *narration*, not the number.
+- **OCR fidelity is bounded.** Pixel reading gave "documentation examples" for "illustrative examples".
+- **`Documents` is unwritable by Zeus's own tools** — a deliberate permission-scope decision, not a bug.
+- **Typecheck gate red**: 1 pre-existing error (`run-browser-gui-workflow.ts` TS1005, orphaned file). Makes 4 tests fail repo-wide.
 
-## M10 - CONSTRAINED DECODING: COMPLETE, AND IT DID NOT SOLVE THE PROBLEM
+### MISSING (measured against your stated goals)
 
-Authorised 2026-10-08 in preference to a larger model. Status: **complete, honest, negative.**
-
-### Capability ledger additions (M10)
-
-| # | Capability | Status | Evidence |
-|---|---|---|---|
-| 28a | Structural grammar over `PlanProposal` | **PROVEN** | 90 controls; 0.5% overhead |
-| 28b | Logit masking in the decode loop | **PROVEN** | constrained output parses where unconstrained does not |
-| 28c | Grammar rejects dead prefixes rather than wedging | **PROVEN** | refused at the FIRST character of the measured dead prefix |
-| 28d | `capability`/`tool`/`args` stay unfiltered by the grammar | **PROVEN (deliberate)** | `test_grammar_does_not_filter_semantics` fails if tightened |
-| 28e | Exhaustion is a refusal, not a 500 | **PROVEN** | was HTTP 500; measured and fixed |
-| 28f | Constrained 1.5B produces a usable plan | **NOT PROVEN** | 0/4; ceiling reached inside a string |
-
-### What changed and what did not
-
-Changed: a new grammar + masking (additive), two harness bugs, one strictly-stricter parser rule.
-Unchanged: `PlanProvider`'s contract (the grammar rides the existing `headers` field), the compiler,
-governance, router, verifiers, review layer, `control-core`.
-
-### The answer to the question that was actually asked
-
-> Can constrained local inference produce genuinely useful plans while every M1-M9 safety property
-> remains intact?
-
-**The safety half: yes, and that is now proven rather than assumed** - 274 TS tests, 90 grammar
-controls, route audit PASS, `control-core` byte-identical, zero executions from four attempts.
-
-**The usefulness half: no.** The grammar made output well-formed and did not make it right. That is
-the finding, and reporting "more outputs parse" as progress would have been the trap.
-
-### Next milestone, selected from the evidence
-
-**M12 - TOKEN BUDGET AND DECODING SHAPE**, chosen because it is now the only cheap thing left to try
-before a bigger model: the binding failure is the 512-token ceiling reached inside a string value.
-Three testable interventions, none of which touches a validator:
-
-1. **Raise the ceiling** and confirm whether plans complete at all. (Cheapest possible test; may be
-   all that is needed.)
-2. **Constrain free-form string LENGTH** in `args` and prose fields - a structural bound, sanctioned,
-   and it removes the model's ability to ramble. Directly targets the measured failure.
-3. **Backtracking on a dead prefix**, if (1) and (2) are insufficient.
-
-Only if all three fail is a larger model justified - and by then the decision would rest on a
-measured ceiling rather than a benchmark score.
-
-### Deliberately NOT selected
-
-- **M11 browser observation** stays queued: valuable, narrower, and does nothing for the binding
-  constraint.
-- **Desktop app, release/resume (H1/H2), mouse sentinel (H4)**: all blocked on human decisions.
-- **Pivoting inference to `onnxruntime-genai`**: see `docs/ECOSYSTEM-AUDIT.md`. It is the right long
-  term target and the wrong move now - it cannot load the M9 model without a re-export, so it is a
-  model-conversion project, not a dependency swap.
-
+Multi-window GUI orchestration · scroll/hover/menu navigation · clipboard transfer · file-picker and dialog handling · pagination/scrape-with-coverage · spreadsheet *editing* of existing files · PDF/Office read+write · email · scheduling · persistent memory across restarts · concurrent missions · model self-improvement · business-lifecycle capability (research→product→GTM→sales→finance→ops).
 
 ---
 
-## M13 - MODEL CEILING EXPERIMENTS: COMPLETE, NEGATIVE
+## 2. Priority order
 
-Both cheap interventions measured and both failed. Recorded rather than discarded.
+Sequenced by **unblocks-other-work**, not by excitement.
 
-| Experiment | Change | Useful plans | Latency | Verdict |
+### P0 — Close the holes that let it lie or destroy (≈1 day)
+
+Ordered by **risk of real harm**, not by size. Each one is a defect that has already caused damage.
+
+| # | Item | Why | Est | Acceptance |
 |---|---|---|---|---|
-| E1 | tokens 512->2048, **wall clock 150->900s** | 0/3 | 105-156s | syntax 3/3, semantics 0/3, **false refusals 3/3** |
-| E2 | E1 + string cap 400->120 chars | 0/3 | **307-309s** | no gain, 2.3x slower |
-| E3 | grammar backtracking | not built | — | **no failing case remains to fix** |
+| 0.1 | **`terminal` under the artifact contract** | Real data loss: a shell-written file bypassed every write guard. Highest-severity correctness gap. | 6 h | A mission cannot create/overwrite a file via the shell outside its declared artifacts (SHA-256 before/after, real tool) |
+| 0.2 | **Stop the count fabrication** | The model claimed "296 files" when 407 were written. A lie in the report is worse than a failure. | 4 h | Every number in the final message traces to a cited evidence id, or is absent |
+| 0.3 | **Fix the typecheck gate** | The gate is red, which makes 4 repo tests fail and hides future regressions | 1 h | `node typecheck-gate.mjs` exits 0; the 4 tests pass |
+| 0.4 | **Clean up the orphaned file** | `run-browser-gui-workflow.ts` is unreferenced and blocks item 0.3 | 30 m | Either wired in or removed, with the reason recorded |
 
-**M10's diagnosis was wrong and is corrected in EVIDENCE.md.** The binding constraint was the
-150-second `MAX_WALL_SECONDS`, not the 512-token ceiling. Raising tokens 4x changed nothing because
-generation was never token-bound - it stopped at 398 tokens.
+**Note on 0.1:** full shell interception, not a post-run audit. Rationale: an audit tells you *after* the damage that a file changed; interception prevents it. The shell is the only write route that bypasses every artifact rule, and it is demonstrably reachable by a model's plan. The cost is that `terminal` becomes "declared artifacts + read-only commands" — which is the correct boundary and is enforced, not assumed.
 
-**The finding that outranks all three experiments:** raising the ceiling turned an obviously-broken
-document into a well-formed one containing nonsense. Constrained decoding made a failure *harder to
-see*, because `refusal` is always available as a valid completion. Genuine refusal 0/3, false
-refusal 3/3.
+### P1 — Make a mission trustworthy (≈1 week)
 
-### Escalation decision
-
-A larger model is **still not justified**. The stated bar was: syntax no longer dominant, task quality
-insufficient, performance acceptable, hardware able to support it. Two of four are unmet.
-
-The honest read is that 1.5B cannot plan a two-step mission. Constrained decoding removed the
-*structural* obstacle and exposed the *capability* one, which is the real finding of M8-M13 taken
-together.
-
-### Next milestone, selected from the evidence: M14 - THE INJECTION AUDIT BLIND SPOT
-
-**Why this outranks everything else.** It is a safety defect, not a capability gap, and it makes a
-guarantee the project actually makes in writing narrower than believed:
-
-> the injection audit asks whether a route reaches an injection **primitive**; it should ask whether a
-> route changes the **machine**.
-
-`/show`, `/restore`, `/focus`, `/guifocus` reach no primitive, so they pass unexamined - yet they
-show, restore and focus real windows, and they do not consult `MayInject()`.
-
-Until the audit's model is widened, "every action that can change this machine passes through the
-declared gate" is an assertion the tooling cannot actually support. Every other candidate is blocked
-(H1, H2, H4), second-order (durable state, browser reproducibility), or measured to be dead
-(backtracking).
-
-**Blocked on a human decision (H5):** the routes are in `control-core`, which this project does not
-modify without an ADR and a human decision. Widening the *audit harness* would strictly increase
-detection and is not itself a regression, so it is separable and is the recommended first half.
-
-### Queued after M14
-
-durable state (SQLite) - evidence currently dies with the process · browser reproducibility -
-`playwright` undeclared and the Chromium path hardcoded · M15 model escalation, only if a
-model-agnostic route is found that does not depend on this hardware.
-
-
----
-
-## M14 - INJECTION AUDIT WIDENED: COMPLETE
-
-Authorised 2026-10-08. The first half - widen the audit, do not touch the core - is done.
-
-### What changed
-
-The audit now asks whether a route can change the machine, not whether it injects input. It resolves
-mutating **helpers** as well as primitives, carries a `READ_ONLY` set so it does not flag everything, and
-returns three exit codes that distinguish *known gap* from *undocumented breach*.
-
-### The answer
-
-**The stronger invariant is FALSE**, and it was previously untestable. Three routes change real machine
-state without a gate: `/show`, `/restore`, `/focus`. A fourth, `/guifocus`, was wrongly listed in this
-project's own records as ungated - it performs pure reads.
-
-`/focus` is the substantive one: `Verify()` checks the window is the right window, not that the caller is
-permitted. A caller with no injection permission can still take the foreground from the person at the
-keyboard.
-
-### Ledger
-
-| # | Capability | Status | Evidence |
+| # | Item | Est | Acceptance |
 |---|---|---|---|
-| 29a | Audit detects machine mutation without input injection | **PROVEN** | 7 window primitives + 2 helpers |
-| 29b | Mutating helpers resolved, not just primitives | **PROVEN** | `/focus` via `Win.Focus` |
-| 29c | Read-only routes not flagged | **PROVEN** | `/guifocus` asserted a read |
-| 29d | New ungated route raises exit 2 | **PROVEN** | injected `BringWindowToTop` route, CLI-verified |
-| 29e | `KNOWN_GAPS` cannot silence the alarm | **PROVEN** | control fails if used that way |
-| 29f | Stale entries detected | **PROVEN** | check fires on an invented entry |
-| 29g | All machine-state routes gated | **NOT PROVEN** | 3 gaps; needs control-core (ADR 0003) |
+| 1.1 | **Wire `MissionRecorder` into the agent loop** | 1 d | Every attempt persisted before execution; crash resumes with known state |
+| 1.2 | **Numeric claims must cite evidence** | 2 d | No number in output without a `source: stepId` reference |
+| 1.3 | **Self-verification before reporting** | 3 d | Mission re-reads its own artifact and compares hash before `ok: true` |
+| 1.4 | **Concurrent-mission isolation** | 2 d | Two missions cannot touch each other's artifacts (proven by test) |
+| 1.5 | **Idempotent retries** | 2 d | Re-running a completed mission is a no-op, not a duplicate |
+| 1.6 | **Memory-discipline test** | 1 d | 10 consecutive missions leave no orphan process; Zeus RSS returns to baseline (the leak in `opencode-planner.ts:222` is real, just not the one I first blamed) |
 
-### Blocked: H5
+**Standing test rule for every block that follows:** a capability is not "added" when it compiles. It is added when (a) it has a test that fails without it, (b) it has been run live with recorded evidence, and (c) it has a *negative* test proving the failure mode cannot recur. Every item below carries an acceptance line of that shape.
 
-Three `MayInject()` calls and three `InjectionRoutes` entries in `OperatorHost.cs`. Full code and the
-three things to weigh are in [`decisions/0003-gate-window-management-routes.md`](decisions/0003-gate-window-management-routes.md).
-`control-core` is not modified without a human decision.
+### P2 — A complete GUI operator (≈2 weeks)
 
-### Recommended next milestone: M15 - DURABLE STATE
+The largest capability gap. Right now Zeus can open an app and type at it; it cannot *use* software.
 
-Selected because it is the highest-value item that is **not** blocked and **not** safety-critical.
-
-Evidence for it, from the M12 audit: there is **no SQLite, no database, no file-backed event log**.
-Mission state, evidence and history are **in-memory**. A crash loses all of it. For a product whose
-selling point is an auditable history, "the history dies with the process" is a structural defect, and it
-also blocks long-running missions outright.
-
-Scope: durable event/evidence store, schema, migration story, and the read path that renders it. **No
-safety invariant changes** - the store records what verifiers already observed; it grants nothing.
-
-After that: browser reproducibility (`playwright` undeclared, Chromium path hardcoded), then model
-escalation only if a model-agnostic route exists that does not depend on this hardware.
-
-### Still human-blocked
-
-H1/H2 release-after-takeover (I will not ask you to press anything) · H4 mouse sentinel · **H5 window
-routes (ADR 0003)** · G6/G7 on the other repository.
-
-
----
-
-## M15 - DURABLE STATE: COMPLETE (store proven; not yet on the mission path)
-
-| # | Capability | Status | Evidence |
+| # | Item | Est | Notes |
 |---|---|---|---|
-| 30a | SQLite-backed durable store, zero npm deps | **PROVEN** | `node:sqlite`, WAL, FKs |
-| 30b | Versioned forward-only migrations | **PROVEN** | idempotent across three opens |
-| 30c | Mission/step/evidence/history survive restart | **PROVEN** | 19 controls |
-| 30d | Approvals invalidated on restart | **PROVEN** | incl. a real second OS process |
-| 30e | In-flight steps recover to `pending` | **PROVEN** | never `done`, never `verified` |
-| 30f | Corrupt / future / inconsistent stores fail safely | **PROVEN** | refuse, or quarantine |
-| 30g | Persisted evidence ≠ live observation | **PROVEN** | session-scoped, counted separately |
-| 30h | Persistence grants no authority | **PROVEN** | `ResumePermit` has no permission field |
-| 30i | A **live mission** persists anything | **NOT PROVEN** | `executor.ts` does not call the store |
+| 2.1 | Scroll, hover, drag, menu traversal | 3 d | Primitives missing from `desktop-input` |
+| 2.2 | Window lifecycle: resize, move, minimise, tile | 2 d | |
+| 2.3 | **Clipboard transfer between apps** | 2 d | Unlocks the cross-app workflows you asked for |
+| 2.4 | File pickers, save-as dialogs, message boxes | 3 d | |
+| 2.5 | Multi-monitor + DPI awareness | 1 d | |
+| 2.6 | Unexpected-dialog / focus-loss detection | 2 d | You named this explicitly |
+| 2.7 | User-takeover + emergency-stop honouring | 1 d | Partially present; verify under load |
 
-### The defect that mattered most
+### P3 — Real research (≈1.5 weeks)
 
-Approvals survived a restart. `invalidateForeignApprovals` selected `id, session_id` and then filtered
-on `state` — a column it never fetched — so `stale` was always empty and **nothing was ever
-invalidated**. The exact outcome this milestone exists to prevent, shipped green, caught by the control
-that asserts the dangerous property rather than the intended one.
-
-### Next milestone: M16 - INSTRUMENT THE EXECUTOR
-
-Chosen from the evidence, not for convenience. The store is proven and unwired; that gap is now larger
-than anything else on the list that is not blocked on a human decision.
-
-Scope: the executor writes mission transitions, step results and evidence through the store; the live
-harnesses gain a restart-recovery proof; `resumeMission` gates the *resume* path only — never the
-governance path.
-
-**Explicit constraint:** writing must not be able to fail quietly, and must not be able to block or
-alter an action. If persistence fails mid-mission the correct behaviour is to fail the step loudly, not
-to continue as though it were recorded. There is a control for that in M16's scope.
-
-### Queued after that
-
-* **Browser reproducibility** — `playwright` is imported with **zero declared npm dependencies** and the
-  Chromium path is hardcoded to `ms-playwright/chromium-1243`. It works on this machine by accident of
-  layout and is not reproducible.
-* Model escalation — only if a model-agnostic route exists that does not depend on this hardware.
-
-### Still human-blocked
-
-H1/H2 release-after-takeover · H4 mouse sentinel · **H5 window routes (ADR 0003)** · G6/G7 on the other
-repository.
-
-
----
-
-## M16 - EXECUTOR PERSISTENCE: COMPLETE
-
-| # | Capability | Status | Evidence |
+| # | Item | Est | Notes |
 |---|---|---|---|
-| 31a | Mission header, transitions, ending durably recorded | **PROVEN** | 16 controls, real store |
-| 31b | Write-ahead BEFORE the action | **PROVEN** | order asserted: write-ahead precedes outcome |
-| 31c | Lost record after a real action → `outcome-unknown`, never `failed` | **PROVEN** | action happened once, 5 attempts allowed |
-| 31d | An uncertain step is never retried | **PROVEN** | `isRetryable` + both retry gates |
-| 31e | Lost evidence → not a verified step | **PROVEN** | no evidence invented |
-| 31f | Unrecordable mission does not start | **PROVEN** | store stays empty |
-| 31g | Recovery obligations are not consumed by reads | **PROVEN** | identical across three reads |
-| 31h | Machine rollback after a lost record | **NOT PROVEN — IMPOSSIBLE** | no shared journal; documented, not claimed |
+| 3.1 | Pagination + infinite scroll + lazy load | 3 d | |
+| 3.2 | JS-rendered pages (no silent headless substitution) | 4 d | Must stay visible when you asked to see it |
+| 3.3 | **Coverage accounting** — discovered / visited / extracted / failed / skipped | 3 d | "Full research" must be measurable |
+| 3.4 | Source URL traceability per fact | 2 d | |
+| 3.5 | Contradiction detection across sources | 3 d | You asked for facts vs inference |
+| 3.6 | Tables, PDFs, structured extraction | 4 d | |
+| 3.7 | Coverage gate: stop when criteria met, blocked, or limit hit | 2 d | |
 
-### Next milestone: M17 — BROWSER REPRODUCIBILITY
+### P4 — Cross-application work (≈1.5 weeks)
 
-Selected from the evidence, and it is the highest-value gap that is neither blocked on a human decision
-nor already proven.
-
-`operator.mjs` imports `playwright` while `package.json` declares **no dependencies at all**, and the
-Chromium path is hardcoded to `ms-playwright/chromium-1243`. The browser path therefore works on this
-machine by accident of layout: a different build, a different machine, or a fresh clone breaks it.
-
-Scope: declare and pin the dependency; resolve the browser binary rather than hardcoding it; add a
-harness that fails loudly when the browser is unavailable instead of skipping; keep the hierarchy
-Playwright → DOM/accessibility → deterministic actions, with any AI browser adapter strictly optional
-above it.
-
-**Explicitly not in scope:** no AI browser agent as a foundation, no model work. Per instruction, the
-1.5B model receives no further investment unless evidence changes materially — and M13 measured two
-cheap interventions failing, so the evidence has not changed.
-
-### After that
-
-Windows desktop application shell (WinUI 3, chosen in the ecosystem audit) — but only once the
-execution foundation is trustworthy enough to put a window on.
-
-### Still human-blocked
-
-H1/H2 release-after-takeover · H4 mouse sentinel · **H5 window routes (ADR 0003)** · G6/G7 on the other
-repository.
-
-
----
-
-## M17 - ATTEMPTED, AND THE EVIDENCE SAID STOP
-
-The plan was browser reproducibility, then process containment, then H5. Verification came first, as it
-should have.
-
-**Browser reproducibility turned out to be a precondition, not a chore.** Fixing its root cause
-(`playwright` undeclared and imported at the top level of `operator.mjs`) revealed that **the five
-control-core proof harnesses had never run.**
-
-Baseline, measured: `prove-chord-swallow` **PASS** · `prove-panel-release` 2 failures ·
-`prove-no-self-release` 3 named failures · `prove-panel-colour` and `prove-status-truth` **crash**.
-
-**The refusals hold.** `/release` and `/rearm` are refused; an injected untagged click does not release
-the panel; nothing was forged as a human event. **The reporting does not.** And two harnesses cannot
-run at all.
-
-### H5 is NOT proceeding
-
-I was ready to add `MayInject()` to three routes in `OperatorHost.cs`. I am not, because the properties
-that change is meant to preserve are not currently demonstrated, and two of the proofs crash. Editing
-takeover code behind an unreliable safety net is the exact scenario the "ADR plus human decision" rule
-exists to prevent.
-
-### Next milestone: M17 - MAKE THE PROOFS A RELIABLE GATE
-
-Fix the **harnesses** (`.mjs`, not the safety-critical C#): make all five run deterministically,
-separate security failures from observability failures, and **wire them into `npm test`**. That last
-part is the whole point - they rotted because nothing ran them. Re-baseline, and only then revisit H5.
-
-**Deferred behind it:** process containment (`reapTree` fires only on timeout, so a command that exits
-normally while leaving background children orphans them) and browser reproducibility proper (declare and
-pin `playwright`, resolve the binary).
-
-
----
-
-## M17 - THE PROOF GATE: COMPLETE, AND IT IS RED
-
-### Delivered
-
-* `npm run control:proofs` runs all five control-core proofs and sorts each into PASS / FAILED /
-  **INCONCLUSIVE**, exiting non-zero unless every claim held AND nothing was skipped.
-* Two harnesses that used to **crash** now report INCONCLUSIVE, and their colour assertions are marked
-  **SKIP** rather than FAIL - a broken instrument must not be recorded as a defect in the measured thing.
-* A single proof can no longer print PASS while something went untested.
-
-### Measured verdict
-
-| Proof | Verdict |
-|---|---|
-| `prove-chord-swallow` | FAILED - 4 claims |
-| `prove-status-truth` | INCONCLUSIVE - screenshot unavailable |
-| `prove-panel-release` | FAILED - 2 claims |
-| `prove-panel-colour` | INCONCLUSIVE - 3 assertions skipped |
-| `prove-no-self-release` | FAILED - 3 claims |
-
-Not order-dependence: standalone runs give identical verdicts.
-
-### Three causes, all REPORTING rather than ESCAPE
-
-1. **`/screen.png` and `/panelgrid` do not respond** - the host closes the connection.
-2. **The swallow counter contradicts the hook's own outcome string** - `lastChordOutcome` says
-   "swallowed", the delta says `+0`. One of them is lying, and it is the kind this project exists to
-   eliminate.
-3. **`takeoverPending` is not reported** although `lastTakeoverAt` shows a takeover occurred.
-
-**The refusals all hold.** `/release` and `/rearm` refused · an injected untagged click refused and
-credited to the OPERATOR · injection refused while blocked · `/arm` and `/drain` cannot lift a takeover ·
-nothing forged as a human event.
-
-### Next: BLOCKED ON A HUMAN DECISION
-
-Fixing the three causes means editing `control-core/src` - the same class of change as H5, and the same
-reason it is deferred: the rule exists so proven code is not edited without a green baseline, and the
-absence of that baseline **is** the finding.
-
-Recommended, in order: (1) repair the pixel-capture endpoints · (2) reconcile the swallow counter with
-the outcome string · (3) report `takeoverPending` truthfully · (4) re-baseline until the gate is green ·
-(5) **only then** H5.
-
-Unlike H5, this is not optional cleanup. Until it is done this repository cannot honestly claim the
-control core's safety properties are demonstrated.
----
-
-## PHASE 4 ENTRY PLAN (proposed - not authorised, not started)
-
-Authored 2026-10-11 immediately after Phase 3 (orchestrator convergence) reached
-validation-complete. **Nothing in this section has been implemented.** It is an entry plan, and it
-deliberately reuses this roadmap's existing milestone grammar, ledger and standing rules rather than
-creating a second plan.
-
-### The gap this enters through
-
-Two proven halves exist and neither knows about the other.
-
-| half | what it proves | where |
+| # | Item | Est |
 |---|---|---|
-| **Mission engine** | every *step* verified against declared evidence | M1-M7, M15-M16 |
-| **Orchestrator** | an *independent model* reviewed the evidence and returned a verdict | Phase 3, `packages/agent/` |
+| 4.1 | Read/write **existing** spreadsheets (not just create) | 3 d |
+| 4.2 | Office document (docx/xlsx/pptx) read + write | 5 d |
+| 4.3 | PDF read + generate | 3 d |
+| 4.4 | Browser → app data transfer with verification | 3 d |
+| 4.5 | Email drafting (draft only; sending needs approval) | 3 d |
 
-`packages/agent/` is **absent from this roadmap entirely** - it appears only as an audit citation in
-`docs/model-provider-contract.md`, and in no `package.json` script. It is proven (35 agent tests,
-18 convergence, type-check clean) and orphaned. That is the opportunity and the risk.
+### P5 — A machine that remembers and recovers (≈1 week)
 
-The missing third thing is the one the Definition of Done actually asks for:
+| # | Item | Est |
+|---|---|---|
+| 5.1 | Session resume across restart | 3 d |
+| 5.2 | Mission checkpoints + rollback | 3 d |
+| 5.3 | Scheduled/recurring missions | 2 d |
+| 5.4 | Learned-failure memory ("this approach failed here") | 3 d |
 
-> **Independent verification of meaningful results** - and **An accurate completion report**
+### P6 — Development agent (≈1 week)
 
-Step verification proves the *steps* ran. Reviewer verification proves *a model looked*. Neither
-establishes that the **objective** was met, and nothing today can say so in a sentence a person can
-act on.
+| # | Item | Est |
+|---|---|---|
+| 6.1 | Repo inspection, bounded fix, test, diff, evidence | 4 d |
+| 6.2 | Safe controlled-failure injection to prove recovery | 2 d |
+| 6.3 | Rollback path for every self-change | 2 d |
 
-### Proposed vertical slice: M18 - OBJECTIVE-LEVEL VERIFICATION
+### P7 — Business lifecycle (≈6–10 weeks, staged)
 
-**One natural-language objective, end to end, with an independent verdict on the objective itself.**
+Your Section 16 vision. Honest sizing: this is months, not days, and depends on P1–P6 being solid.
 
-```
-objective (natural language)
-  -> planner (PROVEN: deterministic + world-aware)   [model slot optional, NOT required]
-  -> compiler + governance gate (PROVEN)
-  -> executor acts within permissions (PROVEN)
-  -> step verifiers check declared evidence (PROVEN)
-  -> OBJECTIVE VERIFIER: independent model judges objective vs accumulated evidence   <-- NEW
-  -> divergent  -> supervisor replans (PROVEN, M2)
-  -> restart    -> resume from durable store (PROVEN, M15/M16)
-  -> accurate completion report naming the objective verdict and its evidence           <-- NEW
-```
+| Stage | Scope | Est |
+|---|---|---|
+| 7.1 | Market/competitor research → structured report | 1 wk |
+| 7.2 | Product requirements, architecture, roadmap drafting | 1 wk |
+| 7.3 | Codebase/product build via coding agents | 2 wks |
+| 7.4 | Website, docs, pricing, launch assets | 1 wk |
+| 7.5 | GTM: SEO, content, social, email drafts | 2 wks |
+| 7.6 | Prospects, CRM, outreach drafts, pipeline | 2 wks |
+| 7.7 | Pricing, budgets, forecasts, unit economics | 1 wk |
+| 7.8 | Monitoring → recommend → **propose** changes | 2 wks |
 
-This is **integration of two proven systems plus one genuinely new judgement**, not a connector
-collection and not a development-only agent. It advances every axis the long-term goal names:
-understand objectives (the verdict is about the objective), plan, coordinate capabilities, act within
-permissions, verify independently, recover.
+Every external action stays draft-until-approved. Nothing publishes, sends, buys, or commits legally without you.
 
-### Why this and not the alternatives
+---
 
-| candidate | why not |
-|---|---|
-| **Model that produces usable plans** (M9) | Roadmap already measured this twice: 0/15 plans, and constrained decoding did not help (M10). A larger model is **explicitly not justified** until a model-agnostic route exists. Re-proposing it now would contradict standing evidence. |
-| **Fix `control:proofs` RED** | Requires editing `control-core/src`. Rule 1 and H5: ADR + human decision. Cannot be planned around. |
-| **Release/resume after takeover** (H1/H2) | Largest blocker to Definition of Done, and **human-blocked**. Not ours to schedule. |
-| **Browser observation / reproducibility** | Real, but narrow. Roadmap already measured that it "does nothing for the binding constraint". |
-| **A desktop application** | Roadmap rule: "no decorative UI before the underlying capability is ready". The capability is not ready. |
+## 3. What it needs — tools, integrations, decisions
 
-M18 is the highest-value item that is **neither blocked on a human decision nor already proven**. It
-also sits at the roadmap's own priority position - *integration* - which is exactly where a
-convergence-proven orchestrator belongs.
+### Already present, no cost
+Node 24 · Python 3.14 · Git · VS Code · the 11 capabilities · Operator Host (C#) · SQLite · Windows UIA + OCR.
 
-### Entry criteria (measured, not assumed)
+### Needed (all free/open-source)
 
-| # | criterion | state | evidence |
+| Need | Tool | Licence | Why |
 |---|---|---|---|
-| E1 | Orchestrator parses, type-checks, 35/35 agent + 18/18 convergence | **MET** | Phase 3 record, `docs/EVIDENCE.md` |
-| E2 | Mission engine: compiler, governance, router, verifiers, supervisor | **PROVEN** | M1-M7 ledger rows 6,7,12,13,24 |
-| E3 | Durable store proven; executor persistence proven | **PROVEN** | M15/M16 rows 30a-31h |
-| E4 | A model that emits a valid `PlanProposal` | **NOT MET** | M9/M13, 0/15 |
-| E5 | `control:proofs` green | **NOT MET** | M17, RED |
-| E6 | Release-after-takeover (H1/H2) | **NOT MET** | roadmap, still blocked |
+| Existing-file spreadsheet editing | SheetJS (`xlsx`) | Apache-2.0 | Read *and* write xlsx |
+| docx/pptx | `python-docx`, `python-pptx` | MIT | Office formats |
+| PDF | `pypdf`, `reportlab` | BSD | Read + generate |
+| Web scraping | Playwright | Apache-2.0 | Pagination, lazy-load, JS |
+| HTML parsing | `cheerio` | MIT | Structured extraction |
+| Dataframes | `pandas` | BSD | Analysis, CSV correctness |
+| Scheduling | `node-cron` | ISC | Recurring missions |
+| Secrets | OS keychain (DPAPI) | OS | Never a token in a repo |
 
-**Gating rule:** M18 MUST complete with E4, E5 and E6 unmet. Any design that needs a real planner,
-a green proof gate, or release-after-takeover is out of scope and is a different milestone. The
-deterministic and world-aware planners (PROVEN) must be sufficient to carry it.
+### Explicitly NOT doing
+No paid API. No cloud LLM. No Docker (absent, and 0.3 GB free forbids it). No local model training on this hardware — an i3 with 8 GB and no GPU cannot train a useful model; local *inference* of a small model is possible but slow and will compete with Zeus for the same RAM.
 
-### Scope
+### On your model question
+**Do not train or fine-tune.** Every failure this session was a software defect: a cached handle, a stale readiness check, a destination substitution, an unguarded exit, a lying verifier. None is a model-capability problem. The model plans competently — it produced the correct 8-step NAKIVO plan. It fails at *reporting*, which is engineering. Spend the effort on verification and artifact integrity; that's where the value is.
 
-1. An **objective verdict** type, structurally distinct from step verification. It cannot be
-   synthesised from step results.
-2. The orchestrator supervises the mission engine as an **outer loop**: rounds, review budget,
-   persisted state, terminal statuses. Reuse the convergence-proven loop unchanged where possible.
-3. An **independent reviewer** judges the objective against accumulated evidence, using the already
-   measured-free model path (`nemotron-3.5-lightning-free`, 31.7s, $0) and the existing
-   `normalizeModelId` independence derivation.
-4. Divergence routes into the **existing** supervisor replanner.
-5. Restart resumes from the **existing** durable store; never `done` without evidence.
-6. A **completion report** that states the objective verdict and the evidence behind it.
+Local inference remains a legitimate *future* option if remote free models prove unreliable, but it is not a current priority and would worsen the memory problem.
 
-### Reuse-first
+---
 
-**Reuse, unchanged:** mission-engine executor/compiler/governance/router/verifiers/supervisor;
-`node:sqlite` durable store (M15); the orchestrator loop, `evidenceFingerprint`, `readVerdict`,
-`normalizeModelId`; `materialChanges` for evidence diffing.
+## 4. Roadmap shape
 
-**Add no dependencies.** The repository has **zero npm dependencies** and that is load-bearing
-(ECOSYSTEM-AUDIT). No new runtime: H5 chose local inference and it already works. No network egress.
+**Single continuous workstream, one P-block per session, checkpoint after each.** Not a parallel portfolio: with ~1 GB free and a browser plus a desktop agent already resident, two efforts at once guarantees flaky results and more debugging of the wrong thing.
 
-**Do not** make MCP an authority - ECOSYSTEM-AUDIT E is explicit: an MCP server is another process
-asserting it did something, which is the exact "fake verified" failure the 24-scenario adversarial
-suite exists to prevent. Optional adapter only, if at all.
+**Cadence per block:**
+1. Implement the smallest correct version.
+2. Add the failing-first test **and** the negative test.
+3. Run it live, capture evidence.
+4. Report what was measured — not what was intended.
+5. Commit only when the block is green.
 
-**Study-only, already audited, no action now:** `onnxruntime-genai` (future inference home),
-MCP adapter, desktop stack (deferred until the capability is ready).
+## 5. Decisions — answered
 
-### Acceptance criteria (measurable)
+| # | Question | Answer | Consequence |
+|---|---|---|---|
+| 1 | Kill the 420 MB process? | **No — and it was the wrong question.** It is the OpenCode desktop app's service, not a Zeus leak; Zeus is 56 MB total. | Left running. Roadmap corrected; no kill performed. |
+| 2 | Is the GitHub repo private? | **Yes.** | No action. Backup is valid and secret scan was clean. |
+| 3 | Shell interception scope? | **Full interception** (as recommended). | `terminal` becomes declared-artifacts-plus-read-only. P0.1. |
+| 4 | Ordering? | **Best order to guarantee each capability is actually added and tested.** | Order below is chosen for *verifiability*, not ambition. |
 
-Each is a control that must be **shown to fail** when its protection is removed, per standing rule 2.
+### Why this order maximises verified capability
 
-| # | criterion | proof required |
-|---|---|---|
-| A1 | An objective verdict exists and is **not** derivable from step verification | type + construction test |
-| A2 | A mission whose steps all verify but whose **objective is unmet** is reported not-done | real mission, this machine |
-| A3 | Removing the objective verifier flips A2 to done | negative control that bites |
-| A4 | Independence is **derived**, never supplied by a caller | control fails if one model can claim independence |
-| A5 | Restart mid-mission resumes from the store; never `done` without evidence | real second process |
-| A6 | The completion report names the objective verdict; `outcome-unknown` never reads as success | control on the report text |
-| A7 | `$0`: zero npm deps added, zero egress, free/local models only | dependency + network diff |
-| A8 | No regression: 683/683 unit, 35/35 agent, 18/18 convergence, type-check 0 errors | full gates re-run |
-| A9 | `control-core` byte-identical | hash before/after |
+The sequence is deliberately **not** "business features first". Two reasons, both measured:
 
-### Definition of done for M18
+1. **Every unverified primitive makes downstream work unverifiable.** P3 (research) and P7 (business) both end in "produce a verified artifact". If a count can be fabricated (P0.2) and a shell write can escape the contract (P0.1), then a research deliverable is unfalsifiable — and an unverifiable deliverable is worse than none, because it looks like progress.
+2. **GUI is the bottleneck for everything visible.** P2 unlocks cross-app, browser missions, and the interactive half of business work. Skipping it makes every later item land as headless-only, which is the substitution defect this system has already produced twice.
 
-- Implementation, passing tests, **biting** negative controls, one real unattended run on this machine.
-- Objective verdict documented in `docs/EVIDENCE.md` with a reproduction command.
-- New capability-ledger rows in this file.
-- Zero new dependencies; zero egress; `control-core` untouched.
-- No human decision required to complete it.
+So: **close the honesty holes (P0) → make missions trustworthy (P1) → complete the GUI (P2) → then breadth (P3–P6) → business lifecycle (P7)**, where each stage inherits verified guarantees from the last.
 
-### Effort estimate (estimates, not measurements)
+**Business lifecycle is last on purpose.** It is ~6–10 weeks of work that consumes research, GUI, cross-app and persistence. Starting it earlier means building it on foundations that lie. That ordering is the recommendation, and it is reversible at any checkpoint.
 
-| part | estimate | note |
-|---|---|---|
-| Objective verdict type + A1 | 0.5 day | small, well-bounded |
-| Orchestrator supervises mission engine (A2) | 1-2 days | the real integration work |
-| Independence + negative controls (A3, A4) | 1 day | pattern already exists in `reviewer.ts` |
-| Restart + store integration (A5) | 1 day | store and recovery both PROVEN |
-| Completion report (A6) | 0.5 day | |
-| Gates, evidence, ledger (A7-A9) | 0.5 day | |
-| **total** | **~4-6 days** | excludes the live-run latency, which is measured not guessed |
+## 6. What I have NOT done
 
-### Risks
+- Not built any roadmap item.
+- Not killed any process — PID 16820 is alive and is the OpenCode desktop service.
+- Not touched `Documents` permissions or the filesystem allowlist.
+- Not created any spend or external resource.
+- Not pushed beyond the commits already approved.
 
-1. **The objective verdict could become a rubber stamp.** This is the real risk: a check that always
-   passes is worse than none because it manufactures confidence. Mitigation: refusal-by-default, and
-   A3 must fail loudly when the check is removed. If A3 cannot be made to bite, **stop and record it**
-   rather than ship a soft check.
-2. **Latency compounding.** An orchestrator round plus a mission plus an objective verdict is
-   materially slower than either half. Report measured numbers; do not hide them behind the budget.
-3. **Scope creep into "AI maintains AIOS".** Explicitly out of scope. M18 verifies *objectives the
-   human set*; it does not generate its own objectives or edit the repository's own governance.
-4. **Orchestrator provenance.** `packages/agent/` is untracked in git; the Phase 3 repair is
-   hash-proven and execution-proven but has no authoritative pre-tear source. Carried forward from
-   the Phase 3 record, not resolved here.
-5. **Two proven systems, one integration.** Integration is where this project's recorded defect class
-   lives ("plausible-looking code that is wrong when executed"). Assume A2 will fail first and treat
-   that as the milestone working, not breaking.
+---
 
-### Deliberately NOT in scope
+## Appendix — measured results this session
 
-- No new capability: browser, desktop, API mode. M11-M14 remain queued as written.
-- No model planner. E4 stays unmet and the slice must not need it.
-- No `control-core` change, no H1/H2/H4/H5 work.
-- No connector framework as an end in itself.
-
-### Status
-
-**PROPOSED. Not authorised. Not started.** Phase 4 proper begins only when a human accepts this entry
-plan or substitutes a different milestone. Per standing rule 5, this is reported as status, not as a
-request for instructions.
+- mission-engine: **1060/1060** pass (from 1027 before this work)
+- all packages: **1277/1281** — the 4 failures confirmed pre-existing by stashing the work and re-running
+- typecheck: **1 error**, the orphaned `run-browser-gui-workflow.ts`
+- NAKIVO: **413 files**, 941,398,388 bytes, byte-total match, 5/5 spot-checks, sha256 `cf47c84a…`
+- Protected through a failed mission: **byte-identical**
+- Zeus RSS: **56 MB**; machine has ~1 GB free shared with a browser and the OpenCode desktop app
+- Registered capabilities: **11** · live harnesses: **34** · test files: **83**
