@@ -45,7 +45,7 @@ import type { Step, Mission, MissionState } from '../../state.ts'
 import type { ExecutionEvent } from '../../events.ts'
 import { liveControl, livePermission } from '../live-control.ts'
 import {
-  buildArtifactContract, contentLooksWrongFor,
+  buildArtifactContract, contentLooksWrongFor, registerContract, forgetContract,
   type ArtifactContract,
 } from './artifacts.ts'
 import { wantsQuietReport, classifyGoal, interactionMode } from './goal-intent.ts'
@@ -1219,7 +1219,7 @@ const REPORTING_VERB_FROM_GOAL = (goal: string): string => {
  * objective, and a step that omitted it was going to fail for a reason the user could do
  * nothing about. Filling it from the goal is what the user meant.
  */
-export function validatePlan(plan: InterpretedPlan, goal = ''): ValidatedPlan {
+export function validatePlan(plan: InterpretedPlan, goal = '', missionId = ''): ValidatedPlan {
   const steps: PlannedStep[] = []
   const refusals: string[] = []
   const inferred: string[] = []
@@ -1846,6 +1846,16 @@ export function validatePlan(plan: InterpretedPlan, goal = ''): ValidatedPlan {
   )
   refusals.push(...artifactContract.refusals)
 
+  // The contract is registered against the MISSION, so `terminal` can reach it without the model
+  // ever putting it in a tool argument - a contract passed through `args` would be a contract the
+  // model wrote, which is no contract at all. See artifacts.ts for why this is keyed by mission id
+  // rather than held as a single global.
+  //
+  // `missionId` is optional so that `validatePlan` stays callable as a pure function by the test
+  // suite. Without one there is simply nothing to register against, and `terminal` correctly
+  // refuses anything that can write.
+  if (missionId) registerContract(missionId, artifactContract)
+
   // CONTENT OF THE WRONG KIND FOR THE DESTINATION IT IS ABOUT TO OCCUPY.
   //
   // This is the check that would have stopped the overwrite as it happened rather than afterwards.
@@ -2119,7 +2129,7 @@ export async function runGoal(goal: string, emit: Emit, opts?: InterpretOptions)
     // attempt's real outcomes AND the content those outcomes produced. Without the content the
     // model re-plans from the same empty context and writes the same promise.
     plan = await interpret(trimmed, emit, { model: opts?.model, feedback: replanFeedback })
-    validated = validatePlan(plan, trimmed)
+    validated = validatePlan(plan, trimmed, missionId)
     for (const r of validated.refusals) emit({ kind: 'error', text: `Refused: ${r}` })
     for (const n of validated.inferred) emit({ kind: 'status', text: `Filled in a gap: ${n}` })
     // A destination the PERSON named and that was not honoured. Carried out of validation so the
@@ -2697,6 +2707,10 @@ export async function runGoal(goal: string, emit: Emit, opts?: InterpretOptions)
         ? { destinationNotHonoured: destinationNotHonoured.map((d) => d.requested) }
         : {}),
     } as MissionSummary)
+    // Released once the mission is over. A chat server is long-lived, and a registry that only
+    // grows is a slow leak of every artifact path the process has ever seen - the same class of
+    // bug as the process leak already documented in opencode-planner.ts, in a different form.
+    forgetContract(missionId)
     return { ok, missionId, goal: trimmed, reply: plan.reply, steps: stepsOutList, refusals: validated.refusals }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

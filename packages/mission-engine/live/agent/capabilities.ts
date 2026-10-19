@@ -46,7 +46,10 @@ import { runCompanyBrief, ensureBriefDirs, type BriefRunResult } from '../compan
 import { verifyBrief } from '../verify-brief.ts'
 import { liveControl, surveyWindow, livePermission, armOperator } from '../live-control.ts'
 import { windowIsSameApp, adoptedWindowRefusal } from './window-identity.ts'
-import { contentLooksWrongFor, sha256File, safeStatSize } from './artifacts.ts'
+import {
+  contentLooksWrongFor, sha256File, safeStatSize,
+  contractFor, authorizeShell, snapshotArtifacts, artifactDelta,
+} from './artifacts.ts'
 
 // ===========================================================================================
 // shared helpers
@@ -1976,7 +1979,7 @@ const terminalTool: Tool = {
     { name: 'command', type: 'string', required: true, description: 'an allowlisted command, e.g. "node --version"' },
     { name: 'cwd', type: 'string', required: false, description: 'working directory' },
   ],
-  async run(_ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  async run(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
     const command = str(args.command, 'command')
     if (!command) return { kind: 'failed', reason: 'no command was given' }
     if (!commandAllowed(command)) {
@@ -1985,17 +1988,62 @@ const terminalTool: Tool = {
         reason: `"${command}" is not on the terminal allowlist (${Array.from(ALLOWED_COMMANDS).join(', ')})`,
       }
     }
+
+    // THE SHELL IS A WRITE ROUTE, AND USED TO BE AN UNGUARDED ONE.
+    //
+    // Measured on this machine: a mission proposed a plan using `shell`/`read`, validation refused
+    // both as unregistered capabilities - and the file was written anyway, 407 real rows, by the
+    // same shell the plan had named. Every artifact rule in `artifacts.ts` is enforced in
+    // `write-file` and `spreadsheet`; the shell bypassed all of them, because a command string is
+    // not a path and nothing was reading it as one.
+    //
+    // So a command that can write must now say WHICH DECLARED ARTIFACT it is writing, and a
+    // command that cannot is not run. Read-only commands (`dir`, `where`, `echo`, `git status`, …)
+    // are unaffected - they cannot damage a file, so making them declare intent would only make
+    // the tool worse at the reading and inspection work it is genuinely useful for.
+    const contract = contractFor(ctx.missionId)
+    const refusal = authorizeShell({ command, contract })
+    if (refusal) return { kind: 'failed', reason: refusal }
+
     const cwd = str(args.cwd, 'cwd', AGENT_OUT)
     if (!existsSync(cwd)) return { kind: 'failed', reason: `working directory does not exist: ${cwd}` }
+
+    // Snapshot first. "The file exists afterwards" cannot distinguish this mission's bytes from
+    // an earlier mission's, and that ambiguity is what let a clobber read as a success.
+    const before = contract ? snapshotArtifacts(contract) : {}
+
     try {
       const r = await runCommand(command, cwd)
       const combined = `${r.out}${r.err}`.trim()
       if (r.code !== 0) return { kind: 'failed', reason: `exit ${r.code}: ${combined.slice(0, 300)}` }
       if (combined.length === 0) return { kind: 'nothing-found', reason: 'the command produced no output' }
+
+      // What did it actually do to the artifacts it declared? Stated rather than assumed, because
+      // a command that exits 0 having written nothing is not a step that produced its output.
+      let touched: string[] = []
+      if (contract) {
+        const d = artifactDelta(contract, before)
+        touched = [...d.created, ...d.changed]
+        if (d.missing.length > 0) {
+          return {
+            kind: 'failed',
+            reason: `"${command}" removed declared artifact(s): ${d.missing.join(', ')}. `
+              + 'A mission that destroys its own deliverable cannot report success afterwards.',
+          }
+        }
+      }
+
       return {
         kind: 'data',
-        summary: `${r.code === 0 ? 'ok' : 'failed'} (${combined.length} chars)`,
-        data: { command, cwd, exitCode: r.code, output: combined.slice(0, 4000) },
+        summary: `${r.code === 0 ? 'ok' : 'failed'} (${combined.length} chars)`
+          + (touched.length > 0 ? `; wrote ${touched.length} declared artifact(s)` : ''),
+        data: {
+          command,
+          cwd,
+          exitCode: r.code,
+          output: combined.slice(0, 4000),
+          ...(touched.length > 0 ? { artifactsWritten: touched } : {}),
+        },
       }
     } catch (e) {
       return { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
