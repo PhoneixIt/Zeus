@@ -62,6 +62,10 @@ export function fakeControl(opts: FakeControlOptions = {}): ControlSurface & { c
     observe: async () => { calls.push('observe'); if (opts.observeThrows) throw opts.observeThrows; return observation },
     captureScreen: async () => { calls.push('captureScreen'); return Buffer.alloc(0) },
     verifyTarget: async (_t: TargetIdentity) => { calls.push('verifyTarget'); return target },
+    raw: async () => { calls.push('raw'); return {} },
+    ocr: async () => ({ ok: true, text: '', lines: [] }),
+    screenWatch: async () => ({ ok: true }),
+    screenDiff: async () => ({ ok: true, changed: false, changedPixels: 0, changedPercent: 0, region: { x: 0, y: 0, w: 0, h: 0 } }),
     move: async (_t, _x: number, _y: number) => refuse('move'),
     click: async (_t, _x: number, _y: number) => refuse('click'),
     doubleClick: async (_t, _x: number, _y: number) => refuse('doubleClick'),
@@ -187,6 +191,17 @@ export function strictVerifier(reason = 'independent check failed'): Verifier {
   return {
     verifies: () => true,
     async verify(): Promise<{ rejected: string }> { return { rejected: reason } },
+  }
+}
+
+/** A tool that writes a file and may return "already exists" refusal. */
+export function writeTool(name = 'writer', reason: string = 'already exists in the workspace and will not be overwritten', transient?: boolean): Tool {
+  return {
+    name,
+    mode: 'filesystem',
+    async run(): Promise<ToolResult> {
+      return { kind: 'failed', reason }
+    },
   }
 }
 

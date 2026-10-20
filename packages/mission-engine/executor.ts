@@ -48,6 +48,9 @@ import {
 } from './state.ts'
 import type { ExecutionEvent, ExecutionRecord } from './events.ts'
 import { keyFor, type ApprovalStore, type DeclaredEffect } from '../governance/approval.ts'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import type { RecoveryPolicy } from './recovery.ts'
 
 // ---------------------------------------------------------------- tool contract
 
@@ -94,6 +97,8 @@ export interface Tool {
   readonly mode: ExecutionMode
   /** For the modes that need a target. Absent for observation-only capabilities. */
   readonly needsTarget?: boolean
+  /** Declared arguments for the model/tool schema. Optional because not all tools declare them. */
+  readonly args?: ReadonlyArray<{ name: string; type: string; required: boolean; description: string }>
   run(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult>
 }
 
@@ -183,6 +188,7 @@ export interface ExecutorConfig {
    * one. The live harnesses supply it.
    */
   readonly recorder?: MissionRecorder
+  readonly recovery?: RecoveryPolicy
 }
 
 /**
@@ -1004,37 +1010,14 @@ export async function execute(
     if (halted) break
     // Check if the step failed because the file already exists from a prior attempt.
     // If so, verify the existing file content rather than marking the step as failed.
-    const alreadyExistsReason = finalOutcome?._alreadyExistsReason
+    const alreadyExistsReason = (finalOutcome as { _alreadyExistsReason?: string })?._alreadyExistsReason
     if (alreadyExistsReason) {
-      // Construct the expected file path from the step's relative argument.
-      // The write-probe-file tool uses join(tmpdir(), 'aios-fs-probe', rel).
-      const expectedPath = join(tmpdir(), 'aios-fs-probe', alreadyExistsReason.replace(/.*already exists in the workspace and will not be overwritten/, '').trim())
-      // Also try the diagnostic workspace path in case this run used a suffixed workspace.
-      const diagPath = join(tmpdir(), 'aios-fs-probe-diagnostic', alreadyExistsReason.replace(/.*already exists in the workspace and will not be overwritten/, '').trim())
-      let filePath = undefined
-      if (existsSync(expectedPath)) filePath = expectedPath
-      else if (existsSync(diagPath)) filePath = diagPath
-      if (filePath) {
-        try {
-          const fs = require('node:fs')
-          const stat = fs.statSync(filePath)
-          if (stat.isFile() && stat.size > 0) {
-            const body = fs.readFileSync(filePath, 'utf8')
-            const contentPreview = body.slice(0, 40)
-            ;(finalOutcome as any) = {
-              kind: 'verified',
-              evidence: {
-                kind: 'file-exists',
-                path: filePath,
-                bytes: stat.size,
-                note: `read here; first 40 bytes ${JSON.stringify(contentPreview)}`,
-              },
-            }
-          }
-        } catch {
-          // verification failed, fall through to normal failed handling
-        }
-      }
+      // Record that an "already exists" refusal was encountered during execution.
+      // The post-loop logic may use this information to decide whether a read-back
+      // of the existing file is appropriate, but the step must still be independently
+      // verified by the designated verifier — we do not manufacture verification from
+      // an unrelated file existing in the OS temporary directory.
+      ;
     }
     if (finalOutcome) {
       // ---- THE DERIVED RESULT, made durable.

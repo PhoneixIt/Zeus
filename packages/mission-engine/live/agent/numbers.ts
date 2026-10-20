@@ -57,21 +57,65 @@ export interface MeasuredNumber {
  */
 const NOT_A_CLAIM = new Set<number>()
 
+/** Map of number words to their numeric values, for extracting values from prose. */
+export const NUM_WORD_MAP: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+  sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, thousand: 1000, million: 1000000,
+}
+
+/** Regex for currency amounts: "$100", "100 dollars", "5.50 euros", etc. */
+export const CURRENCY_PATTERN = String.raw`(\$|£|€|¥)\s*[\d,.]+|[\d,.]+\s+(?:dollars?|euros?|yen|pounds?)`
+
 /**
  * A number written with a unit or a noun that makes it a QUANTITY rather than a label.
  *
  * Bare digits are too noisy to police: a path, a version, a port and a date all contain them. What
- * identifies a quantity is the word next to it - "296 files", "407 rows", "12 columns" - so the
- * patterns require one.
+ * identifies a quantity is the word (or number word) next to it - "296 files", "407 rows", "12
+ * columns", "twenty rows", "a hundred entries" - so the patterns require one.
+ *
+ * Number words are resolved via NUM_WORD_MAP; currency patterns are identified by CURRENCY_PATTERN.
+ * The unit word is required — a bare digit is not enough.
  */
 const COUNT_CLAIM = new RegExp(
-  String.raw`(\d[\d,]*)\s+(?:` +
+  String.raw`(\d[\d,]*|[a-z]+)\s+(?:` +
   String.raw`files?|rows?|columns?|records?|entries|items?|steps?|documents?|folders?|` +
   String.raw`directories|dirs|pages?|links?|images?|sheets?|tabs?|artifacts?|windows?|` +
   String.raw`results?|matches|errors?|warnings?|lines?|characters?|words?|` +
-  String.raw`bytes?|kb|mb|gb|percent|%|%)`,
+  String.raw`bytes?|kb|mb|gb|percent|%|` + CURRENCY_PATTERN + `)`,
   'gi',
 )
+
+/** Given a matched number word, return its numeric value or null. */
+function wordValue(word: string): number | null {
+  const lower = word.toLowerCase()
+  if (lower in NUM_WORD_MAP) return NUM_WORD_MAP[lower]
+  return null
+}
+
+/** Given a raw claim string, extract its numeric value. */
+function claimValue(raw: string): number | null {
+  // Try number word first (e.g. "twenty files")
+  const wordMatch = raw.match(/^([a-z]+)\s+/i)
+  if (wordMatch) {
+    const v = wordValue(wordMatch[1])
+    if (v !== null) return v
+  }
+  // Try currency amount (e.g. "$100" or "100 dollars")
+  const currencyMatch = raw.match(CURRENCY_PATTERN)
+  if (currencyMatch) {
+    const numStr = currencyMatch[0].replace(/[^0-9.,]/g, '').replace(/,/g, '')
+    const v = Number(numStr)
+    if (Number.isFinite(v)) return v
+  }
+  // Try bare digits (e.g. "296 files")
+  const digitMatch = raw.match(/^(\d[\d,]*)\s/)
+  if (digitMatch) {
+    return Number(digitMatch[1].replace(/,/g, ''))
+  }
+  return null
+}
 
 /**
  * Extract the quantitative claims a piece of text makes.
@@ -85,8 +129,8 @@ export function extractCountClaims(text: string): { raw: string; value: number; 
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const raw = m[0]
-    const digits = m[1] ?? ''
-    const value = Number(digits.replace(/,/g, ''))
+    const value = claimValue(raw)
+    if (value === null) continue
     if (!Number.isFinite(value)) continue
     if (NOT_A_CLAIM.has(value)) continue
     out.push({ raw, value, index: m.index })
@@ -182,6 +226,13 @@ export function measuredNumbersFrom(
   out.push({ value: steps.length, source: 'the plan' })
   out.push({ value: steps.filter((s) => s.verified).length, source: 'the verifiers' })
 
+  // Number words (e.g. "twenty rows", "a hundred entries") are captured by the
+  // same extractor used in auditNumbers, so they are already accounted for
+  // there. Here we capture bare digit quantities that the top-level extractor
+  // may miss when the unit is not in the COUNT_CLAIM pattern.
+  const wordNumRegex = /(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\s+(?:rows?|columns?|files?|items?|entries|windows?|characters?|chars?|steps?|records?)/gi
+  const wordNumCurrencyRegex = /(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\s+\$[\d,.]+/gi
+
   for (const s of steps) {
     // Counts the step itself reported.
     //
@@ -193,10 +244,19 @@ export function measuredNumbersFrom(
       ...s.summary.matchAll(
         /(\d[\d,]*)\s+(?:[a-z]+\s+){0,2}?(rows?|columns?|files?|items?|entries|windows?|characters?|chars?|steps?|records?)/gi),
       ...s.summary.matchAll(/(\d[\d,]*)\s*bytes?\b/gi),
+      ...s.summary.matchAll(wordNumRegex),
+      ...s.summary.matchAll(wordNumCurrencyRegex),
     ]
     for (const m of nums) {
-      const v = Number((m[1] ?? '').replace(/,/g, ''))
-      if (Number.isFinite(v)) out.push({ value: v, source: `step ${s.id} (${s.tool})` })
+      let v: number | null = null
+      // If the match is a number word, resolve it via NUM_WORD_MAP
+      if (m[0].match(/^[a-z]+/i)) {
+        v = wordValue(m[0])
+      } else {
+        // Bare digits
+        v = Number((m[1] ?? '').replace(/,/g, ''))
+      }
+      if (v !== null && Number.isFinite(v)) out.push({ value: v, source: `step ${s.id} (${s.tool})` })
     }
   }
   return out

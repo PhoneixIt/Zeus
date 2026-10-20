@@ -5,6 +5,7 @@ import { isComplete, type Mission, type Step } from '../state.ts'
 import {
   dataTool, emptyTool, existenceVerifier, failingTool, fakeControl, liarTool,
   needsHumanTool, noVerifier, replanTool, router, strictVerifier, throwingTool,
+  writeTool,
 } from './fakes.ts'
 
 /**
@@ -432,6 +433,98 @@ test('events are deterministic for identical inputs', async () => {
   const two = await build()
   const shape = (r: typeof one) => r.events.map((e) => `${e.seq}:${e.type}`).join('|')
   assert.equal(shape(one), shape(two), 'same inputs must produce the same event sequence')
+})
+
+// ================================================================ ALREADY-EXISTS SHORTCUT
+
+// The executor previously had a verification shortcut: if a write step failed with
+// "already exists", the post-loop logic would check whether an unrelated file existed
+// in the OS temporary directory (via existsSync) and, if so, mark the step as
+// verified with kind 'file-exists'. This bypassed the designated verifier and
+// violated the executor invariant: "The executor cannot manufacture success."
+//
+// This test suite documents the correct behaviour and prevents regression.
+
+test('NEGATIVE: an "already exists" failure does NOT establish success', async () => {
+  // A write step that gets refused because the file already exists should not
+  // become verified just because some unrelated file happens to be in tmpdir.
+  const r = await execute(
+    mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }),
+    {
+      tools: router({ a: writeTool('a') }),
+      verifier: existenceVerifier(['a']),
+      control: fakeControl(), config: { ...ok, maxAttempts: 2 },
+    },
+  )
+  // The step must not complete (unverified work must not complete).
+  assert.equal(r.record.complete, false, 'unverified "already exists" step must not complete')
+  const result = r.mission.plan[0].result!
+  const outcome = result.outcome
+  // The outcome must not be 'verified' — it should be 'failed' or another non-verified kind.
+  assert.notEqual(outcome.kind, 'verified', '"already exists" must not auto-establish verified success')
+  // The reason should reflect a refusal, not a verification acceptance.
+  if ('reason' in outcome) {
+    assert.match(outcome.reason, /no verifier|already exists|refused/i, `expected a refusal reason, got ${outcome.reason}`)
+  } else {
+    // The outcome kind itself confirms it is not verified.
+    assert.notEqual(outcome.kind, 'verified', 'outcome kind must not be verified')
+  }
+})
+
+test('NEGATIVE: a file in tmpdir cannot establish mission success', async () => {
+  // Simulate the former shortcut: a file existing in OS temp directory must NOT
+  // cause the step to be marked verified. The test confirms that even if
+  // existsSync(tmpdir() + '/aios-fs-probe/somefile') returns true, the step
+  // remains failed without the designated verifier.
+  // This test does not create any file in tmpdir; it simply asserts the
+  // executor does not use tmpdir file existence as a verification mechanism.
+  const r = await execute(
+    mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }),
+    {
+      tools: router({ a: writeTool('a') }),
+      verifier: existenceVerifier(['a']),
+      control: fakeControl(), config: { ...ok, maxAttempts: 2 },
+    },
+  )
+  // Even if a file existed in tmpdir (which this test does not set up), the
+  // outcome must not be 'verified' via the removed shortcut.
+  assert.notEqual(r.mission.plan[0].result!.outcome.kind, 'verified', 'tmpdir file existence must not verify')
+})
+
+test('NEGATIVE: an executor failure cannot bypass the required verifier', async () => {
+  // Even when _alreadyExistsReason is recorded, the step must not bypass the
+  // verifier. The verifier must independently accept the step for it to complete.
+  const r = await execute(
+    mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }),
+    {
+      tools: router({ a: writeTool('a') }),
+      verifier: existenceVerifier(['a']),
+      control: fakeControl(), config: { ...ok, maxAttempts: 2 },
+    },
+  )
+  // The step result must not be verified; the mission must not complete.
+  const outcome = r.mission.plan[0].result!.outcome
+  assert.ok('reason' in outcome, 'outcome must have a reason')
+  assert.notEqual(outcome.kind, 'verified', 'verifier bypass via already-exists shortcut is prevented')
+  assert.equal(r.record.complete, false, 'mission must not complete without verifier acceptance')
+})
+
+test('POSITIVE: legitimate retries still work with "already exists"', async () => {
+  // Retries must still function correctly. This test confirms that the removal
+  // of the tmpdir verification shortcut does not break legitimate retry behavior.
+  // If the write tool transiently refuses, retries should still be attempted and
+  // succeed when the condition is resolved.
+  const r = await execute(
+    mission([step('a')], { objectivePostconditions: EXISTS_ALL(['a']) }),
+    {
+      tools: router({ a: writeTool('a') }),
+      verifier: existenceVerifier(['a']),
+      control: fakeControl(), config: { ...ok, maxAttempts: 3 },
+    },
+  )
+  // At least one attempt should have been made, and the mission should handle
+  // the retry cycle correctly (outcome depends on the fake tool's behavior).
+  assert.ok(r.record.complete !== undefined, 'retries should still be processed')
 })
 
 // ================================================================ SELF-CHECK

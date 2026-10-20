@@ -529,7 +529,12 @@ export function authorizeShell(opts: {
   // is the wrong question: the shell's redirect operator writes regardless of what it redirects.
   const hasRedirect = /(?:^|\s)\d?>>?\s*("[^"]+"|'[^']+'|\S+)/.test(command)
 
-  if (!hasRedirect) {
+  // Shell command chaining operators that connect independent commands.
+  // If the model chains commands with &, &&, ;, or |, the first-command read-only check
+  // does not safely apply to the full command line. Treat such lines as non-read-only.
+  const hasChaining = /[&|;]/.test(command.split('"').join('').split("'").join(''))
+
+  if (!hasRedirect && !hasChaining) {
     // A read-only command cannot damage anything, so it is not made to declare intent.
     if (READ_ONLY_COMMANDS.has(exe)) return null
     if (exe === 'git') {
