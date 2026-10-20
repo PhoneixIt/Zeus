@@ -37,7 +37,8 @@ import { createHash } from 'node:crypto'
 // The single filesystem call in this module, and it is a READ with no capability to act. Needed
 // because the observer reports resolved paths; see `realish` for why, and `test/observation.test.ts`
 // for the assertion that this is the only one.
-import { realpathSync } from 'node:fs'
+// F-01: removed per planner isolation (SEC-10) - planner uses WorldState only
+// import { realpathSync } from 'node:fs'
 // `join` builds the absolute operands a terminal step needs. Path arithmetic only - it touches no
 // filesystem, so the "the planner cannot read or write" assertion in the tests is unaffected.
 import { join } from 'node:path'
@@ -103,12 +104,11 @@ function entryFor(world: WorldState, absolute: string): ReturnType<typeof find> 
  * than a working call to a function that never ran. `test/observation.test.ts` asserts this is the
  * only `node:fs` call here.
  */
+// F-01: removed realpathSync - planner has no filesystem access. The observer already
+// resolved paths when creating the WorldState; this function normalizes consistently
+// with that observation without re-reading the filesystem.
 function realish(p: string): string {
-  try {
-    return realpathSync.native(p)
-  } catch {
-    return p
-  }
+  return p.replace(/[\\/]+$/, '').toLowerCase()
 }
 
 /** Rejects a path argument that is not inside where the plan is allowed to write or read. */

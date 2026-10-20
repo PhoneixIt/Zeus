@@ -17,7 +17,6 @@
  * for the comparison, and is reachable only when a caller asks for it by name.
  */
 
-import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   isCapability, type ObjectivePostcondition, type PlanContext, type PlanProposal, type PlanResult, type PlanStep,
@@ -866,7 +865,7 @@ const REPO_VERSION_EDIT: Intent = {
         // "not on the executable allowlist" - correctly, because a bare name would have to be
         // resolved through PATH, and PATH is exactly the thing an allowlist must not consult.
         args: {
-          executable: join(process.env.ProgramFiles ?? 'C:/Program Files', 'nodejs', 'node.exe'),
+          executable: ctx.world?.capabilities.find((c) => c.name === 'node.exe')?.path ?? 'C:/Program Files/nodejs/node.exe',
           argv: [testCmd || './test.js'],
         },
         dependsOn: ['edit-source'],
@@ -989,18 +988,21 @@ export class DeterministicPlanProvider implements PlanProvider {
       const NEEDS_A_DIRECTORY = intent.id === 'folder-summary'
       if (DeterministicPlanProvider.checkTargetExists && NEEDS_A_DIRECTORY) {
         for (const candidate of folderCandidates(objective)) {
-          try {
-            if (!lstatSync(candidate).isDirectory()) {
-              return {
-                ok: false, code: 'insufficient-info',
-                reason: `${candidate} exists but is not a folder, so there are no contents to summarise`,
-                unsupported: ['folder summary'], missing: [candidate],
-              }
-            }
-          } catch {
+          const candidateLower = candidate.replace(/[\\/]+$/, '').toLowerCase()
+          const observedEntry = ctx.world?.entries.find(
+            (e) => e.relative.toLowerCase() === candidateLower
+          )
+          if (!observedEntry) {
             return {
               ok: false, code: 'insufficient-info',
-              reason: `${candidate} is not there, so there is nothing to summarise. The planner checked before emitting a plan, rather than producing one that would fail at execution.`,
+              reason: `${candidate} is not in the observed world, so there are no contents to summarise`,
+              unsupported: ['folder summary'], missing: [candidate],
+            }
+          }
+          if (observedEntry.kind !== 'directory') {
+            return {
+              ok: false, code: 'insufficient-info',
+              reason: `${candidate} exists but is not a folder, so there are no contents to summarise`,
               unsupported: ['folder summary'], missing: [candidate],
             }
           }
