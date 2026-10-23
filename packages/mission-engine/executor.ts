@@ -47,7 +47,8 @@ import {
   tally, isRetryable, isMissionSuccessful, objectiveVerdict,
 } from './state.ts'
 import type { ExecutionEvent, ExecutionRecord } from './events.ts'
-import { keyFor, type ApprovalStore, type DeclaredEffect } from '../governance/approval.ts'
+import { midActionTransportLoss } from './transport-loss.ts'
+import { keyFor, type ApprovalKey, type ApprovalStore, type DeclaredEffect } from '../governance/approval.ts'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { RecoveryPolicy } from './recovery.ts'
@@ -89,6 +90,17 @@ export type ToolResult =
   | { kind: 'data'; data: unknown; summary: string }
   | { kind: 'nothing-found'; reason: string }
   | { kind: 'failed'; reason: string }
+  /**
+   * THE TRANSPORT DIED WHILE THE ACTION WAS IN FLIGHT, and the tool cannot say what landed.
+   *
+   * This is the one result a tool returns that the executor refuses to retry, ever. `failed`
+   * claims the action did not take effect, and a claim like that is what authorizes a second
+   * attempt; when the request may have partially reached the machine (a keystroke batch, a
+   * click stream), the honest report is "unknown", which `isRetryable` treats as terminal and
+   * Stage D recovery surfaces for reconciliation before anything else runs. A tool that cannot
+   * prove nothing happened must say so here rather than guessing `failed`.
+   */
+  | { kind: 'outcome-unknown'; reason: string }
   | { kind: 'needs-human'; reason: string }
   | { kind: 'replan-required'; reason: string; invalidation: PlanInvalidation; observed?: string }
 
@@ -317,6 +329,22 @@ export async function execute(
      * mission with a consequential step and no store fails that step rather than running it.
      */
     approvals?: ApprovalStore
+    /**
+     * OPTIONAL HOOK: a decision channel that can WAIT for the human.
+     *
+     * The gate is synchronous by construction - request, look, decide - so a caller whose
+     * decisions arrive from outside (an HTTP route, a window button) had no way to let the
+     * executor pause: the step went needs-human the instant the request was recorded and the
+     * mission ended, making the approval permanently unusable no matter who answered.
+     *
+     * THIS HOOK CANNOT GRANT ANYTHING. It is called only when the store holds no approval for
+     * the exact key, it receives the key but has no way to write to the store, and when it
+     * returns the executor looks at the STORE again - which is still the only authority. A hook
+     * that times out, throws, or resolves without a decision leaves the step needs-human, which
+     * is the same outcome as not supplying one. Callers without an interactive channel simply
+     * omit it and behaviour is unchanged.
+     */
+    awaitApproval?: (key: ApprovalKey, effect: DeclaredEffect) => Promise<void>
   },
   opts: ExecuteOptions = {},
 ): Promise<ExecuteResult> {
@@ -519,11 +547,39 @@ export async function execute(
       halted = { cause: 'cancelled', reason: 'the caller cancelled this mission', stepId: step.id }
       break
     }
-    if (await cfg.emergencyStop()) {
+    // THE HALT CONSULTS ARE CONTAINED, not merely called. Both read another system (the guard
+    // latch, the permission channel), and a read that THROWS must not unwind the executor: an
+    // unwind skips the mission's own terminal transition, the durable ledger is left claiming
+    // the mission is still `running`, and the caller sees a bare transport error instead of a
+    // halt. This is the 2026-10-22 OpenVault unwind path, closed AT the gate. Fail-closed in
+    // both directions - if a consult cannot be read, the mission stops; nothing proceeds on an
+    // answer that was never received.
+    let emergencyLatched: boolean
+    try {
+      emergencyLatched = await cfg.emergencyStop()
+    } catch (e) {
+      halted = {
+        cause: 'infrastructure',
+        reason: `the emergency-stop consult itself failed (${msgOf(e)}); the executor will not continue without reading the stop`,
+        stepId: step.id,
+      }
+      break
+    }
+    if (emergencyLatched) {
       halted = { cause: 'emergency-stop', reason: 'emergency stop is latched; the executor will not continue', stepId: step.id }
       break
     }
-    const perm = await cfg.permission()
+    let perm: Permission
+    try {
+      perm = await cfg.permission()
+    } catch (e) {
+      halted = {
+        cause: 'infrastructure',
+        reason: `the permission consult itself failed (${msgOf(e)}); the executor will not continue on an unread control state`,
+        stepId: step.id,
+      }
+      break
+    }
     if (!perm.infrastructureHealthy) {
       halted = { cause: 'infrastructure', reason: perm.blockedBy ?? 'control infrastructure is unhealthy', stepId: step.id }
       break
@@ -648,11 +704,12 @@ export async function execute(
       const key = keyFor(mission.id, step.id, effect, planEpoch)
       approvals?.request(key, `${effect.kind} on ${effect.target}: ${effect.reason}`)
 
-      // Fetched ONCE. An earlier version called `approvals.permits(key)` and then
+      // Read once per consult point. An earlier version called `approvals.permits(key)` and then
       // `approvals.lookup(key)!` a second time to name who decided - so the two reads could
-      // disagree, and removing the gate made the second one throw on a missing decision. Reading
-      // it once removes the class of bug entirely: there is no assertion to be wrong about.
-      const decision = approvals?.lookup(key)
+      // disagree, and removing the gate made the second one throw on a missing decision. Each
+      // consult reads the store ONCE into a local, and the local is only ever REPLACED by a
+      // fresh read after the optional wait - never paired with a second read of a different shape.
+      let decision = approvals?.lookup(key)
 
       // Emergency stop and takeover are checked ABOVE and halt the mission outright, so an
       // approval can never outrank them. Here we decide only authorisation, and a human who has
@@ -669,13 +726,27 @@ export async function execute(
           state: rejected ? 'rejected' : 'pending',
         } as never)
 
-        recordResult(step.id, {
-          kind: 'needs-human',
-          reason: rejected
-            ? `authorisation was REFUSED for ${effect.kind} on ${effect.target}`
-            : `awaiting human authorisation for ${effect.kind} on ${effect.target}: ${effect.reason}`,
-        }, cfg.now())
-        break
+        // A decision channel may be able to WAIT for the human - the request above is what it
+        // shows them. Waiting can never grant: it only lets the executor look at the store again,
+        // and the store's answer is still the only way this step runs. Already-rejected is not
+        // re-waited (a decision has been made; asking again would be harassment, not safety),
+        // and any throw from the hook falls through unapproved.
+        if (!rejected && deps.awaitApproval) {
+          try {
+            await deps.awaitApproval(key, effect)
+          } catch { /* the step stays needs-human; a broken channel must not become an approval */ }
+          decision = approvals?.lookup(key)
+        }
+
+        if (decision?.state !== 'approved') {
+          recordResult(step.id, {
+            kind: 'needs-human',
+            reason: decision?.state === 'rejected'
+              ? `authorisation was REFUSED for ${effect.kind} on ${effect.target}`
+              : `awaiting human authorisation for ${effect.kind} on ${effect.target}: ${effect.reason}`,
+          }, cfg.now())
+          break
+        }
       }
       emit({
         type: 'approval-satisfied',
@@ -748,7 +819,21 @@ export async function execute(
     const stepStartedAt = cfg.now()
     while (attempt < maxAttempts) {
       attempt++
-      if (signal?.aborted || (await cfg.emergencyStop())) { halted = { cause: signal?.aborted ? 'cancelled' : 'emergency-stop', reason: 'halted mid-step', stepId: step.id }; break }
+      if (signal?.aborted) { halted = { cause: 'cancelled', reason: 'halted mid-step', stepId: step.id }; break }
+      // Contained exactly like `control.observe()` below: a consult that THROWS mid-retry is an
+      // infrastructure halt with a durable outcome, never an unwind that skips the finalise.
+      let latchedMidRetry: boolean
+      try {
+        latchedMidRetry = await cfg.emergencyStop()
+      } catch (e) {
+        halted = {
+          cause: 'infrastructure',
+          reason: `the emergency-stop consult itself failed mid-step (${e instanceof Error ? e.message : String(e)}); the executor will not continue without reading the stop`,
+          stepId: step.id,
+        }
+        break
+      }
+      if (latchedMidRetry) { halted = { cause: 'emergency-stop', reason: 'halted mid-step', stepId: step.id }; break }
       if (attempt > 1) {
         emit({ type: 'retry', stepId: step.id, attempt, maxAttempts, reason: lastFailure } as never)
       }
@@ -817,7 +902,46 @@ export async function execute(
         // tool had no way to be told what it was supposed to act on.
         tr = await resolution.tool.run(ctx, step.args ?? {})
       } catch (e) {
-        tr = { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
+        // A THROWN TOOL IS NOT AUTOMATICALLY A FAILED ACTION - for a tool that acts on the
+        // desktop through the operator host, at least.
+        //
+        // This catch used to convert every throw to `failed`, and `failed` is a CLAIM: it says
+        // the action did not take effect, and that claim is what authorizes a retry. For a
+        // desktop-acting tool whose transport died mid-request the claim is unsupportable - the
+        // host may have received the request and executed part of it before dying (the 2026-10-22
+        // OpenVault case). The classification below is the one desktop-input applies to its own
+        // non-delivery reports, through the SAME shared classifier (transport-loss.ts), so the
+        // two layers can never disagree about the same evidence:
+        //
+        //   - a confirmed PRE-DISPATCH refusal (ECONNREFUSED - the TCP connection was never
+        //     established, so no request ever left this machine) stays `failed`: nothing was
+        //     dispatched and a clean retry is honest. `midActionTransportLoss` excludes it for
+        //     exactly this reason;
+        //   - any other transport-loss or timeout signature becomes `outcome-unknown`, which
+        //     the branch below refuses to retry (terminal, even with attempts to spare) and the
+        //     recorder persists as `uncertain` for Stage D reconciliation;
+        //   - everything else - an ordinary tool bug, a bad argument, a missing file - keeps the
+        //     ordinary `failed` behavior unchanged. This must not become a blanket
+        //     reclassification of tool exceptions as transport failures.
+        //
+        // The gate is the tool's MODE: `gui` and `uia` are the modes that act on the desktop
+        // through this host. Other modes' transports (subprocess pipes, the browser's CDP
+        // socket) are not the operator host, and their error strings are not evidence about the
+        // desktop. Known cost of the mode-level gate, accepted deliberately: a purely
+        // observational gui/uia query that dies mid-request also classifies as unknown - the
+        // executor cannot prove from here that the tool only read - and unknown is the
+        // fail-closed direction.
+        const msg = e instanceof Error ? e.message : String(e)
+        const actsOnDesktop = resolution.tool.mode === 'gui' || resolution.tool.mode === 'uia'
+        tr = actsOnDesktop && midActionTransportLoss(msg)
+          ? {
+              kind: 'outcome-unknown',
+              reason: `the ${resolution.tool.name} tool threw mid-request (${msg}); the operator `
+                + 'transport died with the action in flight, so part of it may already have '
+                + 'reached the machine. It must not be blindly retried: the machine has to be '
+                + 'observed, or a human asked, before this step is attempted again.',
+            }
+          : { kind: 'failed', reason: msg }
       }
 
       // ---- THE MACHINE HAS NOW BEEN ACTED ON. Recording the outcome is therefore different in kind
@@ -892,6 +1016,24 @@ export async function execute(
           // would give the impression that a replan requirement carries step output.
           observed: tr.observed ?? tr.reason,
         } as never)
+        break
+      }
+      // ---- THE ACTION'S FATE IS UNKNOWN, by the tool's own report: the transport died while
+      // the request was in flight, so part of the input may already be on the machine. Terminal
+      // for this attempt loop - `isRetryable('outcome-unknown')` is false by contract - and
+      // recorded as `uncertain`, which Stage D recovery surfaces for reconciliation BEFORE
+      // anything re-runs. Retrying here would be the blind retry the whole variant exists to
+      // forbid; `persistenceError` carries the transport detail because that IS what could not
+      // be established about the machine's state.
+      if (tr.kind === 'outcome-unknown') {
+        finalOutcome = {
+          kind: 'outcome-unknown',
+          reason: tr.reason,
+          attempt,
+          attempted: { tool: resolution.tool.name, intent: step.intent, args: step.args },
+          persistenceError: tr.reason,
+        }
+        emit({ type: 'step-refused', stepId: step.id, reason: tr.reason } as never)
         break
       }
       if (tr.kind === 'failed') {

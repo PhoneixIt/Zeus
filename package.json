@@ -45,6 +45,7 @@
     "model:peer": "node --experimental-strip-types --no-warnings packages/model/adversarial-peer.ts 8791",
     "model:serve": "python packages/model/local/server.py --port 8792",
     "verify": "node verify-gate.mjs",
+    "live:readiness": "node scripts/live-readiness.mjs",
     "test:unit": "node --experimental-strip-types --no-warnings --test \"packages/*/test/*.test.ts\"",
     "test": "node verify-gate.mjs",
     "typecheck": "node typecheck-gate.mjs"

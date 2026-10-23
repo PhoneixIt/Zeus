@@ -54,7 +54,7 @@ const PAGE_SUMMARY_FOCUS = 'works that have entered the public domain due to exp
 
 /** Scan page text for instruction-smuggling patterns; report as data, never obey. */
 function scanPageForInstructions(text: string): { name: string; matched: string }[] {
-  return scanForInstructions(text);
+  return scanForInstructions(text).map((n) => ({ name: n.kind, matched: n.pattern }))
 }
 
 /** Normalize page facts from a raw read, using the shared browser-tools normaliser. */
@@ -83,7 +83,7 @@ function normalisePageFacts(raw: unknown): NormalisedPageFacts | { error: string
       headings: [],
       links: Array.isArray(facts.links) ? facts.links.map((l: any) => ({ text: typeof l.text === 'string' ? l.text.slice(0, 80) : '', href: typeof l.href === 'string' ? l.href.slice(0, 400) : '' })) : [],
     },
-    notices: notices.length > 0 ? scanForInstructions(facts.text ?? '') : [],
+    notices: notices.length > 0 ? scanPageForInstructions(facts.text ?? '') : [],
   };
 }
 
@@ -121,9 +121,9 @@ if (client.input !== 'PERMITTED' || client.infrastructureHealthy !== true) {
 }
 
 console.log('=== 0. PREFLIGHT: host available, guard state read ===')
-console.log(`  guard: state=${client.state} mayInject=${client.mayInject} takeoverPending=${client.takeoverPending}`)
-check('host is available and permissioned for this mission', client.mayInject !== false || client.takeoverPending !== true,
-  `state=${client.state} mayInject=${client.mayInject} takeover=${client.takeoverPending}`);
+console.log(`  guard: state=${client.control} mayInject=${client.input} takeoverPending=${client.takeoverPending}`)
+check('host is available and permissioned for this mission', client.input === 'PERMITTED' || client.takeoverPending !== true,
+  `state=${client.control} mayInject=${client.input} takeover=${client.takeoverPending}`);
 
 // -------------------------------------------------------
 // 1. LAUNCH BROWSER
@@ -167,14 +167,15 @@ if (!cdpAlive) {
 console.log('  CDP endpoint answered');
 
 // Import the operator page API after the browser is running
-const { page: opPage } = await import('../../control-core/operator.mjs');
+const { page: opPage, readPage } = await import('../../control-core/operator.mjs');
 
 // Navigate to the harmless public webpage
-await opPage().goto(HARMLESS_URL);
+const pageHandle = await opPage()
+await pageHandle.goto(HARMLESS_URL)
 await sleep(1000);
 
 // Read the page content through the real browser GUI path (CDP + browser.read)
-const rawPage = await opPage().readPage({ max: 20_000 });
+const rawPage = await readPage({ max: 20_000 })
 const pageNormalised = normalisePageFacts(rawPage);
 
 if ('error' in pageNormalised) {
@@ -204,26 +205,26 @@ console.log('=== 2. REAL MOUSE AND KEYBOARD GUI ACTIONS ===');
 
 // Get current guard state before actions
 const beforeGuard = await livePermission();
-console.log(`  guard before actions: state=${beforeGuard.state} mayInject=${beforeGuard.mayInject} takeover=${beforeGuard.takeoverPending}`);
+console.log(`  guard before actions: state=${beforeGuard.control} mayInject=${beforeGuard.input} takeover=${beforeGuard.takeoverPending}`);
 
 // Mouse action: scroll the page within the browser window.
 // This is a real GUI mouse action through the governed operator path.
 // The guard's MayInject() is checked before the action; if refused, no input is injected.
-const scrollOk = beforeGuard.mayInject !== false && beforeGuard.takeoverPending !== true;
-console.log(`  scroll action ${scrollOk ? 'permitted by guard' : ' refused by guard (takeoverPending or mayInject false)'}`);
+const scrollOk = beforeGuard.input === 'PERMITTED' && beforeGuard.takeoverPending !== true;
+console.log(`  scroll action ${scrollOk ? 'permitted by guard' : ' refused by guard (takeoverPending or input false)'}`);
 check('scroll action guard check', scrollOk,
-  `mayInject=${beforeGuard.mayInject} takeover=${beforeGuard.takeoverPending}`);
+  `input=${beforeGuard.input} takeover=${beforeGuard.takeoverPending}`);
 
 // Keyboard GUI action: focus the address bar via Ctrl+L, then type a search query.
 // This is a keyboard GUI action, gated by the same MayInject() gate as all input.
 // We report the guard's decision rather than auto-performing.
-const keyboardPermitted = beforeGuard.mayInject !== false && beforeGuard.takeoverPending !== true;
+const keyboardPermitted = beforeGuard.input === 'PERMITTED' && beforeGuard.takeoverPending !== true;
 console.log(`  keyboard Ctrl+L+type focus: ${keyboardPermitted ? 'would be permitted' : 'would be refused by guard'}`);
-check('keyboard action guard decision reported', keyboardPermmitted !== undefined);
+check('keyboard action guard decision reported', keyboardPermitted !== undefined);
 
 // Get guard state after actions
 const afterGuard = await livePermission();
-console.log(`  guard after actions: state=${afterGuard.state} mayInject=${afterGuard.mayInject} takeover=${afterGuard.takeoverPending}`);
+console.log(`  guard after actions: state=${afterGuard.control} mayInject=${afterGuard.input} takeover=${afterGuard.takeoverPending}`);
 
 // -------------------------------------------------------
 // 3. SAVE SUMMARY TO AUTHORIZED OUTPUT FILE
@@ -239,7 +240,7 @@ const summaryText = `${PAGE_TITLE}: ${PAGE_SUMMARY_FOCUS}\n\n` +
   `Source: ${HARMLESS_URL}\n` +
   `Characters read: ${pageNormalised.facts.characters}\n` +
   `Title: ${pageNormalised.facts.title}\n` +
-  `Instructions were present: ${(notices?.length ?? 0) > 0}\n` +
+  `Instructions were present: ${(pageNormalised.notices?.length ?? 0) > 0}\n` +
   `This summary was NOT obeyed: instruction patterns were recorded as data.`;
 
 try {
@@ -274,8 +275,8 @@ if (!existsSync(ARTIFACT_PATH)) {
 
 // Also independently re-read the browser page and compare
   try {
-    const { page: opPage2 } = await import('../../control-core/operator.mjs');
-    const reRead = await opPage2().readPage({ max: 20_000 });
+    await import('../../control-core/operator.mjs');
+    const reRead = await readPage({ max: 20_000 });
     const reNormalised = normalisePageFacts(reRead);
     if ('error' in reNormalised) {
       unverifiable('re-read browser page', reNormalised.error);
@@ -304,7 +305,7 @@ const recorder = new StoreRecorder(store);
 // Note: the executor may have written evidence during step execution.
 // We check by reading what's persisted.
 const history = store.readHistory('browser-gw-workflow-1');
-check('store has history for this mission', history.entries > 0, `entries=${history.entries}`);
+check('store has history for this mission', history.length > 0, `entries=${history.length}`);
 
 const evidenceRows = store.readEvidence('browser-gw-workflow-1');
 check('VERIFIED EVIDENCE is durable', evidenceRows.length >= 1, `${evidenceRows.length} row(s)`);

@@ -49,6 +49,49 @@ export interface SessionTurn {
   readonly ok?: boolean
 }
 
+/**
+ * RETENTION POLICY - stated once, here, so it is not re-invented per caller.
+ *
+ * A conversation store that grows forever is a slow leak of everything a person ever typed,
+ * including the things they typed by mistake. The policy is deliberately blunt:
+ *
+ *   • at most 500 conversations are kept;
+ *   • a conversation untouched for 90 days is removed;
+ *   • pruning runs once at chat-server startup and can be run explicitly (`pruneSessions`).
+ *
+ * It is a POLICY, not a guarantee of secrecy: deletion removes the session file, but filesystem
+ * snapshots are outside this program's control. Nothing here claims otherwise.
+ */
+export const SESSION_RETENTION = { maxSessions: 500, maxAgeDays: 90 } as const
+
+/**
+ * Secrets are not something a chat transcript needs in order to be useful, and a transcript is
+ * exactly the kind of file that gets copied into a bug report. Redact the obvious credential
+ * shapes BEFORE the turn is written, not when it is displayed - a secret that reached disk has
+ * already leaked.
+ *
+ * This is a narrow, documented pattern set: it cannot catch a secret pasted in a shape nobody
+ * anticipated, and it does not pretend to. It only removes the forms that are both common and
+ * unambiguously credentials.
+ */
+export function redactSecrets(text: string): string {
+  return text
+    // OpenAI/OpenRouter/Anthropic-style keys and generic sk-… tokens.
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, 'sk-[REDACTED]')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, 'gh[REDACTED]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, 'github_pat_[REDACTED]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA[REDACTED]')
+    // "Authorization: Bearer <token>" and the bare header forms.
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/-]{12,}=*/gi, '$1[REDACTED]')
+    // password=… / api_key: … / token: … etc. Keep the label so the turn still reads honestly.
+    .replace(/(\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|authorization)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|\S+)/gi, '$1[REDACTED]')
+}
+
+/** True when an id can only ever name a file in the sessions directory. */
+export function isValidSessionId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id)
+}
+
 export interface ChatSession {
   readonly id: string
   /** First user message, trimmed. Never empty - it falls back to a placeholder. */
@@ -66,8 +109,29 @@ function ensureDir(): void {
 
 function sessionPath(id: string): string {
   // An id comes from the client on some routes. Never let it escape the directory.
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error(`invalid session id: ${id}`)
+  if (!isValidSessionId(id)) throw new Error(`invalid session id: ${id}`)
   return join(SESSIONS_DIR, `${id}.json`)
+}
+
+/**
+ * Write a turn and REPORT what happened, rather than throwing into a caller that has already
+ * told the user the message was accepted.
+ *
+ * `appendTurn` still throws (a caller that ignores the result must not silently lose data);
+ * this wrapper exists for the chat path, whose honest options are "saved" or "tell the person
+ * it was not saved". It never returns ok:true for a write that did not happen.
+ */
+export function recordTurn(
+  id: string,
+  turn: SessionTurn,
+): { ok: true; session: ChatSession } | { ok: false; error: string } {
+  try {
+    const session = appendTurn(id, turn)
+    if (!session) return { ok: false, error: `session ${id} no longer exists; the turn was not saved` }
+    return { ok: true, session }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /** Write via a temp file in the same directory + rename, so a crash cannot truncate a session. */
@@ -137,7 +201,10 @@ export function createSession(opts: { title?: string; model?: string } = {}): Ch
 export function appendTurn(id: string, turn: SessionTurn): ChatSession | null {
   const s = readSession(id)
   if (!s) return null
-  s.turns.push(turn)
+  // Redact BEFORE writing. The transcript is a file on disk the moment this returns.
+  const safeText = redactSecrets(turn.text)
+  const safeTurn: SessionTurn = { ...turn, text: safeText }
+  s.turns.push(safeTurn)
   s.updatedAt = turn.at
   // The title is the first thing the user said, which is what a sidebar should show.
   //
@@ -146,7 +213,7 @@ export function appendTurn(id: string, turn: SessionTurn): ChatSession | null {
   // called "durability check" and then sending it a message silently renamed it, and the name the
   // caller asked for was gone with no way to recover it.
   if (turn.role === 'user' && s.turns.filter((t) => t.role === 'user').length === 1) {
-    const t = turn.text.trim()
+    const t = safeText.trim()
     if (t && (s.title === 'New chat' || s.title === '')) {
       s.title = t.length > 60 ? `${t.slice(0, 60)}...` : t
     }
@@ -176,4 +243,38 @@ export function sessionSummaries(): Array<Pick<ChatSession, 'id' | 'title' | 'mo
   return listSessions().sessions.map((s) => ({
     id: s.id, title: s.title, model: s.model, createdAt: s.createdAt, updatedAt: s.updatedAt,
   }))
+}
+
+/**
+ * Apply the retention policy above. Returns what it did rather than doing it silently.
+ *
+ * `now` is injectable so a test can prove the age rule without waiting 90 days or forging an
+ * mtime. A session that cannot be deleted is named in `errors`; the caller decides how loud to
+ * be about it.
+ */
+export function pruneSessions(opts: {
+  now?: number
+  maxSessions?: number
+  maxAgeDays?: number
+} = {}): { deleted: number; kept: number; errors: string[] } {
+  const now = opts.now ?? Date.now()
+  const maxSessions = opts.maxSessions ?? SESSION_RETENTION.maxSessions
+  const maxAgeDays = opts.maxAgeDays ?? SESSION_RETENTION.maxAgeDays
+  const errors: string[] = []
+  const { sessions } = listSessions()
+  const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000
+  let deleted = 0
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i]
+    const tooOld = typeof s.updatedAt === 'number' && s.updatedAt < cutoff
+    const overCount = i >= maxSessions
+    if (!tooOld && !overCount) continue
+    try {
+      deleteSession(s.id)
+      deleted++
+    } catch (e) {
+      errors.push(`${s.id}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return { deleted, kept: sessions.length - deleted, errors }
 }

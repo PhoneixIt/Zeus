@@ -51,7 +51,7 @@ import { tmpdir } from 'node:os'
 import { execute } from '../executor.ts'
 import { DurableStore } from '../../persistence/store.ts'
 import { StoreRecorder } from '../../persistence/recorder.ts'
-import { liveControl, livePermission } from './live-control.ts'
+import { liveControl, livePermission, blockOnHost, hostAvailability } from './live-control.ts'
 import { ToolRegistry } from '../../tool-router/router.ts'
 import { ApprovalStore, keyFor } from '../../governance/approval.ts'
 import { editFileRegistration, editFileVerifier, BACKUP_SUFFIX } from './edit-tools.ts'
@@ -66,6 +66,15 @@ const NODE = `${PROGRAM_FILES}\\nodejs\\node.exe`
 
 /** THE BOUND. One recovery attempt. A `for` over this, never a `while`. */
 const MAX_RECOVERY_ATTEMPTS = 1
+
+// A MISSING PREREQUISITE IS NOT A FAILED CONTROL.
+//
+// Without this guard, every mission below stopped at preflight because the operator host was
+// down, its steps stayed `pending`, and the controls reported FAIL for a reason that had
+// nothing to do with recovery - ending in a crash when the harness tried to grant an approval
+// that had never been requested. The host check makes the environment answer explicit and
+// exits 2 (blocked), matching run-fs-ops and run-auto-recovery.
+blockOnHost(await hostAvailability())
 
 let failures = 0
 const check = (what: string, ok: unknown, detail = ''): void => {

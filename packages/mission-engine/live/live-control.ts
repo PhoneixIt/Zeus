@@ -16,7 +16,11 @@
  */
 export async function hostAvailability(): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    await livePermission()
+    const p = await livePermission()
+    // With `livePermission` no longer throwing on a dead host, the VALUE is now the answer to
+    // "is the host there?" - the catch below is defense-in-depth only. Reporting ok on an
+    // unhealthy consult would invert this probe's whole purpose.
+    if (!p.infrastructureHealthy) return { ok: false, reason: p.blockedBy ?? 'the operator host is not answering' }
     return { ok: true }
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) }
@@ -80,7 +84,21 @@ import type { Evidence } from '../state.ts'
 // in a comment, where a hand-written relative walk resolved to %LOCALAPPDATA%\Projects\AIOS instead
 // of the real repository and left the agent reading stale host state. A path that is correct on the
 // machine that wrote it and wrong everywhere else cannot be reasoned about.
-const HOST = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'control-core', 'host.json')
+const DEFAULT_HOST_STATE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'control-core', 'host.json')
+
+/**
+ * Which host state file to read, decided at CALL time rather than at module load.
+ *
+ * The default is unchanged - the mirror at packages/control-core/host.json. The override exists
+ * so a test can point the live path at a deterministic dead port (or a fixture host) WITHOUT
+ * touching the real state file, which is live machine state the running system depends on.
+ * Same principle as operator-client's PORTAI_OPERATOR_DIR: a seam for the PATH, never for the
+ * SEMANTICS - whatever file this names, a permission consult still means exactly what it says.
+ */
+function hostStatePath(): string {
+  const override = process.env.AIOS_OPERATOR_STATE
+  return override && override.length > 0 ? override : DEFAULT_HOST_STATE
+}
 
 interface Client {
   guard(): Promise<Record<string, unknown>>
@@ -134,8 +152,9 @@ let clientIdentity: string | null = null
 /** The identity of the host currently described by the state file. */
 function hostIdentity(): string | null {
   try {
-    if (!existsSync(HOST)) return null
-    const s = JSON.parse(readFileSync(HOST, 'utf8')) as { port?: unknown; pid?: unknown }
+    const path = hostStatePath()
+    if (!existsSync(path)) return null
+    const s = JSON.parse(readFileSync(path, 'utf8')) as { port?: unknown; pid?: unknown }
     const port = typeof s.port === 'number' ? s.port : String(s.port)
     const pid = typeof s.pid === 'number' ? s.pid : String(s.pid)
     return `${String(pid)}@${port}`
@@ -150,7 +169,7 @@ function hostIdentity(): string | null {
 async function c(): Promise<Client> {
   const id = hostIdentity()
   if (!client || clientIdentity !== id) {
-    client = (await connect({ statePath: HOST })) as unknown as Client
+    client = (await connect({ statePath: hostStatePath() })) as unknown as Client
     clientIdentity = id
   }
   return client
@@ -242,16 +261,79 @@ export async function pickInspectableWindow(): Promise<{ hwnd: number; title: st
   return w ? { hwnd: w.hwnd, title: w.title } : null
 }
 
-async function permission(): Promise<Permission> {
-  const g = await (await c()).guard()
+/**
+ * How long the permission consult waits for the host's guard read before declaring the host
+ * unhealthy.
+ *
+ * A dead port refuses instantly, but a host that accepted the connection and then stopped
+ * answering (hung process, stalled event loop) would otherwise hold the consult open for undici's
+ * own 300s ceiling - and every caller of `livePermission()` awaits this before deciding whether
+ * the machine may be touched. Five seconds is far longer than a healthy host needs (its /guard is
+ * an in-memory read) and far shorter than a person should wait to be told the truth. The timer
+ * only abandons the WAIT; the consult then reports the host as unhealthy and nothing proceeds on
+ * an answer that never arrived.
+ */
+const GUARD_READ_TIMEOUT_MS = 5_000
+
+/**
+ * THE FAIL-CLOSED ANSWER when the host cannot be consulted at all.
+ *
+ * Every field that would claim an OBSERVATION (control mode, takeover, emergency latch, last
+ * input) is deliberately absent or constructed: a host that answered nothing cannot be reported
+ * as ARMED or EMERGENCY_STOP, and inventing either is the exact misdescription this contract
+ * exists to prevent. `input: BLOCKED` makes even callers that ignore `infrastructureHealthy` fail
+ * closed, and `blockedBy` names the infrastructure loss rather than a guard refusal, so the
+ * refusal a person reads points at the right remedy.
+ */
+function hostUnavailablePermission(detail: string): Permission {
   return {
-    control: g.state as Permission['control'],
-    input: g.mayInject ? 'PERMITTED' : 'BLOCKED',
-    blockedBy: (g.blockingReason as string | null) ?? null,
-    infrastructureHealthy: true,
-    lastTakeoverAt: g.lastTakeoverAt as number | undefined,
-    takeoverPending: g.takeoverPending,
-    emergencyLatched: g.emergencyLatched,
+    // CONSTRUCTED, not observed. 'PAUSED' is the nearest honest state - not operating - and it
+    // is stated here rather than guessed from a host that answered nothing.
+    control: 'PAUSED',
+    input: 'BLOCKED',
+    blockedBy: `OPERATOR_HOST_UNREACHABLE: ${detail}`,
+    infrastructureHealthy: false,
+  }
+}
+
+async function permission(): Promise<Permission> {
+  // THE WHOLE CONSULT IS THE CONTAINMENT BOUNDARY. `guard()` is a network call to another
+  // process; when that process is gone, undici throws `fetch failed` and nothing above this
+  // line can tell a dead host from a dead program. Measured on 2026-10-22: `livePermission()`
+  // threw at the planning/execution boundary and inside the executor's per-step consult,
+  // unwinding runs that had ALREADY acted on the machine (mission a0f3190b typed for 4.7
+  // minutes mid-request) and leaving the durable ledger claiming they were still running.
+  //
+  // So a transport failure is no longer an exception, it is a VALUE: infrastructureHealthy
+  // false, input BLOCKED. Callers that check the value fail closed; callers that only read
+  // `input` fail closed too, because the value says BLOCKED.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const guard = (await c()).guard()
+    const g = await Promise.race([
+      guard,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() =>
+          reject(new Error(`the host did not answer the guard read within ${GUARD_READ_TIMEOUT_MS}ms`)),
+          GUARD_READ_TIMEOUT_MS)
+      }),
+    ])
+    return {
+      control: g.state as Permission['control'],
+      input: g.mayInject ? 'PERMITTED' : 'BLOCKED',
+      blockedBy: (g.blockingReason as string | null) ?? null,
+      infrastructureHealthy: true,
+      lastTakeoverAt: g.lastTakeoverAt as number | undefined,
+      takeoverPending: g.takeoverPending as boolean | undefined,
+      emergencyLatched: g.emergencyLatched as boolean | undefined,
+    }
+  } catch (e) {
+    // A timeout is named as a timeout (the raced rejection carries it), not laundered into a
+    // generic failure: "did not answer" and "is not there" are different diagnoses with
+    // different remedies, and the person reading the refusal needs the one that happened.
+    return hostUnavailablePermission(e instanceof Error ? e.message : String(e))
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -447,7 +529,17 @@ async function delegate(route: string, body: Record<string, unknown>): Promise<I
     const r = await (await c()).raw(`/${route}`, { method: 'POST', body })
     return { attempted: true, delivered: r.body.ok === true, refusedBy: (r.body.error as string) ?? null }
   } catch (e) {
-    return { attempted: true, delivered: false, refusedBy: e instanceof Error ? e.message : String(e) }
+    // The message alone is not enough to decide what happened, and the decision it feeds is
+    // whether an action whose outcome is unknown may be retried. undici reports BOTH "the
+    // connection was refused before anything was sent" and "the connection died while the
+    // request was in flight" as the same bare `fetch failed`; the difference lives on `cause`.
+    // A refused connection means nothing was injected (a clean retry is honest); a reset
+    // mid-flight means the input may have PARTIALLY landed. Surfacing the cause code here is
+    // what lets the caller tell them apart instead of guessing.
+    const cause = (e as { cause?: unknown })?.cause as { code?: unknown } | undefined
+    const code = typeof cause?.code === 'string' ? cause.code : ''
+    const message = e instanceof Error ? e.message : String(e)
+    return { attempted: true, delivered: false, refusedBy: code ? `${message} [${code}]` : message }
   }
 }
 

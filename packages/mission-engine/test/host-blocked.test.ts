@@ -228,15 +228,23 @@ test('the remaining host-dependent harnesses are KNOWN to lack the preflight', (
 // checks the preflight is really in it. The count is not asserted against a remembered number
 // any more - it is asserted against the discovery implementation, so it cannot drift silently
 // again the way it did. A harness that loses its preflight now fails here by name.
-assert.equal(withPreflight.length, 6, 'six harnesses now carry the preflight, each verified below')
-  // 17 -> 18, for the reason the note above gives for the previous correction: this second
-  // assertion was still a remembered number, and the remembered number was stale. Measured
-  // against the same discovery filter, eighteen harnesses reach for liveControl/livePermission
-  // or observeDesktopTool. None of them was added by the work that prompted the change - the
-  // count was simply wrong, exactly as the 3-vs-5 case was. Corrected to what is there, and the
-  // failure it produced is the check working: a stale remembered count surfaces as a test
-  // failure rather than as a silently wrong statement about the codebase.
-  assert.equal(hostDependent.length, 18, 'and the GUI mission is one of the host-dependent set')
+  // 6 -> 8. `run-browser-mission.ts` and `run-dev-recovery.ts` were found WITHOUT this preflight
+  // on 2026-10-23: with the host down, run-browser-mission failed late and left its temp dirs
+  // behind, and run-dev-recovery crashed trying to grant an approval that had never been
+  // requested. Both now classify the missing prerequisite before creating anything or asserting
+  // any control. The count is still discovery-derived; the list below names each file.
+assert.equal(withPreflight.length, 8, 'eight harnesses now carry the preflight, each verified below')
+  // 18 -> 17, with the file that left the set named rather than remembered: this session's
+  // browser-navigation work removed `run-navigation-mission.ts`'s dependency on the operator
+  // host. It drives headless Chromium over CDP and supplies a mission-scoped control surface
+  // whose input methods are never called by navigation steps; the approval gate (a navigation
+  // without a grant is still held for a human), the mission-scoped navigation policy and every
+  // independent verifier are unchanged, as the recorded mission run demonstrates. The count is
+  // discovery-derived, so it fell the moment the file stopped reaching for liveControl/
+  // livePermission/observeDesktopTool - the same 3-vs-5 and 17-vs-18 corrections above: the
+  // measured number is corrected to what is there, and the failure it produced was the check
+  // working rather than the code being wrong.
+  assert.equal(hostDependent.length, 17, 'browser navigation no longer reaches for the operator host')
 })
 
 test('the preflight count is derived from the files themselves, not remembered', () => {
@@ -244,7 +252,9 @@ test('the preflight count is derived from the files themselves, not remembered',
   // failing as an anonymous count mismatch.
   const expected = [
     'run-auto-recovery.ts',
+    'run-browser-mission.ts',
     'run-dev-mission.ts',
+    'run-dev-recovery.ts',
     'run-filesystem.ts',
     'run-fs-ops-mission.ts',
     'run-gui-mission.ts',

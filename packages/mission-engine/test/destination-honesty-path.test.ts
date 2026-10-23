@@ -212,7 +212,7 @@ test('THE OK GATE ARITHMETIC: a substitution alone defeats ok=true', async () =>
   const allStepsVerified = true
   const complete = true
   const placeholderFound = false
-  const destinationNotHonoured = v.substitutions.filter((x) => x.requested.toLowerCase() !== x.written.toLowerCase())
+  const destinationNotHonoured = v.substitutions.filter((x: { requested: string; written: string }) => x.requested.toLowerCase() !== x.written.toLowerCase())
   const ok = allStepsVerified && complete && !placeholderFound && destinationNotHonoured.length === 0
 
   assert.equal(ok, false,

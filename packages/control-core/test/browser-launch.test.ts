@@ -172,7 +172,8 @@ test('real search URLs are NOT refused', () => {
 test('a URL handed to a non-browser is refused, and says what to do instead', async () => {
   const cap = resolveCapability('launch-app')
   assert.ok(cap)
-  const r = await cap.tool.run({}, { app: 'notepad', url: 'https://example.com' })
+  if ('unavailable' in cap) throw new Error('launch-app unavailable')
+  const r = await cap.tool.run({ missionId: 'test', stepId: 's1', attempt: 1, prior: {}, observation: {} as any, signal: undefined as any }, { app: 'notepad', url: 'https://example.com' })
   assert.equal(r.kind, 'failed')
   assert.match(String((r as { reason?: string }).reason), /browser|edge|chrome/i,
     'the refusal must name the tools that can do it, or the planner will simply give up')

@@ -72,10 +72,15 @@ test('the state file is re-read, not only consulted once at module load', () => 
     /function hostIdentity\(\)/,
     'there must be a function that reads the current host identity on demand.',
   )
+  // The path is resolved at CALL time through `hostIdentity()` (via `hostStatePath()`, the
+  // AIOS_OPERATOR_STATE seam), and the file is read through that resolved path - so both WHICH
+  // file and WHICH host are decided per call, never captured at load. The regex was
+  // `readFileSync\(\s*HOST` before the seam; `path` is the same read through the call-time
+  // resolution, and the bounded lookbehind keeps the read tied to this function.
   assert.match(
     src,
-    /readFileSync\(\s*HOST/,
-    'host identity must come from reading the state file, not from a value captured at load.',
+    /function hostIdentity\(\)[\s\S]*?readFileSync\(\s*(path|HOST)/,
+    'host identity must come from reading the state file at call time, not from a value captured at load.',
   )
 })
 

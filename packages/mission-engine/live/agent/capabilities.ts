@@ -36,15 +36,22 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, appendFileSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, join, resolve, isAbsolute, extname, sep, normalize, basename } from 'node:path'
 import { homedir } from 'node:os'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
 import type { Tool, ToolContext, ToolResult, Verifier } from '../../executor.ts'
+// The transport-loss classifier, shared with the executor's throwing-tool boundary - one
+// regex set, one verdict, for the same evidence in both layers. See transport-loss.ts.
+import { midActionTransportLoss } from '../../transport-loss.ts'
+import type { DeclaredEffect } from '../../../governance/approval.ts'
+import type { WindowInfo } from '../../../governance/contract.ts'
 import type { Step, Evidence } from '../../state.ts'
 
 import { runCompanyBrief, ensureBriefDirs, type BriefRunResult } from '../company-brief.ts'
 import { verifyBrief } from '../verify-brief.ts'
 import { liveControl, surveyWindow, livePermission, armOperator } from '../live-control.ts'
+import { GIT_SENDS as GIT_SEND_VERBS, GIT_DESTRUCTIVE as GIT_DESTROY_VERBS } from '../terminal-policy.ts'
 import { windowIsSameApp, adoptedWindowRefusal } from './window-identity.ts'
 import {
   contentLooksWrongFor, sha256File, safeStatSize,
@@ -836,13 +843,23 @@ const launchAppTool: Tool = {
     // is how a mission that asked for one sentence produced a file with six copies of it: each
     // run typed into whatever the session restored and then saved.
     //
+    // Fail closed at the moment of the action, on a guard read made now, exactly as the
+    // injection path does. Launching changes the machine, so it waits for the human rather
+    // than proceeding on a permission read taken when the plan was built.
+    const refused = await injectionRefusedReason(num(args.waitSeconds, 300))
+    if (refused) return { kind: 'failed', reason: refused }
+
     // Closing the existing windows is done the way a person does it - the window's own Close
     // button, with the unsaved-changes prompt answered by button name - because a keystroke
     // aimed at a window that is mid-close is a keystroke that goes nowhere.
     if (rawPath) {
       for (let pass = 0; pass < 8; pass++) {
-        const wins = await liveControl.observe().then((o) => o.windows.filter((w) => /notepad/i.test(w.title) || w.class === '#32770')).catch(() => [])
-        if (wins.length === 0) break
+        const wins = await liveControl.observe().then((o) => o.windows.filter((w) => /notepad/i.test(w.title) || w.class === '#32770')).catch(() => {
+          // Observation failed: cannot confirm window state.
+          // Do not treat failure as "no windows observed" — stop the cleanup pass.
+          return null as never
+        })
+        if (wins === null || wins.length === 0) break
         for (const w of wins) {
           try {
             await liveControl.raw('/focus', { method: 'POST', body: { hwnd: w.hwnd } })
@@ -850,7 +867,7 @@ const launchAppTool: Tool = {
             const survey = await liveControl.raw('/uiasurvey', { method: 'GET', body: {} }).catch(() => null)
             void survey
             // Find the Close button via the survey route instead.
-            const sr = await liveControl.raw(`/uiasurvey?hwnd=${w.hwnd}&max=60`, { method: 'GET' }).catch(() => null)
+            const sr = (await liveControl.raw(`/uiasurvey?hwnd=${w.hwnd}&max=60`, { method: 'GET' }).catch(() => null)) as { body?: { elements?: unknown[] } } | null
             const close = (sr?.body?.elements as Array<{ controlType?: string; automationId?: string; index?: number }> ?? [])
               .find((e) => e.controlType === 'Button' && e.automationId === 'Close')
             if (close && typeof close.index === 'number') {
@@ -859,8 +876,12 @@ const launchAppTool: Tool = {
           } catch { /* best effort */ }
         }
         await new Promise((r) => setTimeout(r, 600))
-        for (const w of await liveControl.observe().then((o) => o.windows.filter((w) => /notepad/i.test(w.title))).catch(() => [])) {
-          const sr = await liveControl.raw(`/uiasurvey?hwnd=${w.hwnd}&max=40`, { method: 'GET' }).catch(() => null)
+        for (const w of await liveControl.observe().then((o) => o.windows.filter((w) => /notepad/i.test(w.title))).catch(() => {
+          // Observation failed: cannot confirm window state.
+          // Do not treat failure as "no windows observed" — stop the cleanup pass.
+          return null as never
+        })) {
+          const sr = (await liveControl.raw(`/uiasurvey?hwnd=${w.hwnd}&max=40`, { method: 'GET' }).catch(() => null)) as { body?: { elements?: unknown[] } } | null
           const discard = (sr?.body?.elements as Array<{ controlType?: string; name?: string; index?: number }> ?? [])
             .find((e) => e.controlType === 'Button' && /don'?t save/i.test(String(e.name ?? '')))
           if (discard && typeof discard.index === 'number') {
@@ -912,12 +933,6 @@ const launchAppTool: Tool = {
       openPath = r.path
     }
 
-    // Fail closed at the moment of the action, on a guard read made now, exactly as the
-    // injection path does. Launching changes the machine, so it waits for the human rather
-    // than proceeding on a permission read taken when the plan was built.
-    const refused = await injectionRefusedReason(num(args.waitSeconds, 300))
-    if (refused) return { kind: 'failed', reason: refused }
-
     try {
       // WHICH WINDOWS EXISTED BEFORE WE ASKED FOR THIS ONE.
       //
@@ -930,13 +945,43 @@ const launchAppTool: Tool = {
       // `adoptedWindowRefusal` for what happens when it is, and for the run in which "open notepad
       // and type hello" typed into a document it was never asked to touch while reporting both
       // steps verified.
-      const beforeWindows = await liveControl.observe().then((o) => o.windows ?? []).catch(() => [])
-      const beforeHwnds = new Set(beforeWindows.map((w) => Number(w.hwnd)))
+      // Observation failed: cannot confirm window state before launch. Return a discriminated
+      // result so downstream consumers can distinguish indeterminate state from confirmed absence.
+      let beforeWindows: readonly WindowInfo[] | { kind: 'indeterminate' }
+      try {
+        const o = await liveControl.observe()
+        beforeWindows = o.windows ?? []
+      } catch {
+        beforeWindows = { kind: 'indeterminate' }
+      }
+        // Distinguish three states before the launch action:
+        //   1. Relevant window(s) found       -> beforeHwnds populated
+        //   2. No relevant windows found       -> beforeHwnds = empty Set()
+        //   3. Observation indeterminate       -> beforeHwnds = null
+        let beforeHwnds: Set<number> | null
+        if (Array.isArray(beforeWindows)) {
+          beforeHwnds = beforeWindows.length > 0
+            ? new Set(beforeWindows.map((w) => Number(w.hwnd)))
+            : new Set()
+        } else {
+          beforeHwnds = null
+        }
 
       const r = await postLaunch(launchApp, num(args.timeoutSeconds, 15), openPath, openUrl)
-      if (!r.ok) return { kind: 'failed', reason: r.error }
-      const win = { hwnd: Number(r.hwnd), pid: Number(r.pid), title: String(r.title ?? '') }
-      const adoptedExisting = beforeHwnds.has(win.hwnd)
+      const launch = r as { ok: boolean; error?: string; hwnd?: number; pid?: number; title?: string }
+      if (!launch.ok) return { kind: 'failed', reason: launch.error ?? 'launch failed' }
+      const win = { hwnd: Number(launch.hwnd), pid: Number(launch.pid), title: String(launch.title ?? '') }
+      // If the before-launch observation was indeterminate (cannot confirm window state),
+      // return an honest failure since no action has been dispatched yet and the state
+      // is unknown - proceeding would risk adopting/typing into the wrong window.
+      if (beforeHwnds === null) {
+        return {
+          kind: 'failed',
+          reason: 'the operator host could not confirm window state before launch; the launch may not proceed honestly',
+        }
+      }
+      const adoptedExisting =
+          beforeHwnds.has(win.hwnd)
       // If WE just created the file, ensure the document is empty before typing.
       //
       // Notepad restores previous sessions, so a freshly-created file can arrive with old text
@@ -952,10 +997,24 @@ const launchAppTool: Tool = {
         const live = await liveControl.observe().catch(() => null)
         const liveWin = live?.windows?.find((w) => w.hwnd === win.hwnd)
         const title = liveWin?.title ?? win.title
-        const target = { hwnd: win.hwnd, pid: win.pid, title }
-        await rawKey(target, '41', true)   // Ctrl+A
+        const target = { hwnd: win.hwnd, pid: win.pid, expectedTitle: title }
+        // THE KEYSTROKE BATCH MUST NOT CONTINUE PAST A REFUSAL. A clean refusal (delivered
+        // false, refusedBy naming why) means the host said NO to this injection - the outcome is
+        // KNOWN - so the step stops here with an honest `failed` that identifies the refused
+        // injection. Continuing past it let the flow fall through to settle/adoption and possibly
+        // a success-shaped data return, which is the silent half of the Gap B hole. A THROW is a
+        // different thing and still flows to the outer catch, which keeps the shared
+        // midActionTransportLoss classification (outcome-unknown for a loss/timeout after possible
+        // dispatch, ordinary failed for everything else).
+        const capA = await rawKey(target, '41', true)   // Ctrl+A
+        if (!capA.delivered) {
+          return { kind: 'failed', reason: `the operator host refused the Ctrl+A injection into "${title}" (${capA.refusedBy ?? 'not delivered'})` }
+        }
         await new Promise((r) => setTimeout(r, 250))
-        await rawKey(target, '2e', false)  // Delete
+        const capD = await rawKey(target, '2e', false)  // Delete
+        if (!capD.delivered) {
+          return { kind: 'failed', reason: `the operator host refused the Delete injection into "${title}" (${capD.refusedBy ?? 'not delivered'})` }
+        }
         await new Promise((r) => setTimeout(r, 400))
       }
 
@@ -966,7 +1025,21 @@ const launchAppTool: Tool = {
       // instant's "Notepad" when the window now calls itself "PROOF.txt - Notepad" means every
       // subsequent keystroke is refused for a title mismatch - and the typing step then reports
       // that it did not type, which is true, without saying why.
-      const settled = await liveControl.observe().catch(() => null)
+      const settled = await liveControl.observe().catch(() => {
+          // Observation failed: cannot confirm window state after launch.
+          // Do not treat failure as "window unchanged" — the outcome is uncertain,
+          // because the launch or keystroke batch may have already dispatched.
+          return null as never
+        })
+      if (settled === null) {
+        // Window state is indeterminate after launch — the outcome is unknown.
+        // Return outcome-unknown so the executor's terminal branch refuses to retry
+        // and Stage D recovery surfaces for reconciliation.
+        return {
+          kind: 'outcome-unknown',
+          reason: `the operator transport died with this request in flight; the window state could not be confirmed after launch, so it must not be blindly retried: the machine has to be observed, or a human asked, before this step is attempted again.`,
+        }
+      }
       const settledWin = settled?.windows?.find((w) => w.hwnd === win.hwnd)
       const settledTitle = settledWin?.title ?? win.title
 
@@ -996,7 +1069,6 @@ const launchAppTool: Tool = {
         return {
           kind: 'failed',
           reason: adoptionRefusal,
-          data: { hwnd: win.hwnd, pid: win.pid, title: settledTitle, adoptedExisting: true },
         }
       }
 
@@ -1051,7 +1123,40 @@ const launchAppTool: Tool = {
         },
       }
     } catch (e) {
-      return { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
+      // ONLY A HOST CALL COULD HAVE THROWN HERE, and both of them were DISPATCHED requests.
+      //
+      // Every local operation in this run either returns its own `failed` before the transport
+      // (the path gates, the created-file write) or is wrapped in its own catch (the
+      // best-effort window cleanup, every observe/ocr read), so what reaches this handler is
+      // `postLaunch` or `rawKey` dying on the operator transport - and by then the request may
+      // already be executing on the other side: the launch may have started the app, the
+      // Ctrl+A/Delete batch may have partially landed (the 2026-10-22 OpenVault shape, where
+      // real keystrokes had landed while the tool reported a plain `failed`). Because this
+      // catch RETURNED that `failed` rather than throwing, the executor's throwing-tool
+      // boundary never saw it either - the retryable reading survived both layers.
+      //
+      // So the classification happens HERE, through the SAME shared classifier
+      // (transport-loss.ts) that desktop-input applies to its own non-delivery reports and the
+      // executor applies at its throwing-tool boundary: one regex set, three layers that cannot
+      // drift into disagreeing about the same evidence.
+      //
+      //   - `ECONNREFUSED` (never connected, so nothing was dispatched) and every message with
+      //     no transport signature keep `failed`: the outcome is KNOWN and an honest retry is
+      //     available.
+      //   - any other mid-request transport death - reset, timeout, socket closed before the
+      //     answer - is `outcome-unknown`: the executor's terminal branch refuses to retry it
+      //     (attempts to spare or not) and the recorder persists `uncertain` for Stage D.
+      const msg = e instanceof Error ? e.message : String(e)
+      if (midActionTransportLoss(msg)) {
+        return {
+          kind: 'outcome-unknown',
+          reason: `the operator transport died with this request in flight (${msg}); the launch `
+            + 'or keystroke batch may have partially reached the machine, so it must not be '
+            + 'blindly retried - the machine has to be observed, or a human asked, before this '
+            + 'step is attempted again.',
+        }
+      }
+      return { kind: 'failed', reason: msg }
     }
   },
 }
@@ -1060,7 +1165,7 @@ const launchAppVerifier: Verifier = {
   verifies: (s: Step) => (s.tool ?? '').includes('launch-app'),
   async verify(_s: Step, _ctx: ToolContext, toolData: unknown): Promise<{ evidence: Evidence } | { rejected: string }> {
     const d = toolData as {
-      hwnd?: number; pid?: number; title?: string; app?: string; url?: string; screenText?: string
+      hwnd?: number; pid?: number; title?: string; app?: string; url?: string; screenText?: string; path?: string
     } | undefined
     if (!d?.hwnd) return { rejected: 'the step recorded no window handle to verify' }
 
@@ -1243,7 +1348,8 @@ async function rawKey(target: { hwnd: number; pid: number; expectedTitle: string
       ctrl,
     },
   })
-  return { delivered: r.body.ok === true, refusedBy: (r.body.error as string) ?? null }
+  const rb = (r as { body?: { ok?: boolean; error?: string } } | undefined)?.body
+  return { delivered: rb?.ok === true, refusedBy: rb?.error ?? null }
 }
 
 /**
@@ -1515,7 +1621,7 @@ export function inferGoalFilename(goal: string): string | null {
  */
 async function postLaunch(app: string, timeoutSeconds: number, path?: string, url?: string): Promise<Record<string, unknown> & { ok: boolean }> {
   const r = await liveControl.raw('/launch', { method: 'POST', body: { app, timeoutSeconds, path, url } })
-  return r.body as Record<string, unknown> & { ok: boolean }
+  return ((r as { body?: Record<string, unknown> }).body as Record<string, unknown> & { ok: boolean }) ?? { ok: false }
 }
 
 /**
@@ -1961,16 +2067,271 @@ function firstTokenOf(text: string): string {
   return end > 0 ? t.slice(1, end) : t.slice(1)
 }
 
-const runCommand = (cmd: string, cwd: string): Promise<{ code: number; out: string; err: string }> =>
-  new Promise((res) => {
-    const p = spawn(cmd, { shell: true, cwd, windowsHide: true, timeout: 120_000 })
+// ===========================================================================================
+// TERMINAL CONTAINMENT - there is no shell in this file.
+//
+// This used to be `spawn(cmd, { shell: true })`. A shell between the allowlist and the
+// operating system undoes the allowlist: `node --version` is one command, and the same string
+// with `& calc.exe` appended is two - the allowlist only ever read the first token. The
+// existing `authorizeShell` (artifacts.ts) caught the quote-stripped `&`, `|`, `;` chains and
+// space-separated redirects, but NOT `echo hi>file` (no space before the operator, so its
+// redirect regex missed), not a newline-separated second command, and not `%VAR%` expansion
+// inside quotes. Those gaps were live write/execution routes on the chat path.
+//
+// The replacement: tokenize the line ourselves (double quotes group, nothing else is special),
+// refuse anything a shell would interpret, and run the allowlisted executable with a STRUCTURED
+// argument list inside a Windows Job Object (job-exec.ps1) with KILL_ON_JOB_CLOSE - so even
+// grandchildren the wrapper never saw die when the command ends, the timeout fires, or the
+// caller cancels. cmd.exe itself is invoked only as a NON-interactive argument executor for
+// built-ins and .cmd shims (`dir`, `echo`, `npm`, ...), under /d /s /c with a rebuilt line that
+// can contain no operators, because the tokenizer already refused every one.
+// ===========================================================================================
+
+/**
+ * Characters a shell would interpret.
+ *
+ * Refused outright in unquoted regions. None of them is needed to run an allowlisted command,
+ * and every one of them is how "node --version" becomes something the allowlist never read.
+ * `;` is not a cmd.exe separator - it is refused because it is one on every other platform
+ * this code could be ported to, and a refusal is cheaper than a port that quietly works wrong.
+ */
+const SHELL_OPERATORS = /[&|<>^();`\n\r]/
+
+export type ParsedCommandLine =
+  | { readonly ok: true; readonly exe: string; readonly args: readonly string[] }
+  | { readonly ok: false; readonly reason: string }
+
+/**
+ * Tokenize a command line the way Windows CreateProcess argument parsing does - double quotes
+ * group, backslashes are literal, there are no escape sequences - and refuse anything that
+ * would need a shell.
+ *
+ * `%` and `!` are refused EVERYWHERE, quoted or not, because cmd.exe expands `%VAR%` even
+ * inside double quotes; a quoted `%PATH%` is not a literal either. Refusing them is a real
+ * restriction (no command that mentions a variable can run) and it is the honest trade: the
+ * expansion's result is not something the allowlist ever read.
+ */
+export function parseCommandLine(cmd: string): ParsedCommandLine {
+  const text = cmd.trim()
+  if (text.length === 0) return { ok: false, reason: 'the command was empty' }
+
+  const tokens: string[] = []
+  let cur = ''
+  let started = false
+  let inQuotes = false
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+    if (ch === '"') { inQuotes = !inQuotes; started = true; continue }
+    if (ch === '%' || ch === '!') {
+      return {
+        ok: false,
+        reason: `"${ch}" requests environment-variable expansion. AIOS does not run commands `
+          + 'through a shell, so nothing is expanded: what the allowlist read is not what would '
+          + 'run. Write the literal value instead.',
+      }
+    }
+    if (!inQuotes && SHELL_OPERATORS.test(ch)) {
+      return {
+        ok: false,
+        reason: `"${ch}" is a shell operator. AIOS does not run commands through a shell: it `
+          + 'runs one allowlisted executable with structured arguments, so chaining, redirection '
+          + 'and quoting tricks are refused rather than executed.',
+      }
+    }
+    if (!inQuotes && /\s/.test(ch)) {
+      if (started) { tokens.push(cur); cur = ''; started = false }
+      continue
+    }
+    cur += ch
+    started = true
+  }
+  if (inQuotes) return { ok: false, reason: 'the command has an unbalanced double quote' }
+  if (started) tokens.push(cur)
+  if (tokens.length === 0) return { ok: false, reason: 'the command was empty' }
+
+  const [exe, ...args] = tokens
+  return { ok: true, exe, args }
+}
+
+/** Basename, lowercased, with the executable-script extensions normalised away. */
+function commandName(name: string): string {
+  const base = /[\\/]/.test(name) ? (name.split(/[\\/]/).pop() ?? name) : name
+  return base.toLowerCase().replace(/\.(exe|cmd|bat)$/, '')
+}
+
+/** cmd.exe's own printing built-ins: there is no file on disk to spawn directly. */
+const CMD_BUILTINS = new Set(['dir', 'type', 'echo', 'ver', 'date', 'more', 'tree'])
+
+/** Shimmed launchers: `npm` is npm.cmd, which only cmd.exe can run. */
+const CMD_SHIMS = new Set(['npm', 'npx'])
+
+/** Quote one argv token for a CreateProcess argument string. Tokens can never contain a
+ *  double quote (the tokenizer consumes those as syntax), so whitespace is the only case. */
+function quoteArg(token: string): string {
+  return /\s/.test(token) ? `"${token}"` : token
+}
+
+const JOB_WRAPPER_PATH = fileURLToPath(new URL('./job-exec.ps1', import.meta.url))
+const COMMAND_TIMEOUT_MS = 120_000
+
+interface ContainedRun {
+  readonly code: number
+  readonly out: string
+  readonly err: string
+  readonly timedOut: boolean
+  readonly contained: boolean
+}
+
+/**
+ * Run one command inside the Job Object wrapper and return its result.
+ *
+ * Abort policy: the signal KILLS the wrapper process, and the wrapper's death closes the job
+ * handle, and a closed job with KILL_ON_JOB_CLOSE kills every process in it. So cancellation
+ * reaches the grandchildren too, with no bookkeeping on this side - there is no list of child
+ * pids to get wrong.
+ *
+ * Fail-closed: if the wrapper cannot start or cannot establish the job, the result says the
+ * command was NOT run. There is deliberately no fallback that runs the command uncontained.
+ */
+function runInJob(
+  exe: string,
+  argsLine: string,
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<ContainedRun> {
+  return new Promise((res) => {
+    if (signal?.aborted) {
+      res({ code: -1, out: '', err: 'cancelled by the user', timedOut: false, contained: true })
+      return
+    }
+
+    let p: ChildProcess
+    try {
+      p = spawn(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', JOB_WRAPPER_PATH],
+        { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+    } catch (e) {
+      res({
+        code: -1, out: '', timedOut: false, contained: false,
+        err: `containment unavailable: ${e instanceof Error ? e.message : String(e)}. `
+          + 'AIOS will not run terminal commands uncontained.',
+      })
+      return
+    }
+
     let out = ''
     let err = ''
+    let settled = false
+
+    const finish = (r: ContainedRun): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(hardTimer)
+      signal?.removeEventListener('abort', onAbort)
+      try {
+        if (p.exitCode === null && p.signalCode === null) p.kill()
+      } catch { /* the wrapper is already gone; the job died with it */ }
+      res(r)
+    }
+    const onAbort = (): void => {
+      // Killing the wrapper closes the job, which kills the tree - the same path the
+      // timeout takes, which is why cancellation needs no separate mechanism here.
+      finish({ code: -1, out, err: 'cancelled by the user', timedOut: false, contained: true })
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const hardTimer = setTimeout(() => {
+      finish({
+        code: -1, out, timedOut: true, contained: true,
+        err: `${err}containment wrapper exceeded ${timeoutMs + 15_000}ms and was killed; `
+          + 'the command process tree was terminated.',
+      })
+    }, timeoutMs + 15_000)
+
     p.stdout?.on('data', (d) => { out += String(d) })
     p.stderr?.on('data', (d) => { err += String(d) })
-    p.on('close', (code) => res({ code: code ?? -1, out, err }))
-    p.on('error', (e) => res({ code: -1, out, err: e.message }))
+    p.on('error', (e) => {
+      finish({
+        code: -1, out: '', timedOut: false, contained: false,
+        err: `containment unavailable: ${e.message}. AIOS will not run terminal commands uncontained.`,
+      })
+    })
+    p.on('close', (psCode) => {
+      // A UTF-8 BOM on the wrapper's stdout would break JSON.parse; strip exactly that one char.
+      const raw = out
+      const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+      if (psCode !== 0) {
+        finish({
+          code: -1, out: text, timedOut: false, contained: false,
+          err: `${err}AIOS will not run terminal commands uncontained.`,
+        })
+        return
+      }
+      try {
+        const j = JSON.parse(text) as { code: number; out: string; err: string; timedOut: boolean }
+        finish({
+          code: Number(j.code),
+          out: String(j.out ?? ''),
+          err: String(j.err ?? ''),
+          timedOut: j.timedOut === true,
+          contained: true,
+        })
+      } catch {
+        finish({
+          code: -1, out: text, timedOut: false, contained: false,
+          err: `${err}containment wrapper returned an unparseable result; the command was not treated as run.`,
+        })
+      }
+    })
+
+    p.stdin?.end(JSON.stringify({ exe, args: argsLine, cwd, timeoutMs }))
+    if (signal?.aborted) onAbort()
   })
+}
+
+/**
+ * Run an allowlisted command line. Structured argv all the way down - no shell, ever.
+ *
+ * `signal` cancels the run: the wrapper dies, the job closes, the tree dies. A cancelled or
+ * refused command reports `code: -1` with the reason in `err`; nothing runs uncontained.
+ *
+ * Exported for the containment tests, which need to prove orphan-kill and cancellation against
+ * the execution layer itself. The AUTHORIZATION layer (authorizeShell) deliberately refuses
+ * `node script.js` whenever the script exists on disk - a declared artifact that already holds
+ * bytes is off-limits to the shell - and that refusal is pinned by shell-artifact-contract
+ * tests. Two layers, two suites: contract tests own who may run; these tests own what happens
+ * to the processes afterwards.
+ */
+export const runCommand = (
+  cmd: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<{ code: number; out: string; err: string }> =>
+  (async () => {
+    const parsed = parseCommandLine(cmd)
+    if (!parsed.ok) return { code: -1, out: '', err: parsed.reason }
+
+    let exe = parsed.exe
+    let argsLine = parsed.args.map(quoteArg).join(' ')
+    const name = commandName(parsed.exe)
+    if (CMD_BUILTINS.has(name) || CMD_SHIMS.has(name)) {
+      // cmd.exe as a pure argument executor: /d skips AutoRun, /s makes the /c tail be taken
+      // literally after the outer quote strip. The tail was built by this function from tokens
+      // the tokenizer already cleared of every operator, so there is nothing in it for cmd to
+      // interpret beyond the built-in itself.
+      const comspec = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe'
+      let tail = [parsed.exe, ...parsed.args].map(quoteArg).join(' ')
+      if (/^".*"$/.test(tail)) tail = `"${tail}"`
+      exe = comspec
+      argsLine = `/d /s /c ${tail}`
+    }
+
+    const r = await runInJob(exe, argsLine, cwd, COMMAND_TIMEOUT_MS, signal)
+    return { code: r.code, out: r.out, err: r.err }
+  })()
 
 const terminalTool: Tool = {
   name: 'terminal',
@@ -2005,6 +2366,13 @@ const terminalTool: Tool = {
     const refusal = authorizeShell({ command, contract })
     if (refusal) return { kind: 'failed', reason: refusal }
 
+    // The tokenizer's refusal, surfaced on its own rather than wrapped in "exit -1". It sits
+    // AFTER authorizeShell on purpose: the artifact layer's "did not declare" messages describe
+    // the policy this product actually wrote, and those must keep their wording for the commands
+    // it catches. runCommand re-parses regardless, so the verifier path is covered too.
+    const parsed = parseCommandLine(command)
+    if (!parsed.ok) return { kind: 'failed', reason: parsed.reason }
+
     const cwd = str(args.cwd, 'cwd', AGENT_OUT)
     if (!existsSync(cwd)) return { kind: 'failed', reason: `working directory does not exist: ${cwd}` }
 
@@ -2013,7 +2381,7 @@ const terminalTool: Tool = {
     const before = contract ? snapshotArtifacts(contract) : {}
 
     try {
-      const r = await runCommand(command, cwd)
+      const r = await runCommand(command, cwd, ctx.signal)
       const combined = `${r.out}${r.err}`.trim()
       if (r.code !== 0) return { kind: 'failed', reason: `exit ${r.code}: ${combined.slice(0, 300)}` }
       if (combined.length === 0) return { kind: 'nothing-found', reason: 'the command produced no output' }
@@ -2057,8 +2425,9 @@ const terminalVerifier: Verifier = {
     const d = toolData as { command?: string; cwd?: string; output?: string } | undefined
     if (!d?.command) return { rejected: 'the step recorded no command to verify' }
     // Re-run and compare. Deterministic commands must produce the same output twice; a tool that
-    // printed its own output would not survive this.
-    const again = await runCommand(d.command, d.cwd ?? AGENT_OUT)
+    // printed its own output would not survive this. `signal` is threaded so a cancelled mission
+    // stops the verifier's re-run too - the stop means stop, including for verification.
+    const again = await runCommand(d.command, d.cwd ?? AGENT_OUT, _ctx.signal)
     const a = String(again.out + again.err).trim()
     if (again.code !== 0) return { rejected: `re-running the command exited ${again.code}: ${a.slice(0, 200)}` }
     if (a !== String(d.output ?? '').trim()) {
@@ -2071,6 +2440,78 @@ const terminalVerifier: Verifier = {
       } as unknown as Evidence,
     }
   },
+}
+
+// ===========================================================================================
+// EFFECT CLASSIFICATION - what a terminal step would actually DO
+// ===========================================================================================
+
+/**
+ * The chat terminal's `effectOf`: the executor's gate reads this instead of trusting the plan.
+ *
+ * WHY THE VERB AND NOT THE WHOLE COMMAND
+ *
+ * `git status` reads and `git push` sends, and a static "terminal is consequential" flag would
+ * either demand a human for the first or wave the second through. The verb is what carries the
+ * consequence, so the verb is what is classified - using the SAME verb tables the interactive
+ * terminal gates on (live/terminal-policy.ts, imported not copied), because two terminals on one
+ * machine classifying `git push` differently is a policy that cannot be described honestly.
+ *
+ * DELIBERATE DIFFERENCES FROM THE INTERACTIVE TERMINAL, STATED RATHER THAN HIDDEN
+ *
+ * The interactive terminal BLOCKS every verb it has not classified; this one returns `undefined`
+ * and lets the artifact layer answer (authorizeShell: declared targets only, no overwriting what
+ * already exists). Chat missions legitimately run `node script.js` against declared artifacts as
+ * their normal work, while the interactive terminal wants a human for every script run. The
+ * boundaries are layered, not replaced: this classifier decides what needs AUTHORISATION, and
+ * authorizeShell still decides what the command may TOUCH.
+ *
+ * A command the tokenizer would refuse classifies as no effect - it will not execute at all, so
+ * there is no effect to declare.
+ */
+function terminalEffectOf(step: Step): DeclaredEffect | undefined {
+  const command = String((step.args as { command?: unknown } | undefined)?.command ?? '')
+  const parsed = parseCommandLine(command)
+  if (!parsed.ok) return undefined
+  const name = commandName(parsed.exe)
+  const verb = parsed.args.find((a) => !a.startsWith('-'))?.toLowerCase()
+
+  if (name === 'git' && verb) {
+    const send = GIT_SEND_VERBS[verb]
+    if (send) {
+      return {
+        kind: 'external-send',
+        target: `git ${verb}`,
+        reason: `git ${verb} ${send}`,
+        irreversible: true,
+      }
+    }
+    const destructive = GIT_DESTROY_VERBS[verb]
+    if (destructive) {
+      return {
+        kind: 'delete',
+        target: `git ${verb}`,
+        reason: `git ${verb} ${destructive}`,
+        irreversible: true,
+      }
+    }
+    return undefined
+  }
+
+  if (name === 'npm' && (verb === 'install' || verb === 'i' || verb === 'add' || verb === 'ci')) {
+    const rest = parsed.args
+      .slice(parsed.args.indexOf(verb) + 1)
+      .filter((a) => !a.startsWith('-'))
+      .join(' ')
+    return {
+      kind: 'install',
+      target: (rest || "this project's dependency tree").slice(0, 200),
+      reason: 'npm install downloads and unpacks third-party code onto this machine',
+      irreversible: false,
+    }
+  }
+
+  return undefined
 }
 
 // ===========================================================================================
@@ -2099,6 +2540,29 @@ export interface Capability {
    * live guard permits it.
    */
   readonly plannable?: boolean
+  /**
+   * GOVERNANCE, mirrored from the tool-router's registration semantics.
+   *
+   * The executor's consequential-effect gate reads three sources, strongest first: the TOOL's
+   * own classification of its arguments (`effectOf`), a static always-consequential flag
+   * (`consequential`), and the plan step's declaration. The chat path's router used to expose
+   * none of the first two, so the gate could never fire here: a `git push` step planned for the
+   * chat ran its effect with no request, no record and no human - while the interactive
+   * terminal, which does expose them, gated the identical command. Two paths, two rules, one
+   * machine: exactly the non-uniform boundary this field set exists to end.
+   */
+  readonly consequential?: boolean
+  /**
+   * WHAT A STEP WOULD ACTUALLY DO, decided from its own arguments. `undefined` is a positive
+   * claim that the tool looked and found nothing consequential - not "could not tell".
+   */
+  readonly effectOf?: (step: Step) => DeclaredEffect | undefined
+  /**
+   * A refusal this tool would issue for the step, checked BEFORE authorisation. A blocked
+   * command is not something a human can authorise, so it must never be dressed as an approval
+   * request.
+   */
+  readonly preflight?: (step: Step) => { blocked: string; needsHuman: boolean } | undefined
 }
 
 /**
@@ -2159,6 +2623,10 @@ function note(line: string): void {
   } catch { /* logging must never be the reason a step fails */ }
 }
 
+// THE TRANSPORT-LOSS CLASSIFIER LIVES IN transport-loss.ts, shared with the executor's
+// throwing-tool boundary. It was defined here first; it is imported now so the tool's own
+// classification and the executor's fallback cannot drift into disagreeing about the same
+// evidence - which is exactly how an action ends up retryable in one layer and not the other.
 async function injectionRefusedReason(waitSeconds = 0): Promise<string | null> {
   const deadline = Date.now() + waitSeconds * 1000
   let last = ''
@@ -2167,6 +2635,20 @@ async function injectionRefusedReason(waitSeconds = 0): Promise<string | null> {
   const trace: string[] = []
   for (;;) {
     const p = await livePermission()
+    // THE HOST IS GONE, not the guard. Waiting cannot revive a dead process, and the default
+    // wait here is 300 seconds: without this check, every desktop step on a dead host would
+    // spin out the full window polling a process that will never answer, arm-attempting
+    // against a closed port, and the eventual refusal would blame the GUARD for an
+    // infrastructure loss. Fail closed immediately, and name the right cause so the remedy
+    // (restart the host) is the one the person is given.
+    if (!p.infrastructureHealthy) {
+      const why = p.blockedBy ?? 'the control infrastructure reports itself unhealthy'
+      note(`desktop-input: host unavailable, refusing without waiting (${why})`)
+      return `the operator host is not answering (${why}), so no keystroke or click was sent. `
+        + 'This is not the guard refusing: the host process itself must be running again before '
+        + 'desktop input can be attempted. Restart it with scripts/start-operator-host.mjs and '
+        + 'ask again.'
+    }
     if (p.input === 'PERMITTED') {
       if (trace.length) note(`desktop-input wait: ${trace.join(' -> ')}`)
       return null
@@ -2333,7 +2815,17 @@ const desktopInputCapability: Capability = {
           }
         }
         if (!result.delivered) {
-          return { kind: 'failed', reason: `the host refused the injection: ${result.refusedBy ?? 'no reason given'}` }
+          const why = result.refusedBy ?? 'no reason given'
+          if (midActionTransportLoss(why)) {
+            return {
+              kind: 'outcome-unknown',
+              reason: `the operator transport died DURING the ${action} request (${why}). Some of the `
+                + 'input may already have reached the desktop, so this step must not be retried '
+                + 'blindly: the machine has to be observed, or a human asked, before anything is '
+                + 'sent again.',
+            }
+          }
+          return { kind: 'failed', reason: `the host refused the injection: ${why}` }
         }
         return {
           kind: 'data',
@@ -2341,7 +2833,18 @@ const desktopInputCapability: Capability = {
           data: { action, hwnd, text: args.text ? String(args.text) : undefined, x: args.x, y: args.y, vk: args.vk, delivered: true },
         }
       } catch (e) {
-        return { kind: 'failed', reason: e instanceof Error ? e.message : String(e) }
+        // Same classification for a thrown transport error (the ctrl-key path posts through
+        // `raw`, which does not catch): a mid-flight death is an unknown outcome, not a clean
+        // failure, and reporting it as `failed` is how a blind retry gets authorized.
+        const msg = e instanceof Error ? e.message : String(e)
+        if (midActionTransportLoss(msg)) {
+          return {
+            kind: 'outcome-unknown',
+            reason: `the ${action} call failed mid-request (${msg}); part of the input may have `
+              + 'landed, so it must not be blindly retried without observing the machine first.',
+          }
+        }
+        return { kind: 'failed', reason: msg }
       }
     },
   },
@@ -2378,7 +2881,10 @@ const desktopInputCapability: Capability = {
           // reports every successful type as a failure - and reading `name` for the empty case
           // would "confirm" a type that never happened. The host returns both.
           seen = read
-            .map((el) => `${(el as { text?: string }).text ?? ''}\n${el.name ?? ''}\n${el.automationId ?? ''}\n${el.className ?? ''}`)
+            .map((el) => {
+              const e = el as { text?: string; name?: string; automationId?: string; className?: string }
+              return `${e.text ?? ''}\n${e.name ?? ''}\n${e.automationId ?? ''}\n${e.className ?? ''}`
+            })
             .join('\n')
           if (d.action !== 'type' || seen.includes(needle)) break
         }
@@ -2710,6 +3216,9 @@ export const CAPABILITIES: readonly Capability[] = [
     tool: terminalTool,
     verifier: terminalVerifier,
     available: true,
+    // The executor's gate asks the tool, not the plan, what a command would do. See
+    // `terminalEffectOf` above; the verb tables are the interactive terminal's own.
+    effectOf: terminalEffectOf,
   },
   desktopInputCapability,
   {
@@ -2756,13 +3265,41 @@ export function routedVerifier(): Verifier {
   }
 }
 
-/** The routed tool surface: resolve a step to the tool that will run it. */
+/**
+ * The routed tool surface: resolve a step to the tool that will run it, and speak for the
+ * executor's consequential-effect gate.
+ *
+ * `resolve` alone was the whole surface once, and it left the approval gate wired to NOTHING on
+ * the chat path: `effectOf`/`isConsequential`/`preflight` were undefined, so `deps.tools.effectOf?.()`
+ * short-circuited to undefined for every chat mission, no effect was ever classified, no request
+ * was ever recorded, and `git push` planned for the chat ran ungate while the identical command in
+ * the interactive terminal stopped at a human. Same executor, same gate, two different answers
+ * depending on which route the step arrived by - which is exactly a non-uniform authorization
+ * boundary. These three methods mirror tool-router/router.ts's semantics (the tool's own reading
+ * of its arguments wins; absent means "looked and found nothing", never "did not look").
+ */
 export function routedTools() {
+  const registered = (s: Step): Capability | undefined => {
+    const name = String(s.tool ?? '')
+    return CAPABILITIES.find((c) => c.tool.name === name || c.id === name)
+  }
   return {
     resolve(s: Step) {
       const r = resolveCapability(String(s.tool ?? ''))
       if ('unavailable' in r) return { unavailable: r.unavailable, candidates: availableCapabilities().map((c) => c.tool.name) }
       return { tool: r.tool, fellBack: false, reason: `exact match on ${r.id}` }
+    },
+    /** Consulted by the executor's approval gate; reads the REGISTRATION, not the plan. */
+    isConsequential(s: Step): boolean | undefined {
+      return registered(s)?.consequential === true ? true : undefined
+    },
+    /** What this step would ACTUALLY do, per the tool that will run it. */
+    effectOf(s: Step): DeclaredEffect | undefined {
+      return registered(s)?.effectOf?.(s)
+    },
+    /** A refusal the tool would issue for this step, checked before authorisation. */
+    preflight(s: Step): { blocked: string; needsHuman: boolean } | undefined {
+      return registered(s)?.preflight?.(s)
     },
   }
 }

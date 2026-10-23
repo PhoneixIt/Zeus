@@ -146,15 +146,20 @@ async function launchBrowser(o: AppOptions): Promise<ChildProcess> {
   if (await cdpAlive(o.cdpPort)) {
     throw new Error(`port ${o.cdpPort} is already in use; refusing to attach to a browser this app did not start`)
   }
+  // VISIBLE OPT-IN for the live Mission B demonstration. The default is headless: the Research
+  // Desk's own window is the interface, and a test must not take over the desktop. With
+  // AIOS_BROWSER_VISIBLE=1 the same isolated browser is shown, so the person can watch every
+  // navigation, scroll, click and back-step the engine verifies.
+  const visible = process.env.AIOS_BROWSER_VISIBLE === '1'
   const child = spawn(o.chromePath, [
-    '--headless=new',
+    ...(visible ? ['--window-position=80,80'] : ['--headless=new']),
     `--remote-debugging-port=${o.cdpPort}`,
     `--user-data-dir=${o.profileDir}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu',
     '--no-sandbox', '--disable-dev-shm-usage',
     '--window-size=1380,920',
     'about:blank',
-  ], { stdio: 'ignore', windowsHide: true })
+  ], { stdio: 'ignore', windowsHide: !visible })
   for (let i = 0; i < 40; i++) {
     if (await cdpAlive(o.cdpPort)) return child
     await sleep(500)

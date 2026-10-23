@@ -33,7 +33,7 @@
 
 import { execute, type ToolRouter, type Verifier } from './executor.ts'
 import { tally } from './state.ts'
-import { livePermission } from '../live/live-control.ts'
+import { livePermission } from './live/live-control.ts'
 import { compilePlan } from '../planner/compile.ts'
 import { ObjectiveReconciler, observeDirectories, type FreshObservation, type Substitution } from '../planner/reconcile.ts'
 // A structural type with no methods. The supervisor holds an observer in order to ASK it questions
@@ -342,11 +342,28 @@ export async function runMission(objective: string, planCtx: PlanContext, deps: 
       console.log(`Human takeover detected - starting ${(AUTO_RESUME_TIMEOUT_MS / 1000)}s inactivity timer`)
     }
 
+    // Auto-arm the guard on new mission start if input is blocked
+    // and no emergency stop or takeover is pending. This allows authorized
+    // autonomous missions to proceed without requiring a manual RELEASE click.
+    if (i === 0 && _autoResumeState === null && permission.input === 'BLOCKED' && !permission.takeoverPending && !permission.emergencyLatched) {
+      try {
+        const client = await import('../control-core/operator-client.mjs')
+        const r = await (client as any).autoRearm()
+        if (r.mayInject === true) {
+          console.log('Guard auto-rearmed via authorized mission start - mayInject=' + r.mayInject)
+        } else {
+          console.log('Auto-rearm did not enable injection: mayInject=' + r.mayInject + ' state=' + r.state)
+        }
+      } catch (e) {
+        console.error('Failed to auto-rearm guard:', e)
+      }
+    }
+
     // If we are in a takeover state, manage the inactivity timer.
     if (_autoResumeState?.takeoverInProgress) {
       // Check for new human activity: if lastTakeoverAt has advanced since we last
       // checked, a new human event occurred - reset the timer.
-      if (permission.lastTakeoverAt > _autoResumeState.lastHumanEventTime) {
+      if (permission.lastTakeoverAt !== undefined && permission.lastTakeoverAt > _autoResumeState.lastHumanEventTime) {
         _autoResumeState.lastHumanEventTime = permission.lastTakeoverAt
         _autoResumeState.timerStart = Date.now() // restart the 5s window
         console.log('Human activity detected - resetting inactivity timer')
@@ -378,8 +395,8 @@ export async function runMission(objective: string, planCtx: PlanContext, deps: 
           // the /auto-rearm endpoint on the operator host, which calls Guard.Rearm()
           // to safely clear takeoverPending and set state to ARMED.
           try {
-            const client = await import('../../control-core/operator-client.mjs')
-            const r = await client.autoRearm()
+            const client = await import('../control-core/operator-client.mjs')
+            const r = await (client as any).autoRearm()
             // Guard.Json() does not include an `ok`/`armed` field; check that mayInject
             // flipped to true (state ARMED, emergencyLatched cleared, takeoverPending cleared).
             if (r.mayInject === true) {

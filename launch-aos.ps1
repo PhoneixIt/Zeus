@@ -96,6 +96,13 @@ if (Test-OperatorHost) {
   try {
     & $node (Join-Path $repo 'packages\control-core\start-operator-host.mjs') 2>&1 |
       Out-File -Append -FilePath $log
+    # PowerShell 5.1 does not throw on a native command that exits nonzero, so the exit code
+    # is logged explicitly - otherwise a start that failed silently looks identical to one
+    # that worked, which is exactly the reading that hid the 2026-10-22 host loss.
+    if ($LASTEXITCODE -ne 0) {
+      ("[{0}] start-operator-host.mjs exited with code {1}" -f (Get-Date -Format o), $LASTEXITCODE) |
+        Out-File -Append -FilePath $log
+    }
     Start-Sleep -Seconds 3
 
     # The operator host runs out of %TEMP%\opencode\operator, NOT out of the repository.
@@ -116,6 +123,26 @@ if (Test-OperatorHost) {
     ("[{0}] the operator host could not be started: {1}" -f (Get-Date -Format o), $_.Exception.Message) |
       Out-File -Append -FilePath $log
   }
+}
+
+# FAIL CLOSED FOR GUI MISSIONS WHEN THE HOST STILL ISN'T THERE.
+#
+# The start above can fail without this script's try/catch ever firing: on 2026-10-22 the
+# launcher started a host that died before writing its state file, the catch logged one line,
+# and the chat server came up anyway with every GUI mission doomed to die mid-step with a bare
+# "fetch failed". The containment gates (the agent's pre-execution check and the executor's
+# per-step infrastructure halt) now refuse such missions before anything runs, so the launcher
+# does not abort - degraded CHAT-ONLY operation is retained deliberately, for research and
+# planning work that never touches the desktop. What the launcher owes that arrangement is
+# honesty: the limitation is stated out loud, in the console and in the log, at the moment it
+# starts, instead of being discovered by the first failed mission.
+if (-not (Test-OperatorHost)) {
+  $degraded = ("DEGRADED MODE: the operator host is not answering, so this session is CHAT-ONLY. " +
+    "Desktop/GUI missions will be refused before any step runs (fail-closed - nothing is sent " +
+    "to the desktop without a live guard). Research, planning, and file work are unaffected. " +
+    "To restore GUI missions: node packages\control-core\start-operator-host.mjs, then relaunch.")
+  ("[{0}] {1}" -f (Get-Date -Format o), $degraded) | Out-File -Append -FilePath $log
+  Write-Warning $degraded
 }
 
 ("--- launcher run {0} ---`r`nnode {1}`r`nharness {2}" -f (Get-Date -Format o), $node, $harness) |
@@ -286,6 +313,13 @@ if ($null -eq $info) {
 # and redirects to a clean /ui, so the credential is not left in the address bar or in history.
 $ui = 'http://127.0.0.1:{0}/ui?k={1}' -f $info.port, $info.token
 
+# THE LOG GETS THE URL, NOT THE CREDENTIAL. Both lines below write to $log (a file on disk),
+# so the `k` value is redacted there before the string is built. The browser still receives
+# the REAL $ui above - that one-time exchange is the designed handshake - and the no-browser
+# Fail message at the bottom still shows it to the human, because opening that URL is the only
+# action the message exists to enable. Only the durable file is cut.
+$uiLogged = $ui -replace 'k=[^&]+', 'k=<redacted>'
+
 # Browser app mode: a standalone window with no tabs and no address bar.
 $candidates = @(
   'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
@@ -303,10 +337,10 @@ if ($browser) {
   Start-Process -FilePath $browser `
     -ArgumentList "--app=$ui", '--window-size=1280,860', '--new-window' `
     -WorkingDirectory $repo | Out-Null
-  ("opened {0} at {1}" -f $browser, $ui) | Out-File -Append -FilePath $log
+  ("opened {0} at {1}" -f $browser, $uiLogged) | Out-File -Append -FilePath $log
 } else {
   # Do not open the user's full browser at a URL with no way back - just name it and stop.
-  ("no Edge found; the interface is at {0}" -f $ui) | Out-File -Append -FilePath $log
+  ("no Edge found; the interface is at {0}" -f $uiLogged) | Out-File -Append -FilePath $log
   Fail ("AIOS is running, but no browser was found to show its interface.`r`n`r`n" +
         "Open this yourself:`r`n$ui")
 }

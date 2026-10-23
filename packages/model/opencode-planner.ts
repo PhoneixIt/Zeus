@@ -54,6 +54,13 @@ export interface OpenCodePlannerOptions {
   readonly timeoutMs: number
   /** Set false only in a test. The sandbox is the containment boundary; disabling it is not free. */
   readonly sandbox?: boolean
+  /**
+   * Caller cancellation. An abort kills the model child immediately - a Stop request must stop
+   * the WORK, and the work here is a process that can think for five minutes. The failure it
+   * produces reads "cancelled by the user" so no caller can mistake it for a model failure or
+   * retry it on the next model in the pool.
+   */
+  readonly signal?: AbortSignal
 }
 
 /** The result of one planner call, kept whole so a failure can be diagnosed rather than retried. */
@@ -165,7 +172,7 @@ export function openCodePlannerFetch(
     const sandbox = opts.sandbox === false ? process.cwd() : mkdtempSync(join(tmpdir(), 'aios-planner-'))
     const started = Date.now()
 
-    const res = await runCli(cli, opts.model, prompt, sandbox, opts.timeoutMs)
+    const res = await runCli(cli, opts.model, prompt, sandbox, opts.timeoutMs, opts.signal)
 
     if (opts.sandbox !== false) {
       try { rmSync(sandbox, { recursive: true, force: true }) } catch { /* Defender may hold it */ }
@@ -199,10 +206,25 @@ export function openCodePlannerFetch(
   return { fetchImpl, calls }
 }
 
-function runCli(
+/**
+ * The one place a model process is started. Exported for the cancellation tests, which need to
+ * abort a REAL child mid-run and prove it dies - `openCodePlannerFetch`'s sandbox cwd cannot be
+ * pre-seeded with the fake CLI those tests use, but this function's cwd can.
+ */
+export function runCli(
   cli: string, model: string, message: string, cwd: string, timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ text: string; exitCode: number | null; sessionId: string; events: number; unparsed: number; stderr: string; failure?: string }> {
   return new Promise((resolve) => {
+    // A CANCELLED CALL IS NOT A MODEL FAILURE. The child is killed and the result says so in
+    // words no failover loop can mistake for a transport error ("cancelled by the user" matches
+    // none of the retryable patterns in the caller), so a Stop request does not quietly turn
+    // into "try the next free model" and keep burning rate limit after the person walked away.
+    if (signal?.aborted) {
+      resolve({ text: '', exitCode: null, sessionId: '', events: 0, unparsed: 0, stderr: '',
+        failure: 'cancelled by the user' })
+      return
+    }
     let child: ReturnType<typeof spawn>
     try {
       child = spawn(cli, ['run', '--format', 'json', '--model', model, message], {
@@ -232,6 +254,7 @@ function runCli(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       reap()
       resolve(r)
     }
@@ -241,6 +264,16 @@ function runCli(
       done({ text: '', exitCode: null, sessionId: '', events: 0, unparsed: 0, stderr,
         failure: `planner exceeded ${timeoutMs}ms and was terminated` })
     }, timeoutMs)
+
+    const onAbort = () => {
+      done({ text: '', exitCode: null, sessionId: '', events: 0, unparsed: 0, stderr,
+        failure: 'cancelled by the user' })
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    // Re-check AFTER registration: an abort that lands between the entry check and the
+    // listener being attached would otherwise never fire the listener (the event already
+    // happened) and the child would run to the full timeout as if nobody had pressed Stop.
+    if (signal?.aborted) onAbort()
 
     child.stdout?.on('data', (d) => { if (stdout.length < 8_000_000) stdout += d })
     child.stderr?.on('data', (d) => { if (stderr.length < 200_000) stderr += d })
@@ -324,6 +357,87 @@ function runCli(
  * in. The ANSI colour codes are stripped because they made the stored message unreadable in the
  * mission log, which is the one place this text is actually read.
  */
+/**
+ * THE ANSWER PATH - a question gets an answer, not a plan.
+ *
+ * ============================================================================================
+ * WHY THIS EXISTS
+ * ============================================================================================
+ *
+ * `openCodePlannerFetch` asks the model for a PLAN: a JSON object of executable steps. That is
+ * exactly right when the user's goal is work to be done. It is exactly wrong when the user's goal
+ * is to KNOW something - "Why is Python popular?" - because the model dutifully plans a research
+ * mission, the mission runs, and the person waits through a browser, a brief, a read-back and a
+ * verification loop to receive one sentence they could have had in three seconds.
+ *
+ * The visible failure: the chat answered a question with a mission, reported `unproven` because
+ * the plan declared no objective postcondition, and stalled the window for the length of the
+ * research. The routing is the defect, not the mission.
+ *
+ * So ordinary questions take this path: one conversational call, the model's prose returned as
+ * the chat reply, zero steps, no mission, no artifact. The governed mission engine is untouched
+ * and still receives every genuine action and research request.
+ *
+ * GOVERNANCE: the model is asked for PROSE, not permission. Nothing this function returns can
+ * execute anything. The plan path, and every check in it, is not involved.
+ */
+export interface AnswerResult {
+  readonly text: string
+  readonly elapsedMs: number
+  readonly exitCode: number | null
+  readonly failure?: string
+}
+
+/**
+ * Ask the local model one conversational question and return its prose.
+ *
+ * Uses the same CLI and the same free-model discipline as the planner, but with a conversational
+ * prompt instead of a planning one. The sandbox is still the scratch directory: a model asked for
+ * prose cannot act, and the containment boundary does not depend on asking nicely.
+ */
+export async function answerOnce(
+  model: string,
+  question: string,
+  timeoutMs: number,
+  opts?: { cliPath?: string; onCall?: (e: PlannerCallEvidence) => void; signal?: AbortSignal },
+): Promise<AnswerResult> {
+  const cli = opts?.cliPath ?? DEFAULT_OPENCODE_CLI
+  const prompt = [
+    'You are Zeus, an assistant that runs on the user\'s own laptop.',
+    'Answer the user\'s question directly and concisely, in plain prose.',
+    'Do not offer to perform tasks, do not list your capabilities, and do not ask for',
+    'clarification unless the question is genuinely ambiguous. Give the answer.',
+    '',
+    '--- USER ---',
+    question,
+  ].join('\n')
+
+  const started = Date.now()
+  const sandbox = mkdtempSync(join(tmpdir(), 'aios-answer-'))
+  try {
+    const res = await runCli(cli, model, prompt, sandbox, timeoutMs, opts?.signal)
+    if (opts?.onCall) {
+      opts.onCall({
+        text: res.text,
+        exitCode: res.exitCode,
+        elapsedMs: Date.now() - started,
+        sessionId: res.sessionId,
+        events: res.events,
+        unparsedLines: res.unparsed,
+        stderr: res.stderr,
+      })
+    }
+    return {
+      text: res.text,
+      elapsedMs: Date.now() - started,
+      exitCode: res.exitCode,
+      ...(res.failure ? { failure: res.failure } : {}),
+    }
+  } finally {
+    try { rmSync(sandbox, { recursive: true, force: true }) } catch { /* Defender may hold it */ }
+  }
+}
+
 function plannerFailure(code: number | null, stderr: string): string {
   const plain = stderr
       .replace(/\u001b\[[0-9;]*m/g, '')

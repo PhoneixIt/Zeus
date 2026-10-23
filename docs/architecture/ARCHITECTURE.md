@@ -1,7 +1,9 @@
 # AIOS — architecture (current truth)
 
 Describes what is built. Where something is a limitation rather than a feature, it says so. Where a
-package is empty, it says that too. Last reconciled: 2026-10-08, commit `6fcf982`.
+package is empty, it says that too. Last reconciled: **2026-10-23** (conversation history and browser
+read stability); sections 1-8 were reconciled at commit `6fcf982` on 2026-10-08 and are unchanged
+except where a later section says otherwise.
 
 Read with [`PROJECT-VISION.md`](../PROJECT-VISION.md) for the destination and
 [`safety/GOVERNANCE-CONTRACT.md`](../safety/GOVERNANCE-CONTRACT.md) for the invariants.
@@ -187,7 +189,7 @@ results from the wrong configuration.
 
 ---
 
-## 7. Durable state (M15)
+## 9. Durable state (M15)
 
 `packages/persistence/` — `schema.ts` (migrations), `store.ts` (writes/reads), `recover.ts`
 (what must be re-established), `query.ts` (the read path). Built on `node:sqlite`, which is part of
@@ -302,3 +304,56 @@ conflated, and there is a control for each.
 Authority to inject · approval validity · the latched emergency stop · the operator's armed state ·
 observation freshness. `missionEnded` records that a mission stopped; **no column exists that could be
 read as "the stop may now be lifted"**.
+
+---
+
+## 10. Conversation history (reconciled 2026-10-23)
+
+A conversation is not a mission, and it is not stored as one.
+
+### Two existing stores, one reader
+
+| Store | Path | Owner | Role |
+|---|---|---|---|
+| Session transcript | `~/.aios/agent/sessions/<id>.json` | `live/agent/sessions.ts` | what the UI shows; atomic temp+rename |
+| Model-context log | `~/.aios/agent/conversations.jsonl` | `live/agent/agent.ts` | bounded recent turns offered to a prompt |
+| Mission ledger | `~/.aios/agent/aios.db` | `packages/persistence` | unchanged; governed mission history |
+
+`live/agent/session-history.ts` is a **reader/deriver over those stores**. It owns no directory. An
+earlier version wrote mission-shaped JSON to a third history directory and reconstructed evidence from
+step status; it was deleted because duplicated history drifts and reconstructed evidence is fabricated
+evidence.
+
+### The chat path
+
+`POST /message` validates the session and free model, then writes the **user turn before anything
+starts**. If that write fails the route returns 500 and no mission runs. The mission receives
+`sessionId`; `conversationContextForPrompt(sessionId)` filters the model-context log by that id, so two
+open windows cannot answer each other's follow-ups. The assistant turn is written once at the terminal
+event; a failed write is announced as a status event rather than silently lost.
+
+A **recall question about the conversation itself** ("what did I just ask?") is answered from the
+persisted transcript by `resolveFollowUp`; it does not start a mission or call a model. It returns
+`authoritative: false` and says that history cannot approve, authorise, or execute. Ordinary knowledge
+questions and action/research requests keep their existing routing.
+
+### Boundaries
+
+* Session ids are validated (`^[A-Za-z0-9_-]{1,64}$`) before any path is formed.
+* Secrets are redacted before both writes (`sk-*`, GitHub/AWS key shapes, `Bearer …`, `password=`…).
+* Retention is explicit: 500 conversations / 90 days, applied at chat-server startup and by
+  `pruneSessionHistory`. The model-context log is not yet pruned (documented limitation).
+* Stored text is data. The context block is fenced and labelled non-instruction. No executor imports
+  this module; approval still comes only from the current mission's `ApprovalStore`.
+* Missing and malformed history are different answers: a corrupt session file is reported as
+  unreadable, never as an empty conversation.
+
+Design and measured evidence: [`../CONVERSATION-HISTORY.md`](../CONVERSATION-HISTORY.md).
+
+### Browser reads are stabilised at the source
+
+`packages/control-core/operator.mjs` `readPage` waits (bounded) for `document.readyState === complete`
+and two agreeing reads before returning. A page reports its URL before its body has rendered; the
+governed-navigation mission read a partial body, and the independent verifier correctly disagreed
+about the character count. The fix is in the reader, not a relaxed check: if a page never settles,
+the last read is returned and the verifier still reports the disagreement.

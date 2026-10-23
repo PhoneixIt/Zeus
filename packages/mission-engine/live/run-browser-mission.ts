@@ -46,7 +46,7 @@ import { existsSync as fsExists } from 'node:fs'
 import { execute } from '../executor.ts'
 import { DurableStore } from '../../persistence/store.ts'
 import { StoreRecorder } from '../../persistence/recorder.ts'
-import { liveControl, livePermission } from './live-control.ts'
+import { liveControl, livePermission, blockOnHost, hostAvailability } from './live-control.ts'
 import { DeterministicPlanProvider } from '../../planner/deterministic.ts'
 import { ToolRegistry } from '../../tool-router/router.ts'
 import {
@@ -70,6 +70,11 @@ const check = (what: string, ok: unknown, detail = ''): void => {
   console.log(`   FAIL  ${what}${detail ? ` - ${detail}` : ''}`)
   failures += 1
 }
+
+// The mission asks the OPERATOR HOST for input permission; without it every step is held at
+// preflight and the harness used to throw later, leaving its temp dirs behind. Say the real
+// reason up front, before creating anything, and exit "blocked" rather than "failed".
+blockOnHost(await hostAvailability())
 
 const out = mkdtempSync(join(tmpdir(), 'aios-m24-mission-'))
 const profile = mkdtempSync(join(tmpdir(), 'aios-m24-profile-'))
@@ -113,7 +118,7 @@ if (!chromePath) {
   process.exit(2)
 }
 
-console.log('=== 1. THE BROWSER (headless, loopback, isolated profile) ===')
+console.log(`=== 1. THE BROWSER (${process.env.AIOS_BROWSER_VISIBLE === '1' ? 'VISIBLE' : 'headless'}, loopback, isolated profile) ===`)
 console.log(`  binary  ${chromePath}`)
 console.log(`  port    ${PORT}`)
 
@@ -121,7 +126,13 @@ let browser: ReturnType<typeof spawn> | null = null
 let store: DurableStore | null = null
 try {
   browser = spawn(chromePath, [
-    '--headless=new',
+    // VISIBLE OPT-IN. The demonstrations default to headless because a test must not open a
+    // window on someone's desktop. Mission B is explicitly a VISIBLE navigation, so the live
+    // procedure sets AIOS_BROWSER_VISIBLE=1 and the same plan drives a real on-screen window.
+    // Nothing else changes: same isolated profile, same loopback-only CDP port, same plan.
+    ...(process.env.AIOS_BROWSER_VISIBLE === '1'
+      ? ['--window-position=60,60', '--window-size=1280,900']
+      : ['--headless=new']),
     `--remote-debugging-port=${PORT}`,
     '--remote-debugging-address=127.0.0.1',
     `--user-data-dir=${profile}`,

@@ -166,8 +166,12 @@ export { REFUSED_PROGRAMS }
 /**
  * git subcommands that DESTROY work. Classified as `delete` because that is what they do to the
  * user's repository, and `recoverable: false` is the honest answer for `reset --hard` and `clean`.
+ *
+ * EXPORTED for the chat path's terminal effectOf: one table of "which verbs destroy" must answer
+ * for every terminal in the product, or the interactive terminal and the chat terminal would gate
+ * different commands while claiming one policy.
  */
-const GIT_DESTRUCTIVE: Readonly<Record<string, string>> = {
+export const GIT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'clean': 'deletes untracked files and directories',
   'reset': 'moves HEAD, discarding commits and uncommitted changes',
   'checkout': 'overwrites the working tree, discarding local changes',
@@ -179,8 +183,12 @@ const GIT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'gc': 'with --prune can make unreachable objects unrecoverable',
 }
 
-/** git subcommands that SEND data to a remote. */
-const GIT_SENDS: Readonly<Record<string, string>> = {
+/**
+ * git subcommands that SEND data to a remote.
+ *
+ * EXPORTED for the same reason as GIT_DESTRUCTIVE: one table, every terminal.
+ */
+export const GIT_SENDS: Readonly<Record<string, string>> = {
   'push': 'sends commits to a remote',
   'fetch': 'writes remote content into the local object store',
   'pull': 'merges remote content into the working tree',

@@ -3,7 +3,6 @@
  *
  * ============================================================================================
  * WHY THIS EXISTS
- * ============================================================================================
  *
  * The user reported, from the running application:
  *
@@ -31,7 +30,6 @@
  *
  * ============================================================================================
  * WHAT IS AND IS NOT TESTED
- * ============================================================================================
  *
  * The real `UI_JS` string is loaded and RUN, against a DOM stub, and the real functions are
  * called. A test that greps the source for a bad identifier cannot catch this, because the bug
@@ -103,8 +101,6 @@ interface StubNode {
 }
 
 function makeNode(tag = 'div', id = ''): StubNode {
-  // Declared up front, because the methods below close over them and a property assigned after
-  // the literal is undefined at the moment a method runs.
   const classes = new Set<string>()
   const listeners = new Map<string, Array<(...a: unknown[]) => void>>()
   let html = ''
@@ -126,10 +122,6 @@ function makeNode(tag = 'div', id = ''): StubNode {
     removed: false,
     classes,
     listeners,
-    // addPlan writes '<b></b>' and then reaches straight into querySelector('b'). A stub that
-    // stored innerHTML as an inert string would make that dereference null, and the test would
-    // fail for a reason that has nothing to do with the defect it is here to catch. So the one
-    // shape the client actually writes is parsed into a real child.
     get innerHTML(): string {
       return html
     },
@@ -180,10 +172,11 @@ function makeNode(tag = 'div', id = ''): StubNode {
       walk(n)
       return out
     },
-    addEventListener(type: string, fn: (...a: unknown[]) => void) {
-      const cur = listeners.get(type) ?? []
-      cur.push(fn)
-      listeners.set(type, cur)
+    addEventListener(...a: unknown[]) {
+      const event = String(a[0])
+      const cur = listeners.get(event) ?? []
+      cur.push(a[1] as (...args: unknown[]) => void)
+      listeners.set(event, cur)
     },
     removeEventListener() {},
     setAttribute() {},
@@ -198,7 +191,6 @@ function makeNode(tag = 'div', id = ''): StubNode {
     },
     classList: undefined as unknown,
   } as unknown as StubNode & { classes: Set<string>; listeners: Map<string, unknown>; removed: boolean }
-
   ;(n as unknown as { classList: StubNode['classList'] }).classList = {
     add: (c: string) => { classes.add(c) },
     remove: (c: string) => { classes.delete(c) },
@@ -225,6 +217,8 @@ function textOf(n: StubNode): string {
   for (const c of n.children) parts.push(textOf(c))
   return parts.join(' ')
 }
+
+let type: string[]
 
 interface Harness {
   ctx: Record<string, unknown>
@@ -388,19 +382,12 @@ test('addPlan renders every step of a plan', async () => {
   assert.match(shown, /Type the sentence/, 'every step must be rendered, not just the first')
 
   // The tool name is NO LONGER rendered, and that is the change rather than an omission.
-  //
-  // This assertion used to require "launch-app" on screen. The interface showed a person who asked
-  // a question a list of internal capability identifiers, and nothing about that list was
-  // actionable by anyone. The intent is still shown, because it is in the product's own language;
-  // the tool is not, because it is not.
   assert.doesNotMatch(shown, /launch-app/, 'internal tool names must not be shown as the plan')
   assert.doesNotMatch(shown, /desktop-input/)
   assert.match(shown, /Zeus is planning 2 step\(s\)/, 'the plan speaks in the product voice')
 })
 
 test('a table answer renders as a table, not as text', async () => {
-  // The chat-first change: a research result that IS a table has to arrive as one. Rendering it as
-  // a comma-joined string would be technically delivered and practically useless.
   const h = await harness()
   const addMessage = h.ctx.addMessage as (
     r: string, t: string, m?: string | null, table?: unknown,
@@ -417,8 +404,6 @@ test('a table answer renders as a table, not as text', async () => {
 })
 
 test('an answer with no table still renders, rather than throwing', async () => {
-  // The absent-table path is the common one, and a renderer that assumed a table would take the
-  // conversation down on every conversational reply.
   const h = await harness()
   const addMessage = h.ctx.addMessage as (r: string, t: string, m?: string | null, t2?: unknown) => void
   assert.doesNotThrow(() => addMessage('assistant', 'Hello.', null, undefined))
@@ -427,7 +412,6 @@ test('an answer with no table still renders, rather than throwing', async () => 
 })
 
 test('renderSessions renders a list, and an empty list', async () => {
-  // THE OTHER HALF OF THE USER'S SCREENSHOT. This is the one that surfaced the fault's text.
   const h = await harness()
   const renderSessions = h.ctx.renderSessions as (l: unknown[]) => void
   assert.equal(typeof renderSessions, 'function', 'renderSessions must be reachable')

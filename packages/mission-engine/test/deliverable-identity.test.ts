@@ -109,7 +109,7 @@ test('1c. and the name survives all the way to a paired write and read-back', as
   }, REAL_GOAL)
 
   assert.equal(v.refusals.length, 0, `the plan must be runnable: ${JSON.stringify(v.refusals)}`)
-  const write = v.steps.find((s) => s.tool.includes('write-file'))
+  const write = v.steps.find((s: { id: string; tool: string }) => s.tool.includes('write-file'))
   const read = v.steps.find((s: { id: string; tool: string }) => s.tool.includes('read-file'))
   assert.match(String(write?.args.path ?? ''), /Zeus-Browser-Proof\.txt$/,
     'the deliverable keeps the name the person asked for')
@@ -157,9 +157,9 @@ test('3. a read-back refers to the deliverable by stable id', async () => {
   const d = v.deliverables[0]
   assert.equal(d.producingStepId, 's1')
   assert.equal(d.readBackStepId, 's2', 'the read-back is ATTACHED, not inferred after the fact')
-  assert.equal(String(v.steps.find((s) => s.id === 's1')?.args.deliverableId ?? ''), d.id,
+  assert.equal(String(v.steps.find((s: { id: string }) => s.id === 's1')?.args.deliverableId ?? ''), d.id,
     'the producing step carries the id')
-  assert.equal(String(v.steps.find((s) => s.id === 's2')?.args.deliverableId ?? ''), d.id,
+  assert.equal(String(v.steps.find((s: { id: string }) => s.id === 's2')?.args.deliverableId ?? ''), d.id,
     'and so does the read-back')
   // Two writes get two ids that cannot collide, whatever the plan is renumbered into.
   assert.match(d.id, /^deliverable-\d+$/)
@@ -178,7 +178,7 @@ test('3b. two deliverables get distinct ids and distinct read-backs', async () =
   }, 'write two files and read both back')
 
   assert.equal(v.deliverables.length, 2)
-  const ids = new Set(v.deliverables.map((d) => d.id))
+  const ids = new Set(v.deliverables.map((d: { id: string }) => d.id))
   assert.equal(ids.size, 2, 'ids must not collide')
   assert.equal(v.deliverables[0].readBackStepId, 's3')
   assert.equal(v.deliverables[1].readBackStepId, 's4')

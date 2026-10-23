@@ -101,6 +101,31 @@ export interface ControlSurface {
   captureScreen(region?: ScreenRegion): Promise<Buffer>
   verifyTarget(t: TargetIdentity): Promise<TargetVerification>
 
+  /** Raw host route for capabilities the typed surface does not yet model. */
+  raw(path: string, opts?: { method?: string; body?: Record<string, unknown> }): Promise<unknown>
+  /** Read text from the screen via the Windows OCR engine. */
+  ocr(region?: { x?: number; y?: number; w?: number; h?: number }): Promise<{
+    ok: boolean
+    language?: string
+    text?: string
+    lines: Array<{ text: string; x: number; y: number; w: number; h: number }>
+    error?: string
+  }>
+  /** Watch a screen region for changes (capture baseline). */
+  screenWatch(region: { x: number; y: number; w: number; h: number }): Promise<{
+    ok: boolean
+    error?: string
+  }>
+  /** Diff two screen captures. */
+  screenDiff(region: { x: number; y: number; w: number; h: number }): Promise<{
+    ok: boolean
+    changed: boolean
+    changedPixels: number
+    changedPercent: number
+    region: { x: number; y: number; w: number; h: number }
+    error?: string
+  }>
+
   move(t: TargetIdentity, x: number, y: number): Promise<InputResult>
   click(t: TargetIdentity, x: number, y: number, button?: 'left' | 'right'): Promise<InputResult>
   doubleClick(t: TargetIdentity, x: number, y: number): Promise<InputResult>
@@ -143,6 +168,7 @@ export interface WindowInfo {
   readonly title: string
   readonly visible: boolean
   readonly rect: { x: number; y: number; w: number; h: number }
+  readonly class?: string
 }
 
 /**

@@ -596,18 +596,40 @@ export class DurableStore {
   readEvidence(missionId: string): EvidenceRow[] {
     const rows = this.db.prepare('SELECT * FROM evidence WHERE mission_id = ? ORDER BY id').all(missionId) as
       Array<Record<string, unknown>>
-    return rows.map((r) => ({
-      id: Number(r.id),
-      missionId: String(r.mission_id),
-      stepId: r.step_id === null ? undefined : String(r.step_id),
-      kind: String(r.kind),
-      evidence: JSON.parse(String(r.payload)) as Evidence,
-      provenance: String(r.provenance),
-      verifier: r.verifier === null ? undefined : String(r.verifier),
-      observedAt: Number(r.observed_at),
-      observedBy: String(r.observed_by) as ObservedBy,
-      observedInSession: String(r.obs_session_id),
-    }))
+    const out: EvidenceRow[] = []
+    for (const r of rows) {
+      // A payload that is not readable JSON is not evidence and is never shown as any.
+      //
+      // This parse used to be unguarded, and the failure it produced was the wrong one:
+      // corruption THREW from here, inside `readMission` BEFORE `quarantineReason` could
+      // look at the same raw row - so the store's own "this record is inconsistent"
+      // classification was unreachable for the very records it exists for, and the caller
+      // saw an unreadable record instead of a quarantined one (measured, Stage C).
+      // The row itself is untouched; `quarantineReason` reads payloads raw, classifies the
+      // record as QUARANTINED, and that verdict - not a parse crash - is what every reader
+      // of this mission now acts on. Skipping the one broken row can only move a conclusion
+      // toward "less is proved", never toward more.
+      let payload: Evidence | undefined
+      try {
+        payload = JSON.parse(String(r.payload)) as Evidence
+      } catch {
+        payload = undefined
+      }
+      if (payload === undefined) continue
+      out.push({
+        id: Number(r.id),
+        missionId: String(r.mission_id),
+        stepId: r.step_id === null ? undefined : String(r.step_id),
+        kind: String(r.kind),
+        evidence: payload,
+        provenance: String(r.provenance),
+        verifier: r.verifier === null ? undefined : String(r.verifier),
+        observedAt: Number(r.observed_at),
+        observedBy: String(r.observed_by) as ObservedBy,
+        observedInSession: String(r.obs_session_id),
+      })
+    }
+    return out
   }
 
   readApprovals(missionId: string): PersistedApproval[] {

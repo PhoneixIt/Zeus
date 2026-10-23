@@ -454,7 +454,19 @@ export async function navigate(url, { settleMs = 2500 } = {}) {
 /** Read what is on screen. DOM is used to VERIFY what the user can already see. */
 export async function readPage({ max = 14000 } = {}) {
   const p = await page()
-  const data = await p.evaluate((limit) => {
+
+  // A PAGE REPORTS ITS URL BEFORE IT HAS FINISHED RENDERING.
+  //
+  // The governed-navigation mission verified the landing URL, then read the page immediately.
+  // The read captured a partial body (156 characters on example.com); the verifier re-read a
+  // moment later, saw the complete body (more than that), and correctly refused to call the
+  // summary verified. The mission was right to fail: two reads of "the same page" disagreed.
+  //
+  // The fix is at the source, not in the verifier: wait (bounded) until the document reports
+  // complete AND two consecutive reads agree. If the page never settles - an animation, a live
+  // feed - this returns the last read and the verifier will report the disagreement honestly
+  // rather than being handed a stabilised lie.
+  const snapshot = () => p.evaluate((limit) => {
     const visible = (el) => {
       const r = el.getBoundingClientRect()
       const s = getComputedStyle(el)
@@ -463,6 +475,7 @@ export async function readPage({ max = 14000 } = {}) {
     return {
       url: location.href,
       title: document.title,
+      readyState: document.readyState,
       text: (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').slice(0, limit),
       scrollY: window.scrollY,
       pageHeight: document.body ? document.body.scrollHeight : 0,
@@ -478,6 +491,22 @@ export async function readPage({ max = 14000 } = {}) {
       })),
     }
   }, max)
+
+  let data = await snapshot()
+  for (let i = 0; i < 10; i += 1) {
+    if (data.readyState === 'complete') {
+      await sleep(100)
+      const next = await snapshot()
+      if (next.readyState === 'complete' && next.text === data.text) {
+        data = next
+        break
+      }
+      data = next
+    } else {
+      await sleep(120)
+      data = await snapshot()
+    }
+  }
   audit('readDom', null, 'routine', { url: data.url, chars: data.text.length })
   return data
 }

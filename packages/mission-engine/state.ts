@@ -614,7 +614,7 @@ export function objectiveVerdict(
           || (e.kind === 'command-verified' && e.corroboratedBy.length > 0 && samePath(e.path, pc.path)))
         break
       case 'artifact-read-back':
-        proved = all.some((e) => (e.kind === 'file-read-back' || e.kind === 'artifact') && samePath(e.path, pc.path))
+        proved = all.some((e) => e.kind === 'file-read-back' && samePath(e.path, pc.path))
         break
       case 'artifact-byte-count':
         proved = all.some((e) =>

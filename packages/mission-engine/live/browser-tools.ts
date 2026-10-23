@@ -474,6 +474,12 @@ export function browserSummaryVerifier(
       step.id === 'summarise-page' || step.id === 'write-page-summary',
     async verify(step, _ctx, toolData) {
       const { readFileSync, existsSync } = await import('node:fs')
+      // Normalize trailing slashes: Chrome's page.url() may report `https://example.com/`
+      // while the navigation tool's CDP handle reports `https://example.com`. They are the
+      // same destination; only a trailing slash differs. Stripping it keeps the comparison
+      // strict enough to catch real mismatches (e.g. example.com vs example.com.evil.com)
+      // while accepting the harmless Chrome normalization.
+      const norm = (u: string) => u.replace(/\/$/, '')
 
       if (step.id === 'navigate-browser') {
         // The navigation is verified by LANDING, not by the tool's own report. The page is re-read
@@ -491,7 +497,7 @@ export function browserSummaryVerifier(
         }
         const n = normalisePage(now)
         if ('error' in n) return { rejected: `an independent read produced no usable page: ${n.error}` }
-        if (n.facts.url !== claimed.landedOn) {
+        if (norm(n.facts.url) !== norm(claimed.landedOn)) {
           return {
             rejected: `the browser is now at ${n.facts.url}, not the ${claimed.landedOn} the step reported landing on`,
           }
@@ -510,7 +516,7 @@ export function browserSummaryVerifier(
         }
         const n = normalisePage(again)
         if ('error' in n) return { rejected: `an independent re-read produced no usable page: ${n.error}` }
-        if (n.facts.url !== claimed.facts.url) {
+        if (norm(n.facts.url) !== norm(claimed.facts.url)) {
           return { rejected: `the page moved under the mission (read ${claimed.facts.url}, now ${n.facts.url})` }
         }
         if (n.facts.characters !== claimed.facts.characters) {

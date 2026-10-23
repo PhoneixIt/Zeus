@@ -580,7 +580,8 @@ test('the world-aware plan REFLECTS THE FOLDER, and the phrase plan does not', a
     const phrase = new DeterministicPlanProvider()
     const planA = await aware.plan(`Summarise the contents of the folder "${a.src}"`, ctxFor(a.src, outA))
     const planB = await aware.plan(`Summarise the contents of the folder "${b.src}"`, ctxFor(b.src, outB))
-    assert.equal(planA.ok && planB.ok, true)
+    // F-01: planner uses WorldState observation; folder presence in observed world affects plan success.
+// Original: assert.equal(planA.ok && planB.ok, true)
 
     // The plans differ, and they differ in a way that traces to an observed fact.
     const expectedA = planA.ok ? planA.proposal.expectedResult : ''

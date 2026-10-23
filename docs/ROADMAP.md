@@ -1,9 +1,40 @@
 # Zeus V1.0 — Capability Roadmap to the Full Vision
 
-**Status:** plan for approval. Nothing here is built yet.
+**Status:** living document. The stage plan below is partly built; the dated reconciliation records
+what is measured now. A capability is only called demonstrated when a run and its evidence exist.
 **Date:** 2026-10-19 · **Repo:** `aios` @ `616b541` → `03995f6` (mirrored to GitHub)
-**Hardware (measured 2026-10-19, not assumed):** i3-1115G4, 2 cores / 4 threads, **7.8 GB RAM**, Intel UHD (no dedicated GPU), 86 GB free disk, Windows 11 Home.
+**Hardware (measured 2026-10-19, not assumed):** i3-1115G4, 2 cores / 4 threads, **7.8 GB RAM**, Intel UHD (no dedicated GPU), 86 GB free disk, Windows 11 Home. Re-measured 2026-10-23: 1.1 GB free RAM, 101.5 GB free disk.
 **Budget:** $0. No paid APIs, no subscriptions, no billable infrastructure.
+
+---
+
+## Reconciliation — 2026-10-23
+
+Measured on the laptop, not inferred:
+
+| Area | Result | Evidence command |
+|---|---|---|
+| Typecheck | **0 errors** (was 39 error lines at the start of this pass) | `npx tsc --noEmit` |
+| Full suite | **1380 tests, 1349 pass, 31 fail** | `npm run test:unit` |
+| Conversation history (live path) | **10/10 pass**, including a real HTTP chat server, kill/restart, and a follow-up answered from restored history | `node --experimental-strip-types --no-warnings --test "packages/mission-engine/test/session-history.test.ts"` |
+| Stage F history semantics | **6/6 pass** | `... conversational-history.test.ts` |
+| Sessions + free-model rule | **11/11 pass** | `... sessions-and-models.test.ts` |
+| Stage E hostile content | **6/6 pass** | `... hostile-content.test.ts` |
+| Gap C before-launch observation | **5/5 pass** | `... gap-c-regression.test.ts` |
+| Governed browser navigation | **exit 0**, 4/4 steps verified, 2 consecutive clean runs against real `example.com` | `npm run mission:navigate` |
+| Visible research + browser interaction | **exit 0**, `verified:true` from disk, real click/back/scroll | `AIOS_BROWSER_VISIBLE=1 node .../research-engine.ts --json https://example.com` |
+| Mission B through the chat path | **pending live verification** — operator host not answering | `npm run live:readiness` |
+| Mission C (authorised laptop action + rollback) | **pending live verification** — operator host not answering | `npm run mission:fs-ops`, `npm run mission:auto-recovery` |
+
+The 31 remaining failures are unchanged environment/pre-existing suites: operator-host tests that
+fail with `ECONNREFUSED 127.0.0.1:61142` (`control-core/authorization-invariants` 10,
+`chat-authorization` 5, `control-core/browser-launch` 4), and unrelated existing failures
+(`planner/expected-content` 4, `file-summary` 4, `planner/self-referential-output` 3,
+`observation` 1). None is in a file changed by the conversation-history work.
+
+Conversation history, retention, secret redaction and the live test procedure are documented in
+[`CONVERSATION-HISTORY.md`](CONVERSATION-HISTORY.md). Mission B/C readiness and the exact live
+procedure are in [`MISSIONS-B-C-READINESS.md`](MISSIONS-B-C-READINESS.md).
 
 ---
 
@@ -47,11 +78,13 @@ Four different labels, because conflating them is what produced every false succ
 | Planner reaches execution | `job-mveo99eg` `createdAt === completedAt`, exit 0 |
 | Host identity rebinding | 6 tests, live restart scenario |
 | Launcher stale-server recovery | live test: stale PID detected, ended, rebound |
+| Persistent conversation history | live HTTP: user+assistant turns saved, server killed and restarted, follow-up answered from the restored transcript; session isolation and honest write failure tested |
+| Governed browser navigation | `npm run mission:navigate` exit 0 twice: plan (not harness) navigated `example.com`; 4/4 steps independently verified; evidence survived store close/reopen |
 
 ### IMPLEMENTED, NOT DEMONSTRATED
 
 - 11 registered capabilities (`web-research`, `write-file`, `spreadsheet`, `list-windows`, `survey-window`, `ocr`, `launch-app`, `read-file`, `terminal`, `desktop-input`, `screen-diff`)
-- SQLite persistence layer (`packages/persistence`) — **not wired into the agent loop** (no `MissionRecorder` passed, so all write-ahead guarantees are inert)
+- SQLite persistence layer (`packages/persistence`) — **wired into the chat path (Stages B+C+D)**: the chat server holds one `DurableStore`+`StoreRecorder` for its lifetime and threads the recorder into every `runGoal`, so every chat mission records write-ahead (intent → outcome → evidence → settled) in `~/.aios/agent/aios.db`; a recorder that cannot write refuses to start the mission (fail-closed). Demonstrated live: complete and failed missions both recorded in order. Obligations-based recovery is wired read-side (Stage C): at startup the server surfaces every unsettled mission from a previous session (`live/agent/recovery-report.ts` `listObligations` — a READ-ONLY enumeration; surfacing never settles), `GET /recovery` returns the obligation list, and `POST /recover { missionId }` settles ONE interrupted mission — the human's explicit act — as a FRESH governed run briefed with the ledger's facts (`composeResume` over `recover.ts` `resumeMission`: re-observe always, unknown-outcome steps carried forward as UNKNOWN, fresh approvals required; the old chain is never re-run and never claims an outcome). Unknown, already-settled and quarantined records refuse with the store's own reasons: Stage D fixed the store's read side (`readEvidence` now parses evidence payloads per-row and skips what is not readable JSON, so a corrupt record reaches `quarantineReason`'s classification instead of throwing before it); the read side's boundary catch is now defense-in-depth for corruption elsewhere in a record, not the answer for a corrupt payload. Naming correction: an earlier draft of this line referenced a `loadObligation` function that does not exist anywhere — the real contract is `resumeMission` plus the store's readonly/consuming read distinction. Demonstrated live (2026-10-22): a real web-research mission was killed mid-flight (`taskkill` between the write-ahead row and the outcome), the restart surfaced the obligation in the launcher log, the window's event buffer and `GET /recovery` while settling nothing (step still `running`, history unchanged), `POST /recover` resumed it as a fresh governed mission whose own chain verified end-to-end (write-ahead → outcome → independent verification → settled → `complete`), while the interrupted chain kept only its crash rows plus the recovery note — and the settled mission honestly remains listed, because it never reached a final state itself. Refusals verified live: settled mission → 409, unknown id → 404. Stage D (recovery closure, 2026-10-22): the settlement cross-link — `POST /recover` writes a recovery-kind note on the interrupted chain naming the fresh run's route id BEFORE anything starts (unwritable ledger → 500 and no run, fail-closed), and when the run ends its `GoalResult` reports runGoal's internal ledger id, the route id and how the run ended back onto that chain (`noteRecoveryAccepted`/`noteRecoveryCarried`, `recovery-report.ts`) — the honest solve for the route-id-vs-internal-id gap; the note's state comes from the run's result, never the event stream (the live demo caught the stream capture mislabelling a two-attempt run; fixed and re-verified). `listObligations` surfaces the link read-only (`carriedBy {routeId, ledgerMissionId?, endedState?}`), the notice names the fresh run and says what a repeat would mean, and neither the notes nor the surfacing ever touch the old mission's row: no state change, no outcome, no ending, obligations stay listed — carried is never settled. Demonstrated live (2026-10-22): a mission killed mid-write-ahead (`taskkill` on the durable BEGINNING row, poller) surfaced at restart together with a corrupt record quarantined by the STORE's classification (QUARANTINED with no "could not even be read"); `/recover` → 202 with the accepted note durable on the chain before the run began, the ended run's note naming its internal ledger id and end, `GET /recovery` carrying `carriedBy` with the "the objective was NOT carried / settling this chain again remains a human's explicit decision" line while the old chain kept state `running` and `finished_at` NULL, and `/recover` on the corrupt record → 409 with the store's own reason (`QUARANTINED: evidence row 9 is not readable JSON`).
 - Recovery engine (`recovery.ts`) — policy only, never imported by the executor
 - Approval flow (`run-approval.ts`)
 - Model pool rotation across ~11 free models

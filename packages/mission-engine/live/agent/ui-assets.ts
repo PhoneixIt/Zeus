@@ -60,7 +60,7 @@ export const UI_HTML = String.raw`<!doctype html>
           <span class="zb-name">Zeus V1.0</span>
         </div>
       </div>
-      <div class="tb-right"><button id="cancelBtn" class="tb-btn" disabled>Stop</button></div>
+      <div class="tb-right"><span id="missionState" class="ms-state" hidden></span><button id="cancelBtn" class="tb-btn" disabled>Stop</button></div>
     </header>
     <div id="banner" class="banner hidden"></div>
     <div id="scroll" class="scroll">
@@ -129,6 +129,12 @@ body{background:var(--bg);color:var(--fg);font:15px/1.55 "Segoe UI",system-ui,sa
 .chip-bad{color:var(--danger);border-color:#f5c2bd;background:var(--danger-bg)}
 .tb-btn{background:var(--raised);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:7px 14px;font:inherit;font-size:13px;cursor:pointer}
 .tb-btn:disabled{opacity:.4;cursor:default}
+.ms-state{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:8px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;vertical-align:middle}
+.ms-state.s-running{color:var(--accent);border-color:var(--accent-dim)}
+.ms-state.s-cancelling{color:#b45309;border-color:#fcd34d}
+.ms-state.s-cancelled{color:var(--muted)}
+.ms-state.s-completed{color:var(--accent);border-color:var(--accent-dim)}
+.ms-state.s-failed{color:var(--danger);border-color:var(--danger)}
 .banner{padding:11px 18px;font-size:13.5px;font-weight:600;background:#fff6ed;color:#9a3412;border-bottom:1px solid #fed7aa}
 .hidden{display:none!important}
 .scroll{flex:1;overflow-y:auto;min-height:0}
@@ -319,6 +325,26 @@ body{
 }
 .plan-box .step{margin-bottom:4px}
 .plan-box .step b{color:var(--fg);font-weight:600}
+
+/* ---- the authorisation request: a decision card, not an error banner ---- */
+.approval{border:1px solid var(--accent);border-left:3px solid var(--accent);background:#fffdf6}
+.approval .why{font-size:13px;color:var(--muted);margin-top:6px;line-height:1.5}
+.approve-bar{display:flex;gap:10px;margin-top:12px}
+.approve-bar button{
+  font:inherit;font-size:13px;font-weight:600;padding:8px 18px;border-radius:var(--r-sm);
+  border:1px solid var(--border);background:#fff;color:var(--fg);cursor:pointer;
+  transition:background .12s ease,border-color .12s ease;
+}
+.approve-bar button:hover:not(:disabled){border-color:var(--accent)}
+.approve-bar button:disabled{opacity:.5;cursor:default}
+.approve-bar .approve{background:var(--accent);border-color:var(--accent);color:#fff}
+.approve-bar .approve:hover:not(:disabled){filter:brightness(1.06)}
+.approve-bar .reject:hover:not(:disabled){border-color:#b4403a;color:#b4403a}
+.approve-note{font-size:12.5px;color:var(--muted);margin-top:9px}
+.approval.granted{border-color:#2f7d4f;background:#f7fdf9}
+.approval.granted .approve-note{color:#2f7d4f}
+.approval.denied{border-color:#b4403a;background:#fdf8f7}
+.approval.denied .approve-note{color:#b4403a}
 
 /* ---- status lines stay, but quieter ---- */
 .status{max-width:820px;margin:0 auto 11px;padding:0 26px;font-size:12.5px;color:var(--muted)}
@@ -551,6 +577,75 @@ function addPlan(steps) {
   scrollDown();
 }
 
+// A CONSEQUENTIAL STEP, PAUSED, ASKING ONE PERSON.
+//
+// This is the only card in the window where a click is a governance act rather than
+// navigation: the executor is halted on this exact step, the mission's store holds no
+// decision, and "nothing happened" is the CORRECT result of an unanswered request. So the
+// card says precisely what would be affected, whether it can be undone, and that the mission
+// is paused - and the two buttons are the whole decision channel. They post the three fields
+// that identify the ONE request the executor made (step, kind, target); the server matches
+// them exactly against outstanding requests and refuses anything else, so a click here can
+// only ever decide the request shown here, never a neighbouring one and never a future one.
+function addApproval(e) {
+  const t = document.getElementById('thread');
+  if (!t) return;
+  // A replan can re-ask about the same step. Replace the stale card instead of stacking a
+  // second pair of buttons whose click would 404 against a request already decided - a dead
+  // button explained honestly beats two live ones where one is a lie.
+  const stale = t.querySelectorAll('.approval');
+  for (const s of stale) {
+    if (s.getAttribute('data-step') === String(e.stepId)) s.remove();
+  }
+  const kind = e.effectKind || 'consequential action';
+  const target = e.target || '(unnamed target)';
+  const wrap = mk('div', 'msg assistant approval');
+  wrap.setAttribute('data-step', String(e.stepId));
+  wrap.appendChild(mk('div', 'who', 'AUTHORISATION REQUIRED'));
+  const body = mk('div', 'body');
+  body.textContent = kind + ' on ' + target
+    + (e.irreversible ? '  -  permanent, there is no undo for this one' : '  -  reversible');
+  wrap.appendChild(body);
+  if (e.reason) wrap.appendChild(mk('div', 'why', e.reason));
+  const bar = mk('div', 'approve-bar');
+  const note = mk('div', 'approve-note',
+    'Waiting for your decision. The mission is paused on this step; nothing runs until you choose.');
+  const yes = mk('button', 'approve', 'Approve once');
+  const no = mk('button', 'reject', 'Refuse');
+  const decide = function (decision) {
+    // Disabled BEFORE the request goes out: a double-click must not produce two decisions,
+    // and the second click on an already-decided key would 404 anyway.
+    yes.disabled = true;
+    no.disabled = true;
+    note.textContent = decision === 'approved'
+      ? 'Recording your approval for this step...'
+      : 'Recording your refusal for this step...';
+    api('/approve', {
+      method: 'POST',
+      body: JSON.stringify({ stepId: e.stepId, kind: kind, target: target, decision: decision }),
+    }).then(function () {
+      note.textContent = decision === 'approved'
+        ? 'Approved once - for this step, this target, this mission. It carries nowhere else.'
+        : 'Refused. The step will not run: the mission stops at needs-human rather than proceed.';
+      wrap.classList.add(decision === 'approved' ? 'granted' : 'denied');
+    }).catch(function (err) {
+      // A rejection FROM THE CHANNEL is not a decision. Re-enable both buttons so the person
+      // can retry or refuse, and show the server's own words rather than pretending it landed.
+      yes.disabled = false;
+      no.disabled = false;
+      note.textContent = 'not recorded: ' + err.message;
+    });
+  };
+  yes.addEventListener('click', function () { decide('approved'); });
+  no.addEventListener('click', function () { decide('rejected'); });
+  bar.appendChild(yes);
+  bar.appendChild(no);
+  wrap.appendChild(bar);
+  wrap.appendChild(note);
+  t.appendChild(wrap);
+  scrollDown();
+}
+
 function addStatus(text) {
   const existing = $('thread').querySelector('.status');
   if (existing) existing.remove();
@@ -599,6 +694,26 @@ function finish() {
   $('composer').disabled = false;
   $('composer').focus();
   clearStatus();
+}
+
+// The mission lifecycle, shown where the person can see it without opening anything.
+//
+// This is SERVER truth once the poll delivers it (mission-state events), and a local echo the
+// instant Stop is clicked - so "cancelling" appears immediately even though the mission takes a
+// moment to actually stop. The pill says running / cancelling / cancelled / completed / failed
+// because those are five different situations and a busy spinner cannot tell them apart: a
+// cancelled mission and a failed one both arrive as ok:false, and the person who pressed Stop
+// deserves to see that their Stop was honoured.
+//
+// (No backticks in comments inside this file: the whole script lives in a String.raw template
+// literal, and a raw backtick ends the template early enough to break the TypeScript parse.)
+function setMissionState(s) {
+  const el = $('missionState');
+  if (!el) return;
+  if (!s || s === 'idle') { el.hidden = true; el.textContent = ''; el.className = 'ms-state'; return; }
+  el.hidden = false;
+  el.textContent = s;
+  el.className = 'ms-state s-' + s;
 }
 
 // ---------------------------------------------------------------- sessions
@@ -740,6 +855,8 @@ async function send() {
       method: 'POST',
       body: JSON.stringify({ text, sessionId: state.sessionId, model: state.model }),
     });
+    // Local echo; the server's own mission-state event confirms it a poll later.
+    setMissionState('running');
   } catch (e) {
     addError('the assistant could not be reached: ' + e.message);
     finish();
@@ -771,7 +888,25 @@ function handleEvent(e) {
       addStatus((e.verified ? 'verified: ' : 'not verified: ') + e.summary);
       break;
     case 'approval-required':
-      addError('Approval needed: ' + e.reason);
+      // Not an error and not a status line: the mission is PAUSED on a consequential step
+      // waiting for a human decision. Rendered as the decision card with live Approve/Refuse
+      // buttons - the old rendering dropped it into addError, which told the person the
+      // mission had failed when in fact it was working exactly as designed, waiting for them.
+      //
+      // The window also RE-ASSES the running state here, and the live demo is what proved it
+      // necessary: the planner can be silent for longer than the watchdog's 90 seconds, that
+      // watchdog calls finish(), and finish() disables Stop - so the card arrived at a window
+      // whose Stop button was already dead, unable to stop a mission very much alive and now
+      // waiting on its own gate. A live request IS server truth that the mission is running,
+      // so the window says running and re-enables Stop; cancelling a wait is a real route
+      // (POST /cancel aborts it) and the tests pin that an aborted wait never becomes a
+      // granted run.
+      state.busy = true;
+      $('sendBtn').disabled = true;
+      $('cancelBtn').disabled = false;
+      $('composer').disabled = true;
+      setMissionState('running');
+      addApproval(e);
       break;
     case 'done':
       clearStatus();
@@ -785,6 +920,9 @@ function handleEvent(e) {
       clearStatus();
       addError(e.text);
       finish();
+      break;
+    case 'mission-state':
+      setMissionState(e.state);
       break;
   }
 }
@@ -853,9 +991,37 @@ async function pollFeed() {
     // A watchdog. A quiet-but-busy window must say so rather than sit silently disabled: a
     // frozen UI that looks frozen is at least honest about being stuck.
     if (state.busy && FEED.lastEventAt && Date.now() - FEED.lastEventAt > 90_000) {
-      addError('Nothing has arrived for 90 seconds. The mission may have stalled - click Stop, or send another message.');
-      FEED.lastEventAt = Date.now();
-      finish();
+      // A PAUSED MISSION IS NOT A STALLED ONE. While an authorisation card is waiting for a
+      // decision, silence is the expected state: the executor is halted on the gate and the
+      // person is the one holding it - kindly. Calling that a stall was half a lie, and
+      // finishing on it was the other half: finish() disables Stop, so the one thing the
+      // message told the person to do is the one thing the window no longer allowed.
+      const pendingCard = document.querySelector('.approval:not(.granted):not(.denied)');
+      if (pendingCard) {
+        addStatus('Waiting for your decision on the authorisation request above. Nothing runs until you choose.');
+        FEED.lastEventAt = Date.now();
+      } else {
+        // SILENCE IS NOT DEATH, AND THE BUTTON THIS MESSAGE NAMES MUST WORK. finish() here was
+        // a contradiction the live demo caught in the act: the message told the person to click
+        // Stop, and finish() is the ONE place that disables Stop - so the window advised the
+        // only remedy it had just made impossible, over a mission that was still running. The
+        // stall wording was half a lie too: a model call can be silent for two minutes while it
+        // works. So the window keeps saying running, keeps Stop live, re-arms the watchdog for
+        // the next window of silence, and says the honest thing once (not once per 90s - the
+        // check below refuses to stack the same warning down the thread). The composer stays
+        // disabled because the mission IS still running; the server answers a second send with
+        // 409 anyway, and pretending otherwise in the window would just move the refusal.
+        const thread = $('thread');
+        const last = thread ? thread.lastElementChild : null;
+        const lastBody = last && last.querySelector ? last.querySelector('.body') : null;
+        const alreadySaid = lastBody && lastBody.textContent.indexOf('Nothing has arrived for 90 seconds') === 0;
+        if (!alreadySaid) {
+          addError('Nothing has arrived for 90 seconds. The mission may still be working on it - click Stop to halt it.');
+        }
+        FEED.lastEventAt = Date.now();
+        $('cancelBtn').disabled = false;
+        setMissionState('running');
+      }
     }
   } catch {
     // The agent may be restarting. The cursor is untouched, so nothing is lost.
@@ -872,7 +1038,23 @@ function connect() {
 // ---------------------------------------------------------------- wiring
 
 $('sendBtn').onclick = send;
-$('cancelBtn').onclick = async () => { try { await api('/cancel', { method: 'POST' }); } catch {} };
+$('cancelBtn').onclick = async () => {
+  // "cancelling" is shown the moment it is REQUESTED - the stop itself takes a moment (the model
+  // child has to die, the executor has to reach its next check), and a button that appears to do
+  // nothing for a second is how a person ends up clicking it five times.
+  setMissionState('cancelling');
+  $('cancelBtn').disabled = true;
+  try {
+    const r = await api('/cancel', { method: 'POST' });
+    // The server's answer is the truth: if the mission ended before the click landed it says
+    // 'idle', and showing "cancelling" over nothing would be its own small lie.
+    if (r && typeof r.state === 'string') setMissionState(r.state);
+  } catch (e) {
+    setMissionState('running');
+    $('cancelBtn').disabled = false;
+    addError('the cancel request did not reach the server: ' + e.message);
+  }
+};
 $('newChat').onclick = () => newSession();
 
 $('composer').addEventListener('keydown', (e) => {

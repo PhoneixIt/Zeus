@@ -272,7 +272,7 @@ test('8. a headless-only plan for an explicitly visible-desktop mission is STILL
     }],
   }, goal)
 
-  const refusal = v.refusals.find((r) => /headless research/i.test(r))
+  const refusal = v.refusals.find((r: string) => /headless research/i.test(r))
   assert.ok(refusal,
     `fixing the browser adoption path must NOT let a headless answer satisfy a visible goal: ${JSON.stringify(v.refusals)}`)
   assert.match(String(refusal), /launch-app/i, 'and it must still name the capability that would work')
