@@ -17,7 +17,7 @@
  * for the comparison, and is reachable only when a caller asks for it by name.
  */
 
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   isCapability, type ObjectivePostcondition, type PlanContext, type PlanProposal, type PlanResult, type PlanStep,
 } from './plan.ts'
@@ -42,6 +42,51 @@ const PATH_RE_ALL = new RegExp(PATH_RE.source, 'g')
  * browser recipe could see them. Adding the browser capability is what exposed it.
  */
 const FILE_PATH_RE_ALL = /(?<![A-Za-z])[A-Za-z]:[\\/][^\s'\",;]+/g
+
+
+/**
+ * POSIX absolute paths (`/tmp/x/src`).
+ *
+ * The drive-letter pattern above is the shape a Windows user types. On Linux and macOS the same
+ * request is spelled `/tmp/x/src`, and it was INVISIBLE to the path extraction - so the folder
+ * recipe refused a perfectly well-formed objective with "no folder was named", and the file recipe
+ * did the same. That is a platform bug, not a user error, and it made the planner unusable anywhere
+ * but Windows.
+ *
+ * The lookbehind does the same job it does for drive letters, with the cases a leading slash adds:
+ *   - `:` excludes the `//` in `https://example.test/doc`
+ *   - `\w` excludes `a/b`, `1/2` and `example.test/doc`
+ *   - `/` and `\` exclude the second slash of `//` and the tail of a Windows path
+ * The character class stops at whitespace, quotes, separators, colons, parentheses and brackets, so
+ * a path written in prose (`/tmp/x, then`) or inside brackets (`(/tmp/x)`) is captured cleanly.
+ */
+const POSIX_PATH_RE_ALL = /(?<![\w.):\\/])\/(?:[^\s'",;:()[\]\\]+)/g
+
+/**
+ * Every absolute path named in an objective, in either platform's spelling, de-duplicated.
+ *
+ * Windows candidates come first because that was the only spelling this planner understood before
+ * POSIX support was added; a single objective does not normally name one of each.
+ */
+function absolutePaths(objective: string): string[] {
+  const windows = objective.match(FILE_PATH_RE_ALL) ?? []
+  FILE_PATH_RE_ALL.lastIndex = 0
+  const posix = objective.match(POSIX_PATH_RE_ALL) ?? []
+  POSIX_PATH_RE_ALL.lastIndex = 0
+  const found = [...windows, ...posix].map((p) => p.replace(/[)\]]+$/, '').replace(/[\\/]+$/, ''))
+  return [...new Set(found)]
+}
+
+/**
+ * An observed path in a form two spellings can be compared in.
+ *
+ * The comparison is LEXICAL - `resolve` and a trailing-separator strip, no filesystem call - because
+ * the planner is forbidden to touch the machine (SEC-10). Trailing separators and redundant segments
+ * are the only differences this needs to absorb; the observer already records resolved absolute paths.
+ */
+function comparablePath(p: string): string {
+  return resolve(p).replace(/[\\/]+$/, '').toLowerCase()
+}
 
 // NOTE: there is deliberately no `VERSION_CONST_RE` constant here any more. The version-edit recipe
 // used to hard-code the text it searched for, which meant it was guessing the contents of a file it
@@ -127,10 +172,9 @@ function deriveOutputName(objective: string): string {
 }
 
 function folderCandidates(objective: string): string[] {
-/** Drive-letter paths with EITHER separator - a user types forward slashes. */
-  const found = objective.match(FILE_PATH_RE_ALL)
-  FILE_PATH_RE_ALL.lastIndex = 0
-  return found ? [...new Set(found.map((p) => p.replace(/[\\/]+$/, '')))] : []
+  // Drive-letter paths with EITHER separator, plus POSIX absolute paths: a user types whichever
+  // platform they are on, and the planner has to read the same objective on both.
+  return absolutePaths(objective)
 }
 
 /** Raised when the caller's requested output name is not usable. Refused, never substituted. */
@@ -203,7 +247,10 @@ const FOLDER_SUMMARY: Intent = {
     // The caller's name when one was supplied, the original derivation when one was not. Never a
     // silent substitution in either direction.
     const outName = folderOutputName(objective, ctx.outputFileName)
-    const outPath = `${ctx.outputRoot.replace(/[\\/]+$/, '')}\\${outName}`
+    // `join`, not a literal `\\`: the output root may be a POSIX path, and a hardcoded backslash
+    // produced the single file name `out\summary.txt` inside it rather than `out/summary.txt`.
+    // `join` is path arithmetic only - it touches no filesystem.
+    const outPath = join(ctx.outputRoot, outName)
 
     // REFUSE A SELF-REFERENTIAL OUTPUT, BEFORE ANYTHING IS PLANNED OR RUN.
     //
@@ -973,8 +1020,9 @@ export class DeterministicPlanProvider implements PlanProvider {
       if (intent.id === 'file-summary' && /\b(folder|directory|contents)\b/i.test(objective)) continue
 
       // The ONE thing this planner checks about the world: does the folder it was told to summarise
-      // exist? Read directly rather than through an observation, because this planner was written
-      // before there was an observer and wiring one in would obscure the comparison M6 is about.
+      // exist? Answered from the observation supplied by the caller, never by touching the machine -
+      // the planner's only window onto reality is the plain `WorldState` (SEC-10).
+      //
       // The pre-check below demands its target be a DIRECTORY. That is correct for the folder recipe
       // and WRONG for the file recipe, whose target is a file by definition - it was refusing every
       // valid file request with "exists but is not a folder". Existence is still checked; only the
@@ -987,15 +1035,38 @@ export class DeterministicPlanProvider implements PlanProvider {
       // defaults to NOT being wrongly constrained.
       const NEEDS_A_DIRECTORY = intent.id === 'folder-summary'
       if (DeterministicPlanProvider.checkTargetExists && NEEDS_A_DIRECTORY) {
+        const world = ctx.world
         for (const candidate of folderCandidates(objective)) {
-          const candidateLower = candidate.replace(/[\\/]+$/, '').toLowerCase()
-          const observedEntry = ctx.world?.entries.find(
-            (e) => e.relative.toLowerCase() === candidateLower
-          )
-          if (!observedEntry) {
+          const want = comparablePath(candidate)
+          // Compare against the observed entry's ABSOLUTE path.
+          //
+          // This used to compare the objective's absolute path against `entry.relative`, which can
+          // never match: `relative` is spelled relative to the observation root (`src`) while the
+          // objective names an absolute path (`/tmp/x/src`). Every folder summary was therefore
+          // refused as "not in the observed world" the moment the existence check moved from
+          // `lstatSync` to the observation, including folders the observation had plainly listed.
+          // Absolute-to-absolute is the only comparison that means "this exact folder was seen".
+          const observedEntry = world?.entries.find((e) => comparablePath(e.path) === want)
+          if (!world) {
             return {
               ok: false, code: 'insufficient-info',
-              reason: `${candidate} is not in the observed world, so there are no contents to summarise`,
+              reason: `no observation was supplied, so whether ${candidate} exists is unknown. This planner will not assert anything about a folder it was not shown.`,
+              unsupported: ['folder summary'], missing: [candidate],
+            }
+          }
+          if (!observedEntry) {
+            // "Outside the scope" and "not present in the scope" are different facts. The first means
+            // the observer never looked there and the caller can widen the observation; the second
+            // means it looked and did not find it. Reporting both as one loses that distinction.
+            const root = world.scope.root.replace(/[\\/]+$/, '')
+            const inside = want === comparablePath(root) ||
+              want.startsWith(comparablePath(root) + '\\') ||
+              want.startsWith(comparablePath(root) + '/')
+            return {
+              ok: false, code: 'insufficient-info',
+              reason: inside
+                ? `${candidate} was not found when ${world.scope.root} was observed, so there are no contents to summarise`
+                : `${candidate} is outside the observed root ${world.scope.root}, so nothing is known about its contents`,
               unsupported: ['folder summary'], missing: [candidate],
             }
           }
