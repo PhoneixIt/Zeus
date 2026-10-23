@@ -1037,6 +1037,13 @@ export class DeterministicPlanProvider implements PlanProvider {
       if (DeterministicPlanProvider.checkTargetExists && NEEDS_A_DIRECTORY) {
         const world = ctx.world
         for (const candidate of folderCandidates(objective)) {
+          if (!world) {
+            return {
+              ok: false, code: 'insufficient-info',
+              reason: `no observation was supplied, so whether ${candidate} exists is unknown. This planner will not assert anything about a folder it was not shown.`,
+              unsupported: ['folder summary'], missing: [candidate],
+            }
+          }
           const want = comparablePath(candidate)
           // Compare against the observed entry's ABSOLUTE path.
           //
@@ -1046,22 +1053,13 @@ export class DeterministicPlanProvider implements PlanProvider {
           // refused as "not in the observed world" the moment the existence check moved from
           // `lstatSync` to the observation, including folders the observation had plainly listed.
           // Absolute-to-absolute is the only comparison that means "this exact folder was seen".
-          const observedEntry = world?.entries.find((e) => comparablePath(e.path) === want)
-          if (!world) {
-            return {
-              ok: false, code: 'insufficient-info',
-              reason: `no observation was supplied, so whether ${candidate} exists is unknown. This planner will not assert anything about a folder it was not shown.`,
-              unsupported: ['folder summary'], missing: [candidate],
-            }
-          }
+          const observedEntry = world.entries.find((e) => comparablePath(e.path) === want)
           if (!observedEntry) {
             // "Outside the scope" and "not present in the scope" are different facts. The first means
             // the observer never looked there and the caller can widen the observation; the second
             // means it looked and did not find it. Reporting both as one loses that distinction.
-            const root = world.scope.root.replace(/[\\/]+$/, '')
-            const inside = want === comparablePath(root) ||
-              want.startsWith(comparablePath(root) + '\\') ||
-              want.startsWith(comparablePath(root) + '/')
+            const root = comparablePath(world.scope.root)
+            const inside = want === root || want.startsWith(root + '\\') || want.startsWith(root + '/')
             return {
               ok: false, code: 'insufficient-info',
               reason: inside
